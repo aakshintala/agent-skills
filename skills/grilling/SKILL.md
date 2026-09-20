@@ -11,6 +11,13 @@ prerequisites are already settled: the questions you can ask _now_ without
 guessing at answers you haven't heard yet. A question whose answer depends on
 another question open in this round belongs to a _later_ round.
 
+Before the first round, when the thing being grilled is something you have just
+met — an unfamiliar harness, a coined term, a subsystem you have only read the
+name of — spend a message explaining what it is for, with concrete examples, and
+ask whether it is worth doing at all right now. Grilling a design assumes the
+thing should exist. Sometimes the honest first answer is "not yet", and every
+round you would have run was wasted.
+
 Each round runs three steps, in order.
 
 ## 1. Premises
@@ -27,12 +34,17 @@ PREMISES
 2. <statement>
 ```
 
-Then validate them as **Q0**, in its own call to your host's question tool,
-before anything else in the round: ask whether they hold, carrying an option to
-strike. Q0 stays out of the round's batch because a struck premise reshapes the
-frontier, and the batched questions would be framed on ground that just moved. A
-struck premise sends you back to recompute the frontier and open the round again
-on the new one. Skip Q0 only when the round genuinely rests on nothing new.
+Write them out in prose, in your own message, before you touch the question
+tool — each premise a plain sentence plus what changes if it is wrong. A premise
+the user first meets as an option inside the tool has not been stated; they are
+being asked to ratify something they never read.
+
+Then validate them as **Q0**, in its own call to your host's question tool, in
+the same turn: ask whether they hold, carrying an option to strike. Q0 stays out
+of the round's batch because a struck premise reshapes the frontier, and the
+batched questions would be framed on ground that just moved. A struck premise
+sends you back to recompute the frontier and open the round again on the new one.
+Skip Q0 only when the round genuinely rests on nothing new.
 
 ## 2. Brief the frontier
 
@@ -55,6 +67,24 @@ Lead each question with your recommended option. Where a question picks between
 approaches rather than settling a fact, at least two options reach the user: the
 smallest thing that works, and the one you'd want to live with. A question
 offering one real option is a decision you already made.
+
+**Ask only what is contested.** A decision that follows from a rule already
+settled is not a question; asking it spends the user's attention to hear "yes".
+Put those in a short "recording unless you object" list that names the rule each
+one follows, and keep the tool call for the choices that are genuinely open —
+value and taste calls, where your recommendation could reasonably lose.
+
+Before each question reaches the user:
+
+- **Steelman the option you are not recommending.** Say what comparable tools do
+  and why, and argue that option at full strength. An option written to lose
+  tells the user nothing, and they will answer the strawman rather than the
+  choice.
+- **Pressure-test the recommendation** against the edge cases you can think of.
+  If it breaks on one, that belongs in the question, not in a later correction.
+- **Quote a prior decision, never paraphrase it.** When you cite what was settled
+  earlier, paste the words. A paraphrase drifts toward what you now expect it to
+  have said.
 
 The answers reshape the tree: settled decisions push the frontier outward and
 unblock what depended on them. Recompute, and run the next round.
