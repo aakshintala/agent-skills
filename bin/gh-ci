@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# gh-ci: quiet, low-call GitHub CI helpers for agent flywheels.
+# Usage: gh-ci snapshot <pr> | failures <run> | watch-verified <run> --pr <n>
+#        gh-ci resample <pr> "<job name>" --until <regex> [--max <n>]
+# GH_CI_REPO overrides the default repo; GH_CI_INTERVAL the watch poll seconds (default 30).
+set -euo pipefail
+REPO="${GH_CI_REPO:-aakshintala/Fiber}"
+
+usage() {
+  echo "usage: gh-ci snapshot <pr> | failures <run> | watch-verified <run> --pr <n>" >&2
+  echo "       gh-ci resample <pr> \"<job name>\" --until <regex> [--max <n>]" >&2
+  exit 2
+}
+
+# snapshot <pr>: head SHA + CI/flake verdicts + pending/failing counts.
+# Two API calls total: one pr view, one pr checks.
+cmd_snapshot() {
+  local pr="${1:?missing pr number}"
+  local out head ci flake pending fails
+  head=$(gh pr view "$pr" --repo "$REPO" --json headRefOid --jq '.headRefOid[0:8]')
+  echo "head: $head"
+  out=$(gh pr checks "$pr" --repo "$REPO" 2>&1 || true)
+  ci=$(echo "$out" | awk -F'\t' '$1 == "CI" {print $2; exit}')
+  flake=$(echo "$out" | awk -F'\t' '$1 ~ /^Flake watch/ {print $2; exit}')
+  echo "CI: ${ci:-unknown}"
+  echo "Flake: ${flake:-unknown}"
+  pending=$(echo "$out" | awk -F'\t' '$2 == "pending" || $2 == "queued" {n++} END {print n+0}')
+  fails=$(echo "$out" | awk -F'\t' '$2 == "fail" {n++} END {print n+0}')
+  echo "pending: $pending failing: $fails"
+}
+
+# failures <run>: failed jobs, then their (fail) test lines only.
+cmd_failures() {
+  local run="${1:?missing run id}"
+  local jobs
+  jobs=$(gh run view "$run" --repo "$REPO" --json jobs --jq '.jobs[] | select(.conclusion=="failure") | "\(.databaseId) \(.name)"')
+  if [ -z "$jobs" ]; then echo "no failed jobs in run $run"; return 0; fi
+  echo "$jobs"
+  echo "$jobs" | while read -r jid _; do
+    echo "--- $jid failing tests ---"
+    gh run view "$run" --repo "$REPO" --job "$jid" --log-failed 2>&1 \
+      | grep -E "\(fail\)" | sed 's/^[^Z]*Z //' | sort -u | head -10
+  done
+}
+
+# watch-verified <run> --pr <n>: watch, then verify via pr checks.
+# Exit 0 only when CI passes with zero pending on the PR head. A watch
+# firing means "look", never "it's green" — this is the look.
+cmd_watch_verified() {
+  local run="${1:?missing run id}"; shift
+  local pr=""
+  while [ $# -gt 0 ]; do case "$1" in --pr) pr="${2:?}"; shift 2;; *) usage;; esac; done
+  [ -n "$pr" ] || usage
+  # gh run watch polls every 3s by default; several concurrent watchers
+  # trip GitHub's secondary rate limit on the Actions API.
+  gh run watch "$run" --repo "$REPO" --exit-status --interval "${GH_CI_INTERVAL:-30}" >/dev/null
+  local out head ci pending
+  out=$(gh pr checks "$pr" --repo "$REPO" 2>&1 || true)
+  head=$(gh pr view "$pr" --repo "$REPO" --json headRefOid --jq '.headRefOid[0:8]')
+  ci=$(echo "$out" | awk -F'\t' '$1 == "CI" {print $2; exit}')
+  pending=$(echo "$out" | awk -F'\t' '$2 == "pending" || $2 == "queued" {n++} END {print n+0}')
+  echo "head: $head CI: ${ci:-unknown} pending: $pending"
+  echo "$out" | grep -E "fail" | head -5 || true
+  [ "$ci" = "pass" ] && [ "$pending" = "0" ]
+}
+
+# resample <pr> "<job name>" --until <regex> [--max <n>]: rerun the PR's latest
+# run until the named job's log matches the regex (a flake caught in a net).
+# Logs land in $GH_CI_OUT (default /tmp/gh-ci-resample-<pr>). Waits on the
+# whole run, because a rerun is refused while any job is still in progress,
+# and fetches the job log through the API, because `gh run view --log`
+# refuses while the run is in progress.
+cmd_resample() {
+  local pr="${1:?missing pr number}"; local job="${2:?missing job name}"; shift 2
+  local until_re="" max=12
+  while [ $# -gt 0 ]; do case "$1" in
+    --until) until_re="${2:?}"; shift 2;;
+    --max) max="${2:?}"; shift 2;;
+    *) usage;; esac; done
+  [ -n "$until_re" ] || usage
+  local out="${GH_CI_OUT:-/tmp/gh-ci-resample-$pr}"; mkdir -p "$out"
+  local branch run
+  branch=$(gh pr view "$pr" --repo "$REPO" --json headRefName --jq .headRefName)
+  run=$(gh run list --repo "$REPO" --branch "$branch" --workflow ci.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+  [ -n "$run" ] || { echo "no run on $branch (unmergeable PRs get none)" >&2; return 1; }
+  echo "run: $run"
+  local attempt jid concl log
+  for attempt in $(seq 1 "$max"); do
+    while [ "$(gh run view "$run" --repo "$REPO" --json status --jq .status)" != "completed" ]; do
+      sleep "${GH_CI_INTERVAL:-60}"
+    done
+    jid=$(gh run view "$run" --repo "$REPO" --json jobs --jq ".jobs[] | select(.name==\"$job\") | .databaseId" | tail -1)
+    concl=$(gh run view "$run" --repo "$REPO" --json jobs --jq ".jobs[] | select(.name==\"$job\") | .conclusion" | tail -1)
+    log="$out/attempt-$attempt.log"
+    gh api --allow-escape-sequences "repos/$REPO/actions/jobs/$jid/logs" > "$log" 2>&1 || true
+    echo "attempt: $attempt job: $jid conclusion: ${concl:-unknown} log: $log"
+    if grep -aqE "$until_re" "$log"; then echo "caught: $log"; return 0; fi
+    gh run rerun "$run" --repo "$REPO" >/dev/null
+    sleep 90
+  done
+  echo "no match in $max attempts"; return 1
+}
+
+cmd="${1:?}"; shift
+case "$cmd" in
+  snapshot) cmd_snapshot "$@" ;;
+  failures) cmd_failures "$@" ;;
+  watch-verified) cmd_watch_verified "$@" ;;
+  resample) cmd_resample "$@" ;;
+  *) usage ;;
+esac
