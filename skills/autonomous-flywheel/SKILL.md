@@ -6,8 +6,10 @@ description: "Flywheel unattended multi-PR landing: implement, triage CI, merge 
 # Autonomous Flywheel
 
 Land a stack of PRs with minimal supervision: implement, review, repair,
-triage CI, merge on green, and leave a morning report. Work the steps in
-order; each ends with its done-condition.
+triage CI, merge on green, and leave a morning report. Step 1 runs once
+at the start. Steps 2–5 run for every PR, several PRs in flight at once.
+Step 6 runs throughout and step 7 closes the session. Each step ends
+with its done-condition.
 
 ## 1. Session config (fill in at start)
 
@@ -23,12 +25,19 @@ order; each ends with its done-condition.
 - Merge authority: get explicit blanket terms up front (what may merge,
   what needs a call). CI-boundary changes (workflows, rulesets) always
   need an owner merge call unless explicitly included.
+- Token: `gh auth status` shows the `workflow` scope. Without it, PRs
+  touching `.github/workflows/*` fail to merge with a policy error and
+  only the owner can land them (UI click or `gh auth refresh -s workflow`).
+- Work source: the stack of PRs to land, or the tracker's tickets.
 
 Done when every bullet is filled and the owner has confirmed the
 implementation model and blanket merge terms.
 
 ## 2. Implement
 
+- When working from tickets, take the **frontier**: open tickets whose
+  blockers are all closed. A ticket enters a lane only when its fence is
+  disjoint from every running lane's.
 - One worktree per branch, named for the branch, deleted on merge. Shared
   checkout stays on `main`; never reuse a worktree across branches.
 - Each implementation lane brief declares its file fence (`owns` /
@@ -69,19 +78,20 @@ recorded in the handoff.
 
 ## 3. Review
 
-- Run each review through the `code-review` skill (Standards then Spec
+- Review each PR once with the `code-review` skill (Standards and Spec
   axes); return findings with tight word caps and aggregate without
-  reranking. Never full re-review: scoped FIX-OK
-  verifies only, then a PR comment recording the verdict.
+  reranking. Record the verdict as a PR comment.
+- After a repair, run a **scoped verify**, never a full re-review: check
+  only that each finding is fixed and the repair commit adds no new
+  problem, then record FIX-OK (or the remaining findings) as a PR comment.
 - Open PRs as drafts; promote to ready only after the recorded verdict plus
   draft CI green with a clean flake watch.
-- A repair commit always gets a scoped verify before merge.
 - A regression test ships only with its negative control recorded: the
   exact failure with the fix reverted, then green with it. A test that
   passes both ways proves nothing about the fix.
 
 Done when every PR carries a recorded verdict comment and every repair
-commit has a scoped verify.
+commit has a recorded scoped verify.
 
 ## 4. Triage CI
 
@@ -104,22 +114,18 @@ commit has a scoped verify.
   failure? Document the verdict in a PR comment, no reruns.
 - Flakes become issues (test name, signature, run link, suspected cause,
   deflake strategy). Deflake by rewriting the test, never by rerunning.
-- Retry/flake-reporting workflow features must be non-blocking by design:
-  annotation jobs fail red for visibility but stay out of the required
-  gate, or every flake blocks the queue it was meant to unblock.
+- Flake annotation jobs stay out of the required check, or every flake
+  blocks the queue.
 
 Done when every red leg has a documented flake-vs-real verdict and every
 flake has a filed issue.
 
 ## 5. Merge
 
-- Verify with the freshly built binary from the checkout, never a PATH
-  binary. Cross-compile for the deploy target before pushing repairs.
-- Merge only on the required check green for the exact head commit.
-- GitHub tokens need `workflow` scope to merge PRs touching
-  `.github/workflows/*`; without it the merge fails with a policy error
-  and only the owner (UI click or `gh auth refresh -s workflow`) can land
-  it. Check `gh auth status` before an continuous run.
+- Verify behaviour against what the checkout builds, never an installed
+  copy on `PATH`.
+- Merge only on the required check green for the exact head commit, with
+  the configured merge method.
 
 Done when the PR is merged on the required check green for its exact head
 commit, or escalated to the owner per the blanket terms.
@@ -138,7 +144,6 @@ append: branches, test paths, and error strings present).
 ## 7. Morning report
 
 Scoreboard (merged / open / flakes filed), items needing the owner with
-exact actions, research-lane findings side by side, and leftover threads
-with issue links. Short.
+exact actions, and leftover threads with issue links. Short.
 
 Done when the report lists every PR's end state plus owner actions.
