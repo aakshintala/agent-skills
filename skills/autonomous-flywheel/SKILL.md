@@ -62,9 +62,6 @@ implementation model and blanket merge terms.
 - Track each lane's close-out on the orchestrator task list: verified-lineage
   push, PR body with Fixes/Part-of linkage, linked issues closed after
   merge, worktree deleted.
-- Announce each wave on intercom (`send`, one message): branches and
-  worktrees owned. Two sessions writing to one worktree corrupts it;
-  the announcement is the tripwire.
 
 Done when each PR in the stack has a pushed branch from its own worktree
 with verified lineage, all implement fences are pairwise disjoint and
