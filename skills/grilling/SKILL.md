@@ -37,7 +37,9 @@ PREMISES
 Write them out in prose, in your own message, before you touch the question
 tool — each premise a plain sentence plus what changes if it is wrong. A premise
 the user first meets as an option inside the tool has not been stated; they are
-being asked to ratify something they never read.
+being asked to ratify something they never read. Neither has a premise written
+only in your reasoning: the user does not see it. The premises must be visible
+output text in the same message as the Q0 call.
 
 Then validate them as **Q0**, in its own call to your host's question tool, in
 the same turn: ask whether they hold, carrying an option to strike. Q0 stays out
@@ -46,22 +48,29 @@ batched questions would be framed on ground that just moved. A struck premise
 sends you back to recompute the frontier and open the round again on the new one.
 Skip Q0 only when the round genuinely rests on nothing new.
 
-## 2. Brief the frontier
+## 2. Brief each batch
 
-A round of two or more questions opens with a brief: one line per question, plus
-the context they share. The user sees the shape of the round before committing to
-any single answer, and each question then stays short because the shared context
-is already on the table. Hold back what hangs off a question until that question
-is asked. A single-question round has no shared context to state, so it skips the
-brief.
+Split the round into batches no larger than the question tool's cap (4 in Claude
+Code). Each batch opens with a brief in prose: one short paragraph per question,
+carrying its context, the options argued at full strength, and your
+recommendation. The brief sits directly above the call it explains, so the user
+reads the context and answers it together. Hold back what hangs off a question
+until that question is asked.
+
+The brief is visible output text in the same message as the question call, never
+only in your reasoning. Make no other tool call between the brief and its
+question call: finish the research first.
 
 ## 3. Ask
 
-Put the whole round to the user in one call to your host's question tool, one
-entry per frontier question, in the order the brief listed them. The tool renders
-each question discretely and returns structured answers, so a batched round reads
-as a list to work through rather than a wall of prose to answer by hand. Where the
-frontier exceeds the tool's cap, ask in successive calls, still in brief order.
+Put the batch to the user in one call to your host's question tool, one entry per
+question, in the order the brief gave them. The tool renders each question
+discretely and returns structured answers. Question and option text stays short,
+a sentence and a label with at most one line of trade-off, because the brief
+already carries the context. Context packed into the tool is hard to read.
+
+After each batch, recheck the batches still to come: an answer can make a later
+question moot or change its framing. Drop or reword those before briefing them.
 
 Lead each question with your recommended option. Where a question picks between
 approaches rather than settling a fact, at least two options reach the user: the
@@ -72,9 +81,11 @@ offering one real option is a decision you already made.
 settled is not a question; asking it spends the user's attention to hear "yes".
 Put those in a short "recording unless you object" list that names the rule each
 one follows, and keep the tool call for the choices that are genuinely open —
-value and taste calls, where your recommendation could reasonably lose.
+value and taste calls, where your recommendation could reasonably lose. The list
+goes in the prose of the round's last batch, with one short confirm question in
+the tool.
 
-Before each question reaches the user:
+Before each question reaches the user, in its brief:
 
 - **Steelman the option you are not recommending.** Say what comparable tools do
   and why, and argue that option at full strength. An option written to lose
