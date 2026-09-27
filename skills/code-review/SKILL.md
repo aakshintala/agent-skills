@@ -10,7 +10,7 @@ Two-axis review of the diff between `HEAD` and a fixed point the user supplies:
 
 Both axes run as **parallel sub-agents** so they don't pollute each other's context, then this skill aggregates their findings.
 
-The issue tracker should have been provided to you. If `docs/agents/issue-tracker.md` is missing, tell the user to run `/setup-matt-pocock-skills`.
+Fetch issues through `docs/agents/issue-tracker.md` when it exists. Otherwise use the repo's remote: `gh issue view <n> --comments` on GitHub, `glab issue view <n> --comments` on GitLab, and on any other host ask the user for the issue text.
 
 ## Process
 
@@ -26,14 +26,14 @@ Before going further, confirm the fixed point resolves (`git rev-parse <fixed-po
 
 Look for the originating spec, in this order:
 
-1. Issue references in the commit messages (`#123`, `Closes #45`, GitLab `!67`, etc.), fetched via the workflow in `docs/agents/issue-tracker.md`.
+1. Issue references in the commit messages (`#123`, `Closes #45`, GitLab `!67`, etc.), fetched through the issue tracker (above).
 2. A path the user passed as an argument.
 3. A spec file under `docs/`, `specs/`, or `.scratch/` matching the branch name or feature.
 4. If nothing is found, ask the user where the spec is. If they say there isn't one, the **Spec** sub-agent will skip and report "no spec available".
 
 ### 3. Identify the standards sources
 
-Anything in the repo that documents how code should be written, such as `CODING_STANDARDS.md` or `CONTRIBUTING.md`.
+Start from the repo's `AGENTS.md` or `CLAUDE.md`: the docs it indexes for code rules and review are the standards sources, and a list headed as the reviewer's checks is the core of the Standards brief. Then add any other file that documents how code should be written, such as `CODING_STANDARDS.md` or `CONTRIBUTING.md`.
 
 On top of whatever the repo documents, the Standards axis always carries the **smell baseline** below: a fixed set of Fowler code smells (_Refactoring_, ch.3) that applies even when a repo documents nothing. Two rules bind it:
 
@@ -57,6 +57,8 @@ Each smell reads *what it is* → *how to fix*; match it against the diff:
 
 ### 4. Spawn both sub-agents in parallel
 
+**The repo's review procedure wins.** When the repo documents one (how many reviewers, which model family, where findings are posted), follow it: a single reviewer gets both briefs below and reports under both headings. A reviewer required to be from a different model family than the implementer runs on that family through whatever reaches it (a CLI or a delegate tool), never as a same-model sub-agent.
+
 **Standards sub-agent prompt** should include:
 
 - The full diff command and commit list.
@@ -74,7 +76,7 @@ If the spec is missing, skip the Spec sub-agent and note this in the final repor
 
 ### 5. Aggregate
 
-Present the two reports under `## Standards` and `## Spec` headings, verbatim or lightly cleaned. Do **not** merge or rerank findings, because the two axes are deliberately separate (see _Why two axes_).
+Present the two reports under `## Standards` and `## Spec` headings, verbatim or lightly cleaned, where the repo's procedure says findings go (a PR comment, for example), else in chat. Do **not** merge or rerank findings, because the two axes are deliberately separate (see _Why two axes_).
 
 End with a one-line summary: total findings per axis, and the worst issue _within each axis_ (if any). Don't pick a single winner across axes: that's the reranking the separation exists to prevent.
 
@@ -86,3 +88,14 @@ A change can pass one axis and fail the other:
 - Code that does exactly what the issue asked but breaks the project's conventions → **Spec pass, Standards fail.**
 
 Reporting them separately stops one axis from masking the other.
+
+## Answering the findings
+
+When you own the change under review, every finding ends **fixed** or **refuted** with evidence: a test, a doc line, a command's output. Sort each before acting:
+
+- A defect the diff shows: fix it.
+- A hypothetical ("what if this is null?"): trace the call site. Fix it when a real caller reaches it; refute it citing the call site when none does.
+- A preference with no concrete failure ("I'd have structured this differently"): refute it, naming the failure it lacks.
+- A report made only of nits reads as a pass: answer each nit in a line.
+
+A fix's diff gets a scoped verify: each finding checked as fixed, and the repair checked for new problems. The full review does not rerun.
