@@ -114,11 +114,7 @@ Tool preference:
 
 ## Phase 5: Fix + regression test
 
-Fix at the **root**: where the wrong value is made, not where it surfaces. Then search for the same mistake elsewhere (the same pattern, sibling callers of the function you changed) and fix every instance.
-
-When two fixes that rest on one assumption fail the loop, stop fixing. Write the assumption in one sentence and return to Phase 4 with a probe that tests it.
-
-Write the regression test **before the fix**, but only if there is a **correct seam** for it. When the repo's testing doc says where a bug's test goes, that is the correct seam.
+Write the regression test **before the fix**, but only if there is a **correct seam** for it. When the repo's testing doc names the boundary a bug's test exercises, that is the correct seam.
 
 A correct seam is one where the test exercises the **real bug pattern** as it occurs at the call site. If the only available seam is too shallow (single-caller test when the bug needs multiple callers, unit test that can't replicate the chain that triggered the bug), a regression test there gives false confidence.
 
@@ -132,6 +128,10 @@ If a correct seam exists:
 4. Watch it pass.
 5. Re-run the Phase 1 feedback loop against the original (un-minimised) scenario.
 
+Whether or not a seam exists, the fix goes at the **root**: where the wrong value is made, not where it surfaces. Once it is green, search for the same mistake elsewhere (the same pattern, sibling callers of the function you changed) and fix every instance.
+
+When two fixes that rest on one assumption fail the loop, stop fixing. Write the assumption in one sentence and return to Phase 4 with a probe that tests it.
+
 ## Phase 6: Cleanup
 
 Required before declaring done:
@@ -140,5 +140,5 @@ Required before declaring done:
 - [ ] Regression test passes (or absence of seam is documented)
 - [ ] All `[DEBUG-...]` instrumentation removed (`grep` the prefix)
 - [ ] Every instance the Phase 5 search found is fixed
-- [ ] A harness the next bug in this component would rebuild is committed as a tool; other throwaway prototypes are deleted
+- [ ] A harness that runs a component the repo has no driver for is committed as a tool; other throwaway prototypes are deleted
 - [ ] The hypothesis that turned out correct is stated in the commit / PR message, so the next debugger learns

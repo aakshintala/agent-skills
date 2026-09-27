@@ -10,7 +10,7 @@ Two-axis review of the diff between `HEAD` and a fixed point the user supplies:
 
 Both axes run as **parallel sub-agents** so they don't pollute each other's context, then this skill aggregates their findings.
 
-Fetch issues through `docs/agents/issue-tracker.md` when it exists. Otherwise use the repo's remote: `gh issue view <n> --comments` on GitHub.
+Fetch issues through `docs/agents/issue-tracker.md` when it exists. Otherwise use the repo's remote: `gh issue view <n> --comments` on GitHub, `glab issue view <n> --comments` on GitLab, and on any other host ask the user for the issue text.
 
 ## Process
 
@@ -33,7 +33,7 @@ Look for the originating spec, in this order:
 
 ### 3. Identify the standards sources
 
-Start from the repo's `AGENTS.md` or `CLAUDE.md`: the docs it indexes for code rules and review are the standards sources, and a list headed as the reviewer's checks is the core of the Standards brief. Otherwise, anything in the repo that documents how code should be written, such as `CODING_STANDARDS.md` or `CONTRIBUTING.md`.
+Start from the repo's `AGENTS.md` or `CLAUDE.md`: the docs it indexes for code rules and review are the standards sources, and a list headed as the reviewer's checks is the core of the Standards brief. Then add any other file that documents how code should be written, such as `CODING_STANDARDS.md` or `CONTRIBUTING.md`.
 
 On top of whatever the repo documents, the Standards axis always carries the **smell baseline** below: a fixed set of Fowler code smells (_Refactoring_, ch.3) that applies even when a repo documents nothing. Two rules bind it:
 
