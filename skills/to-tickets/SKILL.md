@@ -56,6 +56,8 @@ Iterate until the user approves the breakdown.
 
 ### 5. Publish the tickets to the configured tracker
 
+When the repo defines an agent-ready ticket (in a workflow doc its `AGENTS.md` or `CLAUDE.md` indexes), every ticket meets that definition, and it overrides the templates below where they differ.
+
 Publish the approved tickets. **How** depends on the tracker `/setup-matt-pocock-skills` configured; the tickets are the same either way, only the shape of the blocking edges changes:
 
 - **Local files** → write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` in dependency order (blockers first). Each file's "Blocked by" lists the numbers/titles it depends on. Use the per-ticket file template below: one ticket per file, never a single combined file.

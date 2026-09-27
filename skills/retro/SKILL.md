@@ -14,7 +14,8 @@ The user has asked for a **retrospective**. You are suggesting improvements to t
 3. Look for candidates for improvement in these categories.
 
 - **Navigation**: how easy was it for the agent to find the right files? Are there hidden dependencies between files? Would a **navigation pointer** make it easier? _Use when_ the session took a long time to find a piece of information.
-- **Automated checks**: are there automated checks that could catch errors the agent made? Linting, typing, tests, filesystem linters? _Use when_ the agent made a mistake that could have been caught by an automated check.
+- **Automated checks**: are there automated checks that could catch errors the agent made? Pick the strongest that fits: a type that cannot hold the bad value, then a lint or test that fails CI, then one shared helper every caller uses, then a runtime check. Agents copy the guard the surrounding code uses, so a weak one spreads. _Use when_ the agent made a mistake that could have been caught by an automated check.
+- **Tools**: did the agent build a one-off rig (a fake, a harness, a repro script) that the next run will rebuild? Propose committing it as a tool, with the prose that points at it. _Use when_ the session spent turns on setup by hand.
 - **Coding standards**: should the **reviewer agent** be given a new rule to enforce? Should an existing rule be removed or clarified? _Use when_ the reviewer agent failed to catch a mistake.
 - **Global AGENTS.md**: are there any steering instructions that should be moved to coding standards (or automated checks) instead? _Use when_ the AGENTS.md file is particularly large - in the repo OR the user's global scope.
 - **Tool economy**: did the agent make expensive tool calls that could be streamlined? Is there any custom tooling (CLI's, MCP's) that is particularly token-inefficient? _Use when_ the agent made an expensive tool call.
@@ -38,6 +39,6 @@ This means that the review agent should be responsible for imposing coding stand
 You have access to several files in the repo:
 
 - `CLAUDE.md`/`AGENTS.md`: these files are pushed to the context window of any agent working in this repo. They should be used incredibly sparingly, usually only for **navigation pointers** to other files.
-- `CODING_STANDARDS.md`: this file is read during review, not implementation. Add **navigation pointers** to docs folders if the standards file gets more than 1,000 lines long.
+- `CODING_STANDARDS.md`, or the standards doc the repo's `AGENTS.md` indexes: read during review, not implementation. Add **navigation pointers** to docs folders if the standards file gets more than 1,000 lines long.
 - Docs: use docs as references files, pointed to by other files. Look for existing docs before writing new ones.
 - Skills: use skills for docs (since their description goes into the agent's context window), or for user-invoked commands. Follow the advice in the `writing-for-agents` skill.
