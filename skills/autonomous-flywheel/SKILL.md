@@ -8,7 +8,7 @@ description: "Flywheel unattended multi-PR landing: implement, triage CI, merge 
 Land a stack of PRs with minimal supervision: implement, review, repair,
 triage CI, merge on green, and leave a morning report. Step 1 runs once
 at the start. Steps 2–5 run for every PR, several PRs in flight at once.
-Step 6 runs throughout and step 7 closes the session. Each step ends
+Step 6 runs throughout and step 7 closes each round. Each step ends
 with its done-condition.
 
 ## 1. Session config (fill in at start)
@@ -38,8 +38,20 @@ implementation model and blanket merge terms.
 - When working from tickets, take the **frontier**: open tickets whose
   blockers are all closed. A ticket enters a lane only when its fence is
   disjoint from every running lane's.
-- One worktree per branch, named for the branch, deleted on merge. Shared
-  checkout stays on `main`; never reuse a worktree across branches.
+- **Doc preflight** before a ticket enters a lane: a read-only reviewer
+  reads the docs the ticket cites and lists contradictions between them,
+  defaults nothing states, failure cases with no error code, and
+  acceptance criteria that fight a doc. Each item goes to the owner before
+  the lane starts; a ruling that lands mid-lane costs a merge and a round.
+  Brief: `briefs/preflight.md`.
+- When a fork or sub-orchestrator runs a ticket end to end, brief it with
+  `briefs/ticket-orchestrator.md`. A brief reaches an agent that never saw
+  this conversation, so it carries every setting itself. Fill every
+  `__PLACEHOLDER__` in a brief before sending it.
+- One worktree per branch, named for the branch, deleted on merge; never
+  reuse a worktree across branches. In the shared checkout run only
+  `git fetch` and read `origin/main`: sibling sessions leave it on their
+  own branches, so a pull there moves theirs.
 - Each implementation lane brief declares its file fence (`owns` /
   `forbidden`); cite repo AGENTS.md instead of restating it. The
   orchestrator spawns only pairwise-disjoint fences and defers the rest
@@ -53,8 +65,17 @@ implementation model and blanket merge terms.
   reshapes the queue). A collision means the fence was wrong; an idle lane
   with fenced work waiting means the orchestrator stalled.
 - A lane brief is incomplete unless it states the completion bar: report
-  a PR URL or a failure triage, nothing in between. Lanes waiting on
-  long tests keep running; they do not report done early.
+  a PR URL or a failure triage, nothing in between, then **Friction**: up
+  to 3 bullets on what slowed the lane, what the brief or docs got wrong
+  or left out, and what it would change ("none" is fine). Every repair
+  message repeats the Friction line. Lanes waiting on long tests keep
+  running; they do not report done early.
+- A brief or ruling that defines a line on the wire (an event, a command,
+  a file record) carries one literal example line. A field list alone
+  leaves its nesting to the lane's guess.
+- Checks that CI runs sharded, such as mutation testing, stay in CI. The
+  lane pushes and reads the CI result instead of running a slower local
+  copy.
 - Implementation lanes touch code; review lanes are read-only and may
   overlap freely.
 - Before pushing, verify the worktree HEAD lineage matches the remote
@@ -80,10 +101,22 @@ recorded in the handoff.
 
 - Review each PR once with the `code-review` skill (Standards and Spec
   axes); return findings with tight word caps and aggregate without
-  reranking. Record the verdict as a PR comment.
+  reranking. Record the verdict as a PR comment. Delegated brief:
+  `briefs/review.md`.
+- Alongside it, run one over-engineering review (the `ponytail-review`
+  method) and record it as its own PR comment. A correctness reviewer
+  only ever asks for more code; this pass asks whether the code should
+  exist. Each suggestion is a **hypothesis**: the lane applies it only if
+  it removes code without adding cost (memory, behaviour, lines), and
+  otherwise reports back and keeps the original. Delegated brief:
+  `briefs/over-engineering-review.md`.
 - After a repair, run a **scoped verify**, never a full re-review: check
   only that each finding is fixed and the repair commit adds no new
   problem, then record FIX-OK (or the remaining findings) as a PR comment.
+- **Stop rule.** Every verify finds a smaller defect in the last repair.
+  From repair round 3 on, only P1/P2 correctness findings get another
+  round; a smaller one is answered on the PR with evidence or with a
+  `ponytail:` comment naming its ceiling.
 - Open PRs as drafts; promote to ready only after the recorded verdict plus
   draft CI green with a clean flake watch.
 - A regression test ships only with its negative control recorded: the
@@ -141,9 +174,16 @@ commit, or escalated to the owner per the blanket terms.
 Done when the file alone lets a fresh session continue (check after each
 append: branches, test paths, and error strings present).
 
-## 7. Morning report
+## 7. Close the round
 
-Scoreboard (merged / open / flakes filed), items needing the owner with
-exact actions, and leftover threads with issue links. Short.
+1. Run `/retro` on the round, from the lanes' Friction bullets, the
+   review and verify comments, and the handoff log. Keep only what will
+   recur every round; a point-in-time snag is not a lesson.
+2. Fold what the owner accepts into this skill, memory, or the repo's
+   docs, each in its one right place.
+3. Write the morning report: scoreboard (merged / open / flakes filed),
+   items needing the owner with exact actions, and leftover threads with
+   issue links. Short.
 
-Done when the report lists every PR's end state plus owner actions.
+Done when the retro's accepted items are written down and the report
+lists every PR's end state plus owner actions.
