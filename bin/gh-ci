@@ -2,9 +2,9 @@
 # gh-ci: quiet, low-call GitHub CI helpers for agent flywheels.
 # Usage: gh-ci snapshot <pr> | failures <run> | watch-verified <run> --pr <n>
 #        gh-ci resample <pr> "<job name>" --until <regex> [--max <n>]
-# GH_CI_REPO overrides the default repo; GH_CI_INTERVAL the watch poll seconds (default 30).
+# GH_CI_REPO overrides the repo (default: the current checkout's origin); GH_CI_INTERVAL the watch poll seconds (default 30).
 set -euo pipefail
-REPO="${GH_CI_REPO:-aakshintala/Fiber}"
+REPO="${GH_CI_REPO:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
 
 usage() {
   echo "usage: gh-ci snapshot <pr> | failures <run> | watch-verified <run> --pr <n>" >&2
@@ -12,15 +12,27 @@ usage() {
   exit 2
 }
 
+# pr_head <pr>: prints the full head SHA. Fails on a conflicting PR,
+# because GitHub never runs CI on one and a watch would wait forever.
+pr_head() {
+  local sha state
+  read -r sha state < <(gh pr view "$1" --repo "$REPO" --json headRefOid,mergeStateStatus --jq '"\(.headRefOid) \(.mergeStateStatus)"')
+  if [ "$state" = "DIRTY" ]; then
+    echo "PR $1 has merge conflicts: GitHub runs no CI on it. Rebase first." >&2
+    return 1
+  fi
+  echo "$sha"
+}
+
 # snapshot <pr>: head SHA + CI/flake verdicts + pending/failing counts.
 # Two API calls total: one pr view, one pr checks.
 cmd_snapshot() {
   local pr="${1:?missing pr number}"
   local out head ci flake pending fails
-  head=$(gh pr view "$pr" --repo "$REPO" --json headRefOid --jq '.headRefOid[0:8]')
-  echo "head: $head"
+  head=$(pr_head "$pr")
+  echo "head: ${head:0:8}"
   out=$(gh pr checks "$pr" --repo "$REPO" 2>&1 || true)
-  ci=$(echo "$out" | awk -F'\t' '$1 == "CI" {print $2; exit}')
+  ci=$(echo "$out" | awk -F'\t' 'tolower($1) == "ci" {print $2; exit}')
   flake=$(echo "$out" | awk -F'\t' '$1 ~ /^Flake watch/ {print $2; exit}')
   echo "CI: ${ci:-unknown}"
   echo "Flake: ${flake:-unknown}"
@@ -51,15 +63,21 @@ cmd_watch_verified() {
   local pr=""
   while [ $# -gt 0 ]; do case "$1" in --pr) pr="${2:?}"; shift 2;; *) usage;; esac; done
   [ -n "$pr" ] || usage
+  local head run_sha
+  head=$(pr_head "$pr")
+  run_sha=$(gh run view "$run" --repo "$REPO" --json headSha --jq .headSha)
+  if [ "$run_sha" != "$head" ]; then
+    echo "run $run is on ${run_sha:0:8}, PR head is ${head:0:8}: stale run" >&2
+    return 1
+  fi
   # gh run watch polls every 3s by default; several concurrent watchers
   # trip GitHub's secondary rate limit on the Actions API.
-  gh run watch "$run" --repo "$REPO" --exit-status --interval "${GH_CI_INTERVAL:-30}" >/dev/null
-  local out head ci pending
+  gh run watch "$run" --repo "$REPO" --exit-status --interval "${GH_CI_INTERVAL:-30}" >/dev/null || true
+  local out ci pending
   out=$(gh pr checks "$pr" --repo "$REPO" 2>&1 || true)
-  head=$(gh pr view "$pr" --repo "$REPO" --json headRefOid --jq '.headRefOid[0:8]')
-  ci=$(echo "$out" | awk -F'\t' '$1 == "CI" {print $2; exit}')
+  ci=$(echo "$out" | awk -F'\t' 'tolower($1) == "ci" {print $2; exit}')
   pending=$(echo "$out" | awk -F'\t' '$2 == "pending" || $2 == "queued" {n++} END {print n+0}')
-  echo "head: $head CI: ${ci:-unknown} pending: $pending"
+  echo "head: ${head:0:8} CI: ${ci:-unknown} pending: $pending"
   echo "$out" | grep -E "fail" | head -5 || true
   [ "$ci" = "pass" ] && [ "$pending" = "0" ]
 }
