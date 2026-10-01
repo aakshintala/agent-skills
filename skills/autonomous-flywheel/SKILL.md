@@ -44,6 +44,10 @@ implementation model and blanket merge terms.
   acceptance criteria that fight a doc. Each item goes to the owner before
   the lane starts; a ruling that lands mid-lane costs a merge and a round.
   Brief: `briefs/preflight.md`.
+- **Plan first** when a ticket spans more than one module, adds a
+  subsystem, or would describe code the orchestrator has not read: the
+  lane implements an owner-reviewed plan, never the bare ticket. Delegate
+  the plan to the Hard tier from the `delegate` skill.
 - When a fork or sub-orchestrator runs a ticket end to end, brief it with
   `briefs/ticket-orchestrator.md`. A brief reaches an agent that never saw
   this conversation, so it carries every setting itself. Fill every
