@@ -45,6 +45,7 @@ case "\$1" in
   diff) cat "$T/diff.txt";;
   checks) cat "$T/checks.txt";;
   comment)
+    if [ -e "$T/state/fail-comment" ]; then echo "fake gh: comment failed" >&2; exit 1; fi
     pr="\$2"; shift 2
     body=""
     while [ \$# -gt 0 ]; do case "\$1" in
@@ -75,6 +76,7 @@ case "\$cmd" in
       *) shift;;
     esac; done
     role="\${cwd##*-}"
+    if [ -e "$T/state/fail-\$role" ]; then echo "fake delegate: run failed for \$role" >&2; exit 1; fi
     printf '%s %s\n' "\$role" "\$model" >>"$T/state/runs.txt"
     cp "\$prompt" "$T/state/prompt-\$role.md"
     id="job-\$role"
@@ -104,6 +106,7 @@ write_record() {
 
 reset_state() {
   rm -f "$T/state/runs.txt" "$T/state/watch.txt" "$T/state/comment.md" "$T/state/comment-pr.txt"
+  rm -f "$T/state"/fail-*
   rm -f "$T/state"/prompt-*.md "$TMPDIR"/delegate-jobs/*.json "$TMPDIR"/review-pr/* 2>/dev/null || true
 }
 
@@ -273,4 +276,103 @@ start_review 7 --repo O/N --cwd "$T/clone" \
 out="$("$REVIEW" collect job-review job-overbuild 2>/dev/null)" || fail "concerns with a verdict collect exits 0"
 printf '%s' "$out" | grep -q UNFINISHED && fail "concerns with a verdict is finished"
 grep -q 'for issue #7 (spec #7)' "$T/state/prompt-review.md" || fail "ticketless PR is its own issue and spec"
+
+# --- case: narration glued onto the verdict with no newline still counts
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "long narration about what to drop no behavior.VERDICT: APPROVE
+STATUS: DONE" 0
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
+  --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start exits 0"
+out="$("$REVIEW" collect job-review job-overbuild 2>/dev/null)" || fail "glued verdict collect exits 0"
+printf '%s' "$out" | grep -q "^VERDICT: APPROVE$" || fail "glued verdict counts"
+printf '%s' "$out" | grep -q BAD-VERDICT && fail "glued verdict is not bad"
+printf '%s' "$out" | grep -q UNFINISHED && fail "glued verdict is finished"
+
+# --- case: a bare FIX-OK line is a verdict
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+printf 'P2 findings text\n' >"$T/findings.txt"
+write_record verify DONE "FIX-OK" 0
+start_review 7 --repo O/N --cwd "$T/clone" --model M \
+  --verify "$T/findings.txt" --since "$FAKE_SHA" >/dev/null 2>&1 || fail "verify start exits 0"
+out="$("$REVIEW" collect job-verify 2>/dev/null)" || fail "bare FIX-OK collect exits 0"
+printf '%s' "$out" | grep -q "^FIX-OK$" || fail "bare FIX-OK counts"
+printf '%s' "$out" | grep -q BAD-VERDICT && fail "bare FIX-OK is not bad"
+
+# --- case: prose or a finding that merely mentions VERDICT is no verdict attempt
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+the word VERDICT appears here in plain prose
+P3 x.ts:1 — yagni — cut VERDICT helper — replace with inline
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
+  --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start exits 0"
+out="$("$REVIEW" collect job-review job-overbuild 2>/dev/null)" || fail "verdict mention collect exits 0"
+printf '%s' "$out" | grep -q BAD-VERDICT && fail "a VERDICT mention is not a bad verdict"
+printf '%s' "$out" | grep -q UNFINISHED && fail "a VERDICT mention is finished"
+
+# --- case: collect with only one role's job id fails before posting and keeps state
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
+  --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start exits 0"
+out="$("$REVIEW" collect job-review 2>/dev/null)" && fail "partial collect exits 1"
+printf '%s' "$out" | grep -q "^UNFINISHED overbuild MISSING" || fail "partial collect names the missing role"
+[ ! -e "$T/state/comment.md" ] || fail "partial collect posts no comment"
+[ -f "$TMPDIR/review-pr/job-review" ] || fail "partial collect keeps state for the retry"
+[ -f "$TMPDIR/review-pr/job-overbuild" ] || fail "partial collect keeps the sibling state"
+out="$("$REVIEW" collect job-review job-overbuild 2>/dev/null)" || fail "retry with both ids exits 0"
+printf '%s' "$out" | grep -q UNFINISHED && fail "retry is finished"
+
+# --- case: a failed comment post keeps state for the retry
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
+  --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start exits 0"
+touch "$T/state/fail-comment"
+"$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 && fail "failed post collect exits nonzero"
+[ -f "$TMPDIR/review-pr/job-review" ] || fail "failed post keeps state"
+[ -f "$TMPDIR/review-pr/job-overbuild" ] || fail "failed post keeps every state"
+rm -f "$T/state/fail-comment"
+out="$("$REVIEW" collect job-review job-overbuild 2>/dev/null)" || fail "retry after failed post exits 0"
+[ "$(cat "$T/state/comment-pr.txt")" = "7" ] || fail "retry posts the comment"
+
+# --- case: a failing second start leaves the launched job's worktree and state
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+touch "$T/state/fail-overbuild"
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
+  --model M --overbuild-model M2 >/dev/null 2>&1 && fail "start with a failing job exits nonzero"
+rm -f "$T/state/fail-overbuild"
+[ -f "$TMPDIR/review-pr/job-review" ] || fail "failed start keeps the launched state"
+wt="$(sed -n 's/^worktree=//p' "$TMPDIR/review-pr/job-review")"
+rd="$(sed -n 's/^run_dir=//p' "$TMPDIR/review-pr/job-review")"
+[ -n "$wt" ] && [ -d "$wt" ] || fail "failed start keeps the launched worktree"
+git -C "$T/clone" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+rm -rf "$rd"
+rm -f "$TMPDIR/review-pr/job-review"
+[ "$(git -C "$T/clone" worktree list | grep -c 'wt-')" = "0" ] || fail "failed-start cleanup leaves no worktree"
 echo "review-pr: all cases passed"

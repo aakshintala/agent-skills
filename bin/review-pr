@@ -52,36 +52,61 @@ norm_line() {
   printf '%s' "$1" | tr -d '*`' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
 }
 
-# is_verdict ROLE NORMALISED_LINE: the line is a recognised verdict form.
+# is_verdict ROLE NORMALISED_LINE: the line ends with a recognised verdict
+# form. Narration glued onto the front (no newline) still counts.
 is_verdict() {
   case "$1" in
     review)
       case "$2" in
-        "VERDICT standards: APPROVE"|"VERDICT standards: CHANGES"|\
-        "VERDICT spec: APPROVE"|"VERDICT spec: CHANGES") return 0;;
+        *"VERDICT standards: APPROVE"|*"VERDICT standards: CHANGES"|\
+        *"VERDICT spec: APPROVE"|*"VERDICT spec: CHANGES") return 0;;
       esac
       return 1;;
     overbuild)
       case "$2" in
-        "VERDICT: APPROVE"|"VERDICT: CHANGES") return 0;;
+        *"VERDICT: APPROVE"|*"VERDICT: CHANGES") return 0;;
       esac
       return 1;;
     verify)
       case "$2" in
-        "FIX-OK"[[:space:]]*|"FIX-INCOMPLETE"[[:space:]]*) return 0;;
+        *"FIX-OK"|*"FIX-OK"[[:space:]]*|\
+        *"FIX-INCOMPLETE"|*"FIX-INCOMPLETE"[[:space:]]*) return 0;;
       esac
       return 1;;
   esac
   return 1
 }
 
-# looks_like_verdict NORMALISED_LINE: the line claims to be a verdict without
-# matching a recognised form.
-looks_like_verdict() {
+# canon_verdict ROLE NORMALISED_LINE: print the verdict form the line ends
+# with (verify keeps its trailing detail), so the digest stays one clean
+# line even when narration is glued onto the front.
+canon_verdict() {
   case "$1" in
-    *VERDICT*|*FIX-*) return 0;;
+    review)
+      case "$2" in
+        *"VERDICT standards: APPROVE") printf '%s' "VERDICT standards: APPROVE";;
+        *"VERDICT standards: CHANGES") printf '%s' "VERDICT standards: CHANGES";;
+        *"VERDICT spec: APPROVE") printf '%s' "VERDICT spec: APPROVE";;
+        *"VERDICT spec: CHANGES") printf '%s' "VERDICT spec: CHANGES";;
+      esac;;
+    overbuild)
+      case "$2" in
+        *"VERDICT: APPROVE") printf '%s' "VERDICT: APPROVE";;
+        *"VERDICT: CHANGES") printf '%s' "VERDICT: CHANGES";;
+      esac;;
+    verify)
+      canon="${2##*FIX-}"
+      printf 'FIX-%s' "$canon";;
   esac
-  return 1
+}
+
+# looks_like_verdict NORMALISED_LINE: the line attempts a verdict without
+# matching a recognised form. A verdict shape is VERDICT with an optional
+# single word, then a colon and a value (VERDICT: X, VERDICT spec: X), or
+# FIX- followed by an uppercase word. P1/P2/P3 finding lines never count.
+looks_like_verdict() {
+  case "$1" in P1\ *|P2\ *|P3\ *) return 1;; esac
+  printf '%s' "$1" | grep -Eq 'VERDICT([[:space:]]+[A-Za-z0-9_*-]+)?[[:space:]]*:[[:space:]]*[^[:space:]]|FIX-[A-Z]+'
 }
 
 state_get() {
@@ -177,12 +202,18 @@ cmd_start() {
 
   started_ok=""
   wt_list=()
+  launched=()
   cleanup_on_fail() {
     if [ -z "$started_ok" ]; then
       for wt in ${wt_list[@]+"${wt_list[@]}"}; do
+        skip=""
+        for l in ${launched[@]+"${launched[@]}"}; do
+          [ "$l" = "$wt" ] && skip="1"
+        done
+        [ -n "$skip" ] && continue
         git -C "$clone" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
       done
-      rm -rf "$run_dir"
+      if [ "${#launched[@]}" -eq 0 ]; then rm -rf "$run_dir"; fi
     fi
   }
   trap cleanup_on_fail EXIT
@@ -217,7 +248,6 @@ cmd_start() {
 
     {
       printf 'role=%s\n' "$role"
-      printf 'jid=%s\n' "$jid"
       printf 'repo=%s\n' "$repo"
       printf 'pr=%s\n' "$pr"
       printf 'sha=%s\n' "$sha"
@@ -227,6 +257,7 @@ cmd_start() {
       printf 'worktree=%s\n' "$wt"
       printf 'run_dir=%s\n' "$run_dir"
     } >"$state_dir/$jid"
+    launched[${#launched[@]}]="$wt"
 
     printf '%s %s\n' "$role" "$jid"
   done
@@ -239,15 +270,12 @@ cmd_collect() {
   [ $# -ge 1 ] || usage
 
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/review-pr.collect.XXXXXX")"
-  wt_rm=()
-  wc_rm=()
-  run_rm=()
   state_rm=()
+  posted_ok=""
   cleanup() {
-    i=0
-    for wt in ${wt_rm[@]+"${wt_rm[@]}"}; do
-      wclone="${wc_rm[$i]:-}"
-      i=$((i + 1))
+    for sf in ${state_rm[@]+"${state_rm[@]}"}; do
+      wt="$(state_get "$sf" worktree 2>/dev/null || true)"
+      wclone="$(state_get "$sf" clone 2>/dev/null || true)"
       [ -n "$wt" ] || continue
       if [ -n "$wclone" ]; then
         git -C "$wclone" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
@@ -256,12 +284,15 @@ cmd_collect() {
         rm -rf "$wt"
       fi
     done
-    for rd in ${run_rm[@]+"${run_rm[@]}"}; do
+    for sf in ${state_rm[@]+"${state_rm[@]}"}; do
+      rd="$(state_get "$sf" run_dir 2>/dev/null || true)"
       case "$rd" in "${TMPDIR:-/tmp}"/review-pr.run.*) rm -rf "$rd";; esac
     done
-    for sf in ${state_rm[@]+"${state_rm[@]}"}; do
-      rm -f "$sf"
-    done
+    if [ -n "$posted_ok" ]; then
+      for sf in ${state_rm[@]+"${state_rm[@]}"}; do
+        rm -f "$sf"
+      done
+    fi
     rm -rf "$tmp"
   }
   trap cleanup EXIT
@@ -286,22 +317,47 @@ cmd_collect() {
       sha="$(state_get "$sf" sha)"
       patch_id="$(state_get "$sf" patch_id)"
     fi
-    wt="$(state_get "$sf" worktree)"
-    rd="$(state_get "$sf" run_dir)"
-    wclone="$(state_get "$sf" clone)"
-    wt_rm[${#wt_rm[@]}]="$wt"
-    wc_rm[${#wc_rm[@]}]="$wclone"
-    seen_rd=""
-    for have in ${run_rm[@]+"${run_rm[@]}"}; do
-      [ "$have" = "$rd" ] || continue
-      seen_rd="1"
-    done
-    [ -n "$seen_rd" ] || { [ -z "$rd" ] || run_rm[${#run_rm[@]}]="$rd"; }
     id_list[${#id_list[@]}]="$jid"
   done
 
+  have_review=""; have_overbuild=""; have_verify=""
+  for jid in ${id_list[@]+"${id_list[@]}"}; do
+    r="$(state_get "$state_dir/$jid" role)"
+    case "$r" in
+      review) have_review="1";;
+      overbuild) have_overbuild="1";;
+      verify) have_verify="1";;
+    esac
+  done
+  roles_ok=""
+  if [ -n "$have_verify" ] && [ -z "$have_review" ] && [ -z "$have_overbuild" ]; then
+    roles_ok="1"
+  elif [ -n "$have_review" ] && [ -n "$have_overbuild" ] && [ -z "$have_verify" ]; then
+    roles_ok="1"
+  fi
   short="unknown"
   if [ -n "$sha" ]; then short="${sha:0:8}"; fi
+  if [ -z "$roles_ok" ]; then
+    if [ -n "$pr" ] && [ -n "$repo" ]; then
+      ci="$(ci_state "$pr" "$repo")"
+    else
+      ci="none"
+    fi
+    printf 'patch-id %s\n' "${patch_id:-none}"
+    printf 'CI %s %s\n' "$short" "$ci"
+    cat "$unknown_f"
+    [ -n "$have_review" ] || printf 'UNFINISHED review MISSING gate=none collect needs every role job id\n'
+    if [ -z "$have_verify" ]; then
+      [ -n "$have_overbuild" ] || printf 'UNFINISHED overbuild MISSING gate=none collect needs every role job id\n'
+    elif [ -n "$have_review" ] || [ -n "$have_overbuild" ]; then
+      printf 'UNFINISHED verify MIXED gate=none collect needs every role job id\n'
+    fi
+    # Caller error, not a finished run: keep every state file, worktree and
+    # run dir (a sibling worktree lives in the same run dir) for the retry
+    # with the full role set; only the scratch dir is removed by the trap.
+    state_rm=()
+    exit 1
+  fi
 
   body="$tmp/comment.md"
   {
@@ -319,8 +375,10 @@ cmd_collect() {
   } >"$body"
   if [ -n "$pr" ] && [ -n "$repo" ]; then
     gh pr comment "$pr" --repo "$repo" --body-file "$body" >&2
+    posted_ok="1"
   else
     echo "review-pr: no saved state for these jobs, no comment posted" >&2
+    posted_ok="1"
   fi
 
   head_line="patch-id ${patch_id:-none}"
@@ -350,8 +408,9 @@ cmd_collect() {
         norm="$(norm_line "$line")"
         [ -n "$norm" ] || continue
         if is_verdict "$role" "$norm"; then
-          printf '%s\n' "$norm" >>"$verdicts_f"
-          case "$role:$norm" in
+          canon="$(canon_verdict "$role" "$norm")"
+          printf '%s\n' "$canon" >>"$verdicts_f"
+          case "$role:$canon" in
             review:"VERDICT standards: "*) std_ok="1";;
             review:"VERDICT spec: "*) spec_ok="1";;
             overbuild:*) ob_ok="1";;
