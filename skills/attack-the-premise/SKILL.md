@@ -15,9 +15,9 @@ Done when the sentence is written.
 
 ### 2. Take a census
 
-Count the failure per actor (per test, caller, worker, input class, platform), as a rerunnable script. The census shows which actors hold the imbalance, not how large it is.
+Count the failure per actor (per test, caller, worker, input class, platform). When the failures can be rerun (tests, workers), the census is a script you rerun. When the evidence is review findings, it is a table you classify by hand: finding, file, class. The census shows which actors hold the imbalance, not how large it is.
 
-Done when the script runs and its output is posted beside the premise.
+Done when the census (the script's output, or the table) is posted beside the premise.
 
 ### 3. Read the skew
 
@@ -29,4 +29,4 @@ Done when you can name what assigns the role, or the census shows an even spread
 
 Change what assigns the role (rotate it, randomize it, move it) so no actor holds it on every run. A return path, a retry, a shared pool or a periodic rebalance compensates instead: it leaves the assignment in place and adds work on every run.
 
-Done when the census, rerun, shows the imbalance gone, and the check that failed passes.
+Done when the census, retaken, shows the imbalance gone, and the check that failed passes.
