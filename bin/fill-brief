@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# fill-brief: fill __PLACEHOLDER__s in a template file from KEY=VALUE arguments.
+# Usage: fill-brief TEMPLATE KEY=VALUE...
+#        A VALUE starting with @ is read from that file. All values are literal:
+#        multi-line text and & \ / $ pass through unchanged. Prints the filled
+#        template on stdout. Exit 1 (nothing on stdout, one problem per line on
+#        stderr) when a placeholder is left unfilled or a key matches nothing.
+set -euo pipefail
+
+usage() {
+  echo "usage: fill-brief TEMPLATE KEY=VALUE... (a VALUE of @FILE reads that file)" >&2
+  exit 2
+}
+
+[ $# -ge 1 ] || usage
+template="$1"; shift
+[ -f "$template" ] || { echo "fill-brief: no such template: $template" >&2; exit 2; }
+
+orig="$(cat "$template"; printf x)"
+orig="${orig%x}"
+
+errors=""
+add_error() {
+  if [ -z "$errors" ]; then errors="$1"; else errors="$errors
+$1"; fi
+}
+
+keys=()
+vals=()
+for arg in "$@"; do
+  case "$arg" in
+    *=*) k="${arg%%=*}"; v="${arg#*=}" ;;
+    *) usage ;;
+  esac
+  [ -n "$k" ] || usage
+  keys[${#keys[@]}]="$k"
+  vals[${#vals[@]}]="$v"
+done
+
+nkeys=${#keys[@]}
+i=0
+while [ "$i" -lt "$nkeys" ]; do
+  v="${vals[$i]}"
+  case "$v" in
+    @*)
+      f="${v#@}"
+      if [ -z "$f" ] || [ ! -r "$f" ]; then
+        echo "fill-brief: cannot read file for key ${keys[$i]}: $f" >&2
+        exit 1
+      fi
+      vv="$(cat "$f"; printf x)"
+      vals[$i]="${vv%x}"
+      ;;
+  esac
+  i=$((i + 1))
+done
+
+if [ "$nkeys" -gt 0 ]; then
+  for k in "${keys[@]}"; do
+    if ! printf '%s' "$orig" | grep -qF "__${k}__"; then
+      add_error "unknown key: $k"
+    fi
+  done
+fi
+
+out="$orig"
+i=0
+while [ "$i" -lt "$nkeys" ]; do
+  ph="__${keys[$i]}__"
+  v="${vals[$i]}"
+  out="${out//"$ph"/$v}"
+  i=$((i + 1))
+done
+
+leftovers="$(printf '%s' "$out" | grep -oE '__[A-Z][A-Z0-9_]*__' || true)"
+seen="|"
+while IFS= read -r m; do
+  [ -n "$m" ] || continue
+  case "$seen" in
+    *"|$m|"*) ;;
+    *) seen="$seen$m|"; add_error "unfilled: $m" ;;
+  esac
+done <<<"$leftovers"
+
+if [ -n "$errors" ]; then
+  printf '%s\n' "$errors" >&2
+  exit 1
+fi
+
+printf '%s' "$out"
