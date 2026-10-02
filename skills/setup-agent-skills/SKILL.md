@@ -8,7 +8,7 @@ description: "Set up a repo for the agent skills: issue tracker, triage labels, 
 Scaffold the per-repo configuration that the engineering skills assume:
 
 - **Issue tracker**: where issues live (GitHub by default; local markdown is also supported out of the box)
-- **Triage labels**: the strings used for the five canonical triage roles
+- **Triage labels**: the strings used for the canonical triage roles (three categories, five states)
 - **Domain docs**: where `GLOSSARY.md` and ADRs live, and the consumer rules for reading them
 - **Workflow doc**: the path of the project's own workflow doc, or `none`. It wins wherever it speaks; skills fall back to their own defaults where it is silent.
 
