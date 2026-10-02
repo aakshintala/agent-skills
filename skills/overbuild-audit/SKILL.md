@@ -1,5 +1,5 @@
 ---
-name: ponytail-audit
+name: overbuild-audit
 description: >
   Whole-repo audit for over-engineering: a ranked list of what to delete,
   simplify, or replace with stdlib or native equivalents. Use when the user
@@ -7,9 +7,9 @@ description: >
   Reports only; applies nothing.
 ---
 
-<!-- Adapted from DietrichGebert/ponytail 4.9.0 (MIT, see ../ponytail-review/LICENSE). -->
+<!-- Adapted from DietrichGebert/ponytail 4.9.0 (MIT, see ../overbuild-review/LICENSE). -->
 
-Scan the whole tree for over-engineering. Rank findings biggest cut first. Use the tags in [`ponytail-review`](../ponytail-review/SKILL.md).
+Scan the whole tree for over-engineering. Rank findings biggest cut first. Use the tags in [`overbuild-review`](../overbuild-review/SKILL.md).
 
 ## Hunt
 

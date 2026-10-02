@@ -12,10 +12,10 @@ The loop for one PR. Reviews run on models from a different family than the PR's
 ### 1. Review
 
 ```
-~/.agents/bin/review-pr <pr> --repo <owner/name> --cwd <clone> [--issue <n> --spec <n>] --model <correctness> --ponytail-model <over-engineering> [--workflow-doc <path>]
+~/.agents/bin/review-pr <pr> --repo <owner/name> --cwd <clone> [--issue <n> --spec <n>] --model <correctness> --overbuild-model <over-engineering> [--workflow-doc <path>]
 ```
 
-A PR with no ticket leaves out `--issue` and `--spec` and is reviewed against its own description. It runs the correctness review (`code-review`) and the over-engineering review (`ponytail-review`) as separate jobs, posts both on the PR with the patch-id, and prints only the verdicts, findings, CI state, and any job that didn't finish. An `UNFINISHED` line means that review didn't run: rerun it, and read nothing in its absence as approval.
+A PR with no ticket leaves out `--issue` and `--spec` and is reviewed against its own description. It runs the correctness review (`code-review`) and the over-engineering review (`overbuild-review`) as separate jobs, posts both on the PR with the patch-id, and prints only the verdicts, findings, CI state, and any job that didn't finish. An `UNFINISHED` line means that review didn't run: rerun it, and read nothing in its absence as approval.
 
 Done when both reviews have verdict lines for the current patch-id.
 
@@ -41,7 +41,7 @@ Done when the verify has printed `FIX-OK` or `FIX-INCOMPLETE` for the current pa
 
 After round 2, no round 3 runs.
 
-- Only P3 findings open: answer each on the PR with evidence, or with a `ponytail:` comment naming its ceiling and upgrade trigger. The loop is done.
+- Only P3 findings open: answer each on the PR with evidence, or with a `debt:` comment naming its ceiling and upgrade trigger. The loop is done. A P3 that a marker could close only by weakening a rule a doc, spec or ticket states counts as an open P2.
 - Any P1 or P2 open: the lane stops. Load `attack-the-premise`, post the assumption the fixes share, and rule one of:
   - **re-plan**: back to `planning`; the counter resets;
   - **take back**: implement it yourself; it gets a full review (step 1, a different family from you), and the counter resets;

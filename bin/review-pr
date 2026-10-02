@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # review-pr: run a PR's reviews through the delegate CLI, post one PR comment,
 # and print a verdict digest for the orchestrator.
-# Usage: review-pr <pr> --repo OWNER/NAME --cwd CLONE [--issue N] [--spec N] --model M --ponytail-model M2 [--workflow-doc PATH]
+# Usage: review-pr <pr> --repo OWNER/NAME --cwd CLONE [--issue N] [--spec N] --model M --overbuild-model M2 [--workflow-doc PATH]
 #        review-pr <pr> --repo OWNER/NAME --cwd CLONE --model M --verify FINDINGS_FILE --since SHA [--workflow-doc PATH]
 set -euo pipefail
 
 usage() {
-  echo "usage: review-pr <pr> --repo OWNER/NAME --cwd CLONE [--issue N] [--spec N] --model M --ponytail-model M2 [--workflow-doc PATH]" >&2
+  echo "usage: review-pr <pr> --repo OWNER/NAME --cwd CLONE [--issue N] [--spec N] --model M --overbuild-model M2 [--workflow-doc PATH]" >&2
   echo "       review-pr <pr> --repo OWNER/NAME --cwd CLONE --model M --verify FINDINGS_FILE --since SHA [--workflow-doc PATH]" >&2
   exit 2
 }
@@ -15,7 +15,7 @@ usage() {
 pr="$1"; shift
 case "$pr" in -*|"") usage;; esac
 
-repo=""; clone=""; issue=""; specn=""; model=""; pmodel=""
+repo=""; clone=""; issue=""; specn=""; model=""; omodel=""
 verify=""; since=""; wdoc=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
     --issue) [ $# -ge 2 ] || usage; issue="$2"; shift 2;;
     --spec) [ $# -ge 2 ] || usage; specn="$2"; shift 2;;
     --model) [ $# -ge 2 ] || usage; model="$2"; shift 2;;
-    --ponytail-model) [ $# -ge 2 ] || usage; pmodel="$2"; shift 2;;
+    --overbuild-model) [ $# -ge 2 ] || usage; omodel="$2"; shift 2;;
     --verify) [ $# -ge 2 ] || usage; verify="$2"; shift 2;;
     --since) [ $# -ge 2 ] || usage; since="$2"; shift 2;;
     --workflow-doc) [ $# -ge 2 ] || usage; wdoc="$2"; shift 2;;
@@ -39,10 +39,10 @@ if [ -n "$verify" ]; then
   mode="verify"
   [ -n "$since" ] || usage
   [ -f "$verify" ] || usage
-  { [ -z "$issue" ] && [ -z "$specn" ] && [ -z "$pmodel" ]; } || usage
+  { [ -z "$issue" ] && [ -z "$specn" ] && [ -z "$omodel" ]; } || usage
 else
   mode="review"
-  [ -n "$pmodel" ] || usage
+  [ -n "$omodel" ] || usage
   # A PR with no ticket is its own spec: gh issue view accepts a PR number.
   issue="${issue:-$pr}"; specn="${specn:-$pr}"
   [ -z "$since" ] || usage
@@ -55,21 +55,21 @@ briefs_dir="$skills_dir/review-loop/briefs"
 fill_brief="$script_dir/fill-brief"
 
 if [ "$mode" = "review" ]; then
-  roles="review ponytail"
+  roles="review overbuild"
 else
   roles="verify"
 fi
 brief_for() {
   case "$1" in
     review) printf '%s' "$briefs_dir/review.md";;
-    ponytail) printf '%s' "$briefs_dir/over-engineering-review.md";;
+    overbuild) printf '%s' "$briefs_dir/over-engineering-review.md";;
     verify) printf '%s' "$briefs_dir/verify.md";;
   esac
 }
 model_for() {
   case "$1" in
     review|verify) printf '%s' "$model";;
-    ponytail) printf '%s' "$pmodel";;
+    overbuild) printf '%s' "$omodel";;
   esac
 }
 
@@ -111,7 +111,7 @@ for role in $roles; do
       "$fill_brief" "$brief_src" "PR=$pr" "REPO=$repo" "ISSUE=$issue" \
         "SPEC=$specn" "SKILLS=$skills_dir" "WORKFLOW_DOC=$wdoc" >"$brief"
       ;;
-    ponytail)
+    overbuild)
       "$fill_brief" "$brief_src" "PR=$pr" "REPO=$repo" \
         "SKILLS=$skills_dir" >"$brief"
       ;;
@@ -155,12 +155,12 @@ gh pr comment "$pr" --repo "$repo" --body-file "$body" >&2
 head_line="patch-id $patch_id"
 
 # has_verdict <role> <text>: the role's full verdict is present (a review
-# needs both axes; ponytail one VERDICT line; verify FIX-OK or FIX-INCOMPLETE).
+# needs both axes; overbuild one VERDICT line; verify FIX-OK or FIX-INCOMPLETE).
 has_verdict() {
   case "$1" in
     review) printf '%s\n' "$2" | grep -qE '^VERDICT standards: ' &&
             printf '%s\n' "$2" | grep -qE '^VERDICT spec: ';;
-    ponytail) printf '%s\n' "$2" | grep -qE '^VERDICT: ';;
+    overbuild) printf '%s\n' "$2" | grep -qE '^VERDICT: ';;
     verify) printf '%s\n' "$2" | grep -qE '^FIX-(OK|INCOMPLETE)';;
   esac
 }

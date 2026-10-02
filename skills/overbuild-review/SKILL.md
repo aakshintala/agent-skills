@@ -1,5 +1,5 @@
 ---
-name: ponytail-review
+name: overbuild-review
 description: >
   Over-engineering review of a diff: what to delete, or replace with stdlib or
   a native feature. Use when asked to review for over-engineering, or what a

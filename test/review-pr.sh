@@ -114,11 +114,11 @@ VERDICT standards: APPROVE
 VERDICT spec: CHANGES
 P1 fix the off-by-one
 STATUS: DONE" 0
-write_record ponytail DONE "looks lean
+write_record overbuild DONE "looks lean
 VERDICT: APPROVE
 STATUS: DONE" 0
 out="$("$REVIEW" 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
-  --model M --ponytail-model M2 2>"$T/stderr.txt")" || fail "success exits 0"
+  --model M --overbuild-model M2 2>"$T/stderr.txt")" || fail "success exits 0"
 [ "$(printf '%s' "$out" | head -1)" = "patch-id $EXPECTED_PID" ] || fail "success patch-id line"
 printf '%s' "$out" | grep -q "^VERDICT spec: CHANGES$" || fail "success carries VERDICT lines"
 printf '%s' "$out" | grep -q "^P1 fix the off-by-one$" || fail "success carries P1 lines"
@@ -129,11 +129,11 @@ leftovers="$(printf '%s' "$out" | grep -vE '^(patch-id |VERDICT|P[123] |FIX-OK|F
 [ "$(cat "$T/state/comment-pr.txt")" = "7" ] || fail "comment posted to PR 7"
 [ "$(head -1 "$T/state/comment.md")" = "review-pr: patch-id $EXPECTED_PID, head $FAKE_SHA" ] || fail "comment first line"
 grep -q '^## review (M)$' "$T/state/comment.md" || fail "comment review heading"
-grep -q '^## ponytail (M2)$' "$T/state/comment.md" || fail "comment ponytail heading"
+grep -q '^## overbuild (M2)$' "$T/state/comment.md" || fail "comment overbuild heading"
 grep -q 'P1 fix the off-by-one' "$T/state/comment.md" || fail "comment carries full text"
 grep -q 'Code review of PR #7 in O/N for issue #1 (spec #2)' "$T/state/prompt-review.md" || fail "review brief filled"
 grep -q '__[A-Z]' "$T/state/prompt-review.md" && fail "review brief has no placeholders left"
-grep -q '__[A-Z]' "$T/state/prompt-ponytail.md" && fail "ponytail brief has no placeholders left"
+grep -q '__[A-Z]' "$T/state/prompt-overbuild.md" && fail "overbuild brief has no placeholders left"
 grep -q 'workflow doc is none' "$T/state/prompt-review.md" || fail "workflow doc defaults to none"
 [ "$(git -C "$T/clone" worktree list | grep -c 'wt-')" = "0" ] || fail "worktrees removed on exit"
 
@@ -141,10 +141,10 @@ grep -q 'workflow doc is none' "$T/state/prompt-review.md" || fail "workflow doc
 reset_state
 printf 'ci\tfail\n' >"$T/checks.txt"
 write_record review ERROR "something broke mid-run"
-write_record ponytail DONE "VERDICT: APPROVE
+write_record overbuild DONE "VERDICT: APPROVE
 STATUS: DONE" 0
 out="$("$REVIEW" 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
-  --model M --ponytail-model M2 2>/dev/null)" && fail "unfinished exits 1"
+  --model M --overbuild-model M2 2>/dev/null)" && fail "unfinished exits 1"
 rec="$TMPDIR/delegate-jobs/job-review.json"
 printf '%s' "$out" | grep -q "^UNFINISHED review ERROR gate=none $rec$" || fail "unfinished names role status gate record"
 printf '%s' "$out" | grep -q "^CI $SHORT fail$" || fail "failing CI line"
@@ -154,10 +154,10 @@ reset_state
 : >"$T/checks.txt"
 write_record review DONE "all good, nothing to report
 STATUS: DONE" 3
-write_record ponytail DONE "VERDICT: APPROVE
+write_record overbuild DONE "VERDICT: APPROVE
 STATUS: DONE" 0
 out="$("$REVIEW" 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
-  --model M --ponytail-model M2 2>/dev/null)" && fail "no-verdict exits 1"
+  --model M --overbuild-model M2 2>/dev/null)" && fail "no-verdict exits 1"
 printf '%s' "$out" | grep -q "^UNFINISHED review DONE gate=3 .*/job-review.json$" || fail "no-verdict UNFINISHED with gate"
 printf '%s' "$out" | grep -q "^CI $SHORT none$" || fail "empty checks CI none"
 
@@ -188,10 +188,10 @@ reset_state
 : >"$T/checks.txt"
 write_record review DONE "VERDICT standards: APPROVE
 STATUS: DONE" 0
-write_record ponytail DONE "VERDICT: APPROVE
+write_record overbuild DONE "VERDICT: APPROVE
 STATUS: DONE" 0
 out="$("$REVIEW" 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
-  --model M --ponytail-model M2 2>/dev/null)" && fail "one-axis review exits 1"
+  --model M --overbuild-model M2 2>/dev/null)" && fail "one-axis review exits 1"
 printf '%s' "$out" | grep -q "^UNFINISHED review DONE" || fail "one-axis review is UNFINISHED"
 
 # --- case: a ticketless PR whose reviewer ends DONE_WITH_CONCERNS with a full verdict
@@ -201,10 +201,10 @@ write_record review DONE_WITH_CONCERNS "VERDICT standards: APPROVE
 VERDICT spec: CHANGES
 P2 a.sh:1 — defect — fix
 STATUS: DONE_WITH_CONCERNS" 0
-write_record ponytail DONE "VERDICT: APPROVE
+write_record overbuild DONE "VERDICT: APPROVE
 STATUS: DONE" 0
 out="$("$REVIEW" 7 --repo O/N --cwd "$T/clone" \
-  --model M --ponytail-model M2 2>/dev/null)" || fail "concerns with a verdict exits 0"
+  --model M --overbuild-model M2 2>/dev/null)" || fail "concerns with a verdict exits 0"
 printf '%s' "$out" | grep -q UNFINISHED && fail "concerns with a verdict is finished"
 grep -q 'for issue #7 (spec #7)' "$T/state/prompt-review.md" || fail "ticketless PR is its own issue and spec"
 echo "review-pr: all cases passed"
