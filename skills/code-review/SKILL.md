@@ -24,7 +24,7 @@ Done when the fixed point resolves (`git rev-parse <fixed-point>`) and the diff 
 
 ### 2. Find the spec
 
-In order: issue references in the commit messages or PR body (`#123`, `Fixes #45`), a path passed as an argument, a spec file under `docs/`, `specs/` or `.scratch/` matching the branch. With no spec, the Spec axis reports `no spec available` and its verdict is `CHANGES`.
+In order: issue references in the commit messages or PR body (`#123`, `Resolves #45`), a path passed as an argument, a spec file under `docs/`, `specs/` or `.scratch/` matching the branch. With no spec, the Spec axis reports `no spec available` and its verdict is `CHANGES`.
 
 ### 3. Find the standards
 
