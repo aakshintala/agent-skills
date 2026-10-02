@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# quota: AI subscription quota from the QuotaBar feed, one line per provider.
+# Usage: quota [--json]   (--json prints the raw feed)
+# QUOTA_FEED overrides the feed URL (default http://127.0.0.1:8787/quotas).
+set -euo pipefail
+FEED="${QUOTA_FEED:-http://127.0.0.1:8787/quotas}"
+
+# The feed refreshes before answering, up to 20 s.
+if ! json="$(curl -sf --max-time 25 "$FEED")"; then
+  echo "quota: no answer from $FEED; QuotaBar is not running or its feed is off (QuotaBar settings)" >&2
+  exit 1
+fi
+
+if [[ "${1:-}" == "--json" ]]; then
+  printf '%s\n' "$json"
+  exit 0
+fi
+
+jq -r '.providers[] | "\(.id) [\(.status)]: \([.quotas[] | "\(.label) \(if .percentRemaining then "\(.percentRemaining|floor)%" else "\(.balanceRemaining) \(.balanceUnit // "")" end) (\(.resetText // "no reset"))"] | join(", "))"' <<<"$json"
