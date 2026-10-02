@@ -4,3 +4,5 @@ description: Grill a plan or design and record what it settles as ADRs and a glo
 ---
 
 Call the Skill tool twice, for "grilling" and "domain-modeling".
+
+When the owner ends the grill, stop and name the next phase with its input: `/to-spec`, or `/to-tickets` when the decisions already amount to a spec.

@@ -44,6 +44,8 @@ Push too little down and the top bloats; push too much and you hide material the
 
 ## Steps and completion criteria
 
+Name every step (`### 2. Plan`, not a bare `2.`), so a project's workflow doc can override one by name.
+
 Every step ends on a **completion criterion**, the condition that tells the agent the work is done. Two properties make it a lever:
 
 - **Clarity**: can the agent tell done from not-done? A vague bound ("understanding reached") invites **premature completion**: ending the step before it is genuinely done, attention slipping to _being done_. The visible steps still ahead (the **post-completion steps**) supply the pull; the criterion's clarity is the resistance. Defend in order: **sharpen the bound first** (local and cheap); only if it is irreducibly fuzzy _and_ you observe the rush, hide the later steps by splitting the sequence. Hiding only works across a real context boundary (a hand-off or a subagent dispatch; an inline call leaves the later steps in context and clears nothing).

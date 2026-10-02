@@ -5,7 +5,7 @@ description: "Turn the current conversation into a spec and publish it to the pr
 
 This skill takes the current conversation context and codebase understanding and produces a spec. Do NOT interview the user; just synthesize what you already know.
 
-The issue tracker and triage label vocabulary should have been provided to you. If not, tell the user to run `/setup-matt-pocock-skills`.
+The issue tracker and triage label vocabulary are in `docs/agents/`. When `docs/agents/` is missing, stop and report "repo not set up" to whoever started you.
 
 ## Process
 
@@ -72,3 +72,7 @@ A description of the things that are out of scope for this spec.
 Any further notes about the feature.
 
 </spec-template>
+
+## Next phase
+
+Stop once the spec is published; the next phase starts in a new session. Name it with its input: `/to-tickets #<spec issue>`.

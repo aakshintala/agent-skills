@@ -7,7 +7,7 @@ description: Break a plan, spec, or the current conversation into a set of trace
 
 Break a plan, spec, or conversation into a set of **tickets**: tracer-bullet vertical slices, each declaring the tickets that **block** it.
 
-The issue tracker and triage label vocabulary should have been provided to you. If not, tell the user to run `/setup-matt-pocock-skills`.
+The issue tracker and triage label vocabulary are in `docs/agents/`. When `docs/agents/` is missing, stop and report "repo not set up" to whoever started you.
 
 ## Process
 
@@ -60,7 +60,7 @@ Iterate until the user approves the breakdown.
 
 When the repo defines an agent-ready ticket (in a workflow doc its `AGENTS.md` or `CLAUDE.md` indexes), every ticket meets that definition on any tracker, and it overrides the templates below where they differ.
 
-Publish the approved tickets. **How** depends on the tracker `/setup-matt-pocock-skills` configured; the ticket content is the same either way, only the shape of the blocking edges changes:
+Publish the approved tickets. **How** depends on the tracker in `docs/agents/issue-tracker.md`; the ticket content is the same either way, only the shape of the blocking edges changes:
 
 - **Local files** → write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` in dependency order (blockers first). Each file's "Blocked by" lists the numbers/titles it depends on. Use the per-ticket file template below: one ticket per file, never a single combined file.
 - **A real issue tracker (GitHub, Linear, …)** → publish one issue per ticket in dependency order (blockers first) so each ticket's blocking edges can reference real identifiers. Use the platform's native blocking / sub-issue relationship where it has one; otherwise set each ticket's "Blocked by" to the blocking issues. Apply the `ready-for-agent` triage label unless instructed otherwise; the tickets are agent-grabbable by construction.
@@ -106,3 +106,7 @@ The end-to-end behaviour this ticket makes work, from the user's perspective, no
 </issue-template>
 
 In either form, avoid specific file paths or code snippets: they go stale fast. Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it and note briefly that it came from a prototype. Trim to the decision-rich parts, not a working demo, just the important bits.
+
+### 6. Next phase
+
+Stop once the tickets are published; the next phase starts in a new session. Name it with its input: `implement` on the first frontier ticket, or `autonomous-flywheel` on the whole set.

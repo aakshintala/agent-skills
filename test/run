@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# test/run: run every test file in this directory.
+# Usage: test/run
+set -uo pipefail
+
+D="$(cd "$(dirname "$0")" && pwd)"
+failed=0
+for t in "$D"/fill-brief.sh "$D"/review-pr.sh "$D"/check-pack.sh; do
+  if bash "$t"; then
+    echo "PASS: $(basename "$t")"
+  else
+    echo "FAIL: $(basename "$t") (exit $?)" >&2
+    failed=1
+  fi
+done
+[ "$failed" = "0" ] || exit 1
+echo "all suites passed"

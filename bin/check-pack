@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# check-pack: lint every skills/**/*.md for dangling skill/file references and
+# bad fill-brief placeholders. Prints one path:line: problem per failure
+# (paths relative to ROOT), silent exit 0 when clean.
+# Usage: check-pack [ROOT]   (default: the repo this script lives in)
+set -euo pipefail
+
+# Skills that live outside this pack and are always allowed.
+EXTERNAL_SKILLS="delegate"
+# Backticked /names that look like slash commands but are in-tree paths/routes.
+SLASH_DENY="tmp settings"
+
+usage() {
+  echo "usage: check-pack [ROOT]" >&2
+  exit 2
+}
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+default_root="$(dirname "$script_dir")"
+[ $# -le 1 ] || usage
+root="${1:-$default_root}"
+[ -d "$root" ] || usage
+root="$(cd "$root" && pwd)"
+[ -d "$root/skills" ] || usage
+
+failures=0
+fail() {
+  printf '%s:%s: %s\n' "$1" "$2" "$3"
+  failures=$((failures + 1))
+}
+
+is_external() {
+  local n="$1" x
+  for x in $EXTERNAL_SKILLS; do
+    if [ "$x" = "$n" ]; then return 0; fi
+  done
+  return 1
+}
+is_denied_slash() {
+  local n="$1" x
+  for x in $SLASH_DENY; do
+    if [ "$x" = "$n" ]; then return 0; fi
+  done
+  return 1
+}
+
+check_skill_name() {
+  local rel="$1" line="$2" name="$3"
+  if is_external "$name"; then return 0; fi
+  if [ ! -f "$root/skills/$name/SKILL.md" ]; then
+    fail "$rel" "$line" "missing skill \`$name\`"
+  fi
+}
+
+files="$(find "$root/skills" -name '*.md' | sort)"
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  rel="${f#$root/}"
+  dir="$(dirname "$f")"
+
+  # --- skill references ---
+
+  # `name` skill — e.g. `code-review` skill, the `retro` skill.
+  hits="$(grep -onE '`[A-Za-z0-9][A-Za-z0-9_-]*` +[Ss]kills?' "$f" 2>/dev/null || true)"
+  while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    line="${hit%%:*}"; m="${hit#*:}"
+    m="${m#\`}"; name="${m%%\`*}"
+    check_skill_name "$rel" "$line" "$name"
+  done <<<"$hits"
+
+  # Skill tool with "name" or `name`.
+  sq="'"
+  hits="$(grep -onE "Skill tool with [\"\`$sq][A-Za-z0-9][A-Za-z0-9_.-]*[\"\`$sq]" "$f" 2>/dev/null || true)"
+  while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    line="${hit%%:*}"; m="${hit#*:}"
+    m="${m#*with }"
+    m="${m#?}"; name="${m%?}"
+    check_skill_name "$rel" "$line" "$name"
+  done <<<"$hits"
+
+  # `/name` or `/name args` slash commands.
+  hits="$(grep -onE '`/[^`]*`' "$f" 2>/dev/null || true)"
+  while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    line="${hit%%:*}"; m="${hit#*:}"
+    inner="${m#\`}"; inner="${inner%\`}"
+    rest="${inner#/}"
+    name="${rest%% *}"
+    case "$inner" in
+      "/$name"|"/$name "*) ;;
+      *) continue;;
+    esac
+    case "$name" in [a-z]* ) ;; *) continue;; esac
+    case "$name" in *[!a-z0-9-]*) continue;; esac
+    if is_denied_slash "$name"; then continue; fi
+    check_skill_name "$rel" "$line" "$name"
+  done <<<"$hits"
+
+  # --- file references ---
+
+  # Relative markdown links ](path), outside fenced code blocks (examples).
+  fenced="|$(awk '/^ *```/{f=!f;next} f{printf "%d|",NR}' "$f")"
+  hits="$(grep -onE '\[[^]]*\]\([^)]*\)' "$f" 2>/dev/null || true)"
+  while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    line="${hit%%:*}"; m="${hit#*:}"
+    case "$fenced" in *"|$line|"*) continue;; esac
+    text="${m%%\]*}"; text="${text#[}"
+    rest="${m#*\](}"; target="${rest%)}"
+    case "$target" in
+      ""|\#*) continue;;
+      /*) continue;;
+    esac
+    case "$target" in
+      [A-Za-z][A-Za-z0-9+.-]*:*) continue;;
+    esac
+    case "$target" in
+      *[\<\>\ ]*|*__*) continue;;
+    esac
+    case "$text" in
+      *\<*\>*) continue;;
+    esac
+    if [ ! -e "$dir/$target" ]; then
+      fail "$rel" "$line" "missing file: $target"
+    fi
+  done <<<"$hits"
+
+  # Backticked __SKILLS__/path (against ROOT/skills) and ~/.agents/path (ROOT).
+  hits="$(grep -onE '`(__SKILLS__/[^`[:space:]]*|~/\.agents/[^`[:space:]]*)`' "$f" 2>/dev/null || true)"
+  while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    line="${hit%%:*}"; m="${hit#*:}"
+    inner="${m#\`}"; inner="${inner%\`}"
+    case "$inner" in
+      __SKILLS__/*)
+        rest="${inner#__SKILLS__/}"
+        if [ ! -e "$root/skills/$rest" ]; then
+          fail "$rel" "$line" "missing file: $inner"
+        fi
+        ;;
+      \~/.agents/*)
+        rest="${inner#\~/.agents}"
+        if [ ! -e "$root$rest" ]; then
+          fail "$rel" "$line" "missing file: $inner"
+        fi
+        ;;
+    esac
+  done <<<"$hits"
+
+  # --- bad template tokens (skills/*/briefs/ only) ---
+  tail="${rel#skills/}"
+  case "$tail" in
+    */briefs/*)
+      skill="${tail%%/*}"
+      rest="${tail#*/briefs/}"
+      is_brief=0
+      case "$skill" in */*) ;; *) case "$rest" in */*) ;; *) is_brief=1;; esac;; esac
+      if [ "$is_brief" -eq 1 ]; then
+        stripped="$(sed -e 's/__[A-Z][A-Z0-9_]*__//g' "$f")"
+        hits="$(printf '%s' "$stripped" | grep -onE '__[A-Za-z0-9][A-Za-z0-9_ ./-]*__' || true)"
+        while IFS= read -r hit; do
+          [ -n "$hit" ] || continue
+          line="${hit%%:*}"; m="${hit#*:}"
+          fail "$rel" "$line" "bad placeholder: $m"
+        done <<<"$hits"
+        hits="$(grep -onE '{{[^}]*}}' "$f" 2>/dev/null || true)"
+        while IFS= read -r hit; do
+          [ -n "$hit" ] || continue
+          line="${hit%%:*}"; m="${hit#*:}"
+          fail "$rel" "$line" "bad template token: $m"
+        done <<<"$hits"
+      fi
+      ;;
+  esac
+done <<<"$files"
+
+if [ "$failures" -gt 0 ]; then exit 1; fi
+exit 0
