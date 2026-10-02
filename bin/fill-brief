@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # fill-brief: fill __PLACEHOLDER__s in a template file from KEY=VALUE arguments.
 # Usage: fill-brief TEMPLATE KEY=VALUE...
+#        fill-brief --out <absolute path> TEMPLATE KEY=VALUE...
 #        A VALUE starting with @ is read from that file. All values are literal:
-#        multi-line text and & \ / $ pass through unchanged. Prints the filled
-#        template on stdout. Exit 1 (nothing on stdout, one problem per line on
-#        stderr) when a placeholder is left unfilled or a key matches nothing.
+#        multi-line text and & \ / $ pass through unchanged. Without --out, prints
+#        the filled template on stdout. With --out, writes it to <path> and prints
+#        exactly one line on stdout: Read <path> and follow it.
+#        Exit 1 (nothing on stdout, one problem per line on stderr) when a
+#        placeholder is left unfilled, a key matches nothing, the output cannot be
+#        written, or reading it back differs. Exit 2 on bad usage, including a
+#        relative --out path.
 set -euo pipefail
 # bash 5.2+ treats & in a ${var//pat/rep} replacement as the match; keep it literal.
 shopt -u patsub_replacement 2>/dev/null || true
@@ -15,6 +20,16 @@ usage() {
 }
 
 [ $# -ge 1 ] || usage
+out_path=""
+if [ "$1" = "--out" ]; then
+  [ $# -ge 3 ] || usage
+  out_path="$2"
+  case "$out_path" in
+    /*) ;;
+    *) echo "fill-brief: --out path must be absolute: $out_path" >&2; exit 2 ;;
+  esac
+  shift 2
+fi
 template="$1"; shift
 [ -f "$template" ] || { echo "fill-brief: no such template: $template" >&2; exit 2; }
 
@@ -87,6 +102,21 @@ done <<<"$leftovers"
 if [ -n "$errors" ]; then
   printf '%s\n' "$errors" >&2
   exit 1
+fi
+
+if [ -n "$out_path" ]; then
+  if ! printf '%s' "$out" >"$out_path"; then
+    echo "fill-brief: cannot write output file: $out_path" >&2
+    exit 1
+  fi
+  back="$(cat "$out_path"; printf x)"
+  back="${back%x}"
+  if [ "$back" != "$out" ]; then
+    echo "fill-brief: output file does not match filled text: $out_path" >&2
+    exit 1
+  fi
+  printf 'Read %s and follow it.\n' "$out_path"
+  exit 0
 fi
 
 printf '%s' "$out"

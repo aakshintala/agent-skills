@@ -5,7 +5,7 @@ description: "Write a ticket's implementation plan: a contract sketch (rulings, 
 
 The orchestrator writes every ticket's plan, after reading the code it describes: a lane fails on a plan describing code its author never read. The plan becomes the body of the lane's brief.
 
-**Briefs.** The templates are `briefs/preflight.md`, `briefs/verifier.md` and `briefs/lane.md`. Fill them with `~/.agents/bin/fill-brief <template> KEY=VALUE...` (a value of `@<file>` reads the file), which fails on any unfilled placeholder or unknown key, so the brief never goes out half-filled and you write only the values.
+**Briefs.** The templates are `briefs/preflight.md`, `briefs/verifier.md` and `briefs/lane.md`. Fill them with `~/.agents/bin/fill-brief <template> KEY=VALUE...` (a value of `@<file>` reads the file), which fails on any unfilled placeholder or unknown key, so the brief never goes out half-filled and you write only the values. When a filled brief starts another job, fill it with `--out <absolute path>` (e.g. `/tmp/<repo>-<issue>-<template>.md`) and use the printed line verbatim as its prompt, never a hand-written path.
 
 ### 1. Read
 

@@ -21,7 +21,7 @@ Done when both reviews have verdict lines for the current patch-id.
 
 ### 2. Route
 
-Every verdict `APPROVE` and no open P1 or P2: the loop is done. Otherwise send every open finding in one fix round: fill `briefs/fix.md` with `~/.agents/bin/fill-brief` (findings as `FINDINGS=@<file>`) and dispatch it in the PR's worktree as a gated job. When every open finding is trivial by `implement`'s fix-by-churn rule, fix them inline and run the gate yourself instead; the round still counts, and step 3 still verifies it.
+Every verdict `APPROVE` and no open P1 or P2: the loop is done. Otherwise send every open finding in one fix round: fill `briefs/fix.md` with `~/.agents/bin/fill-brief --out <absolute path>` (findings as `FINDINGS=@<file>`) and dispatch it in the PR's worktree as a gated job, using the printed line verbatim as its prompt, never a hand-written path. When every open finding is trivial by `implement`'s fix-by-churn rule, fix them inline and run the gate yourself instead; the round still counts, and step 3 still verifies it.
 
 Done when the fix round covers every open finding: dispatched as a gated job, or fixed inline with the gate's output stated.
 
