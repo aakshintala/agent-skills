@@ -12,10 +12,10 @@ The loop for one PR. Reviews run on models from a different family than the PR's
 ### 1. Review
 
 ```
-~/.agents/bin/review-pr <pr> --repo <owner/name> --cwd <clone> --issue <n> --spec <n> --model <correctness> --ponytail-model <over-engineering> [--workflow-doc <path>]
+~/.agents/bin/review-pr <pr> --repo <owner/name> --cwd <clone> [--issue <n> --spec <n>] --model <correctness> --ponytail-model <over-engineering> [--workflow-doc <path>]
 ```
 
-It runs the correctness review (`code-review`) and the over-engineering review (`ponytail-review`) as separate jobs, posts both on the PR with the patch-id, and prints only the verdicts, findings, CI state, and any job that didn't finish. An `UNFINISHED` line means that review didn't run: rerun it, and read nothing in its absence as approval.
+A PR with no ticket leaves out `--issue` and `--spec` and is reviewed against its own description. It runs the correctness review (`code-review`) and the over-engineering review (`ponytail-review`) as separate jobs, posts both on the PR with the patch-id, and prints only the verdicts, findings, CI state, and any job that didn't finish. An `UNFINISHED` line means that review didn't run: rerun it, and read nothing in its absence as approval.
 
 Done when both reviews have verdict lines for the current patch-id.
 

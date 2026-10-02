@@ -193,4 +193,18 @@ STATUS: DONE" 0
 out="$("$REVIEW" 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
   --model M --ponytail-model M2 2>/dev/null)" && fail "one-axis review exits 1"
 printf '%s' "$out" | grep -q "^UNFINISHED review DONE" || fail "one-axis review is UNFINISHED"
+
+# --- case: a ticketless PR whose reviewer ends DONE_WITH_CONCERNS with a full verdict
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE_WITH_CONCERNS "VERDICT standards: APPROVE
+VERDICT spec: CHANGES
+P2 a.sh:1 — defect — fix
+STATUS: DONE_WITH_CONCERNS" 0
+write_record ponytail DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+out="$("$REVIEW" 7 --repo O/N --cwd "$T/clone" \
+  --model M --ponytail-model M2 2>/dev/null)" || fail "concerns with a verdict exits 0"
+printf '%s' "$out" | grep -q UNFINISHED && fail "concerns with a verdict is finished"
+grep -q 'for issue #7 (spec #7)' "$T/state/prompt-review.md" || fail "ticketless PR is its own issue and spec"
 echo "review-pr: all cases passed"
