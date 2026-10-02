@@ -79,4 +79,20 @@ stdout="$("$FILL" --out "$T/should-not-exist.md" "$T/ou.md" 2>"$T/err-ou.txt")";
 grep -q '^unfilled: __NAME__$' "$T/err-ou.txt" || fail "unfilled --out names __NAME__"
 [ ! -e "$T/should-not-exist.md" ] || fail "unfilled --out writes nothing"
 
+# --out with a newline in the path exits 2, nothing on stdout, writes nothing
+nl_path="$T/bad
+name.md"
+stdout="$("$FILL" --out "$nl_path" "$T/o.md" 'A=1' 2>"$T/err-nl.txt")"; [ "$?" = "2" ] || fail "newline --out exits 2"
+[ -z "$stdout" ] || fail "newline --out prints nothing on stdout"
+[ ! -e "$nl_path" ] || fail "newline --out writes nothing"
+
+# --out to a write-only file exits 1: the read-back cannot be verified
+printf '' >"$T/empty.md"
+: >"$T/wo.md"
+chmod 200 "$T/wo.md"
+stdout="$("$FILL" --out "$T/wo.md" "$T/empty.md" 2>"$T/err-wo.txt")"; [ "$?" = "1" ] || fail "unreadable --out exits 1"
+[ -z "$stdout" ] || fail "unreadable --out prints nothing on stdout"
+grep -q 'cannot read output file' "$T/err-wo.txt" || fail "unreadable --out names read error"
+chmod 600 "$T/wo.md"
+
 echo "fill-brief: all cases passed"

@@ -28,6 +28,9 @@ if [ "$1" = "--out" ]; then
     /*) ;;
     *) echo "fill-brief: --out path must be absolute: $out_path" >&2; exit 2 ;;
   esac
+  case "$out_path" in
+    *$'\n'*) echo "fill-brief: --out path must not contain a newline" >&2; exit 2 ;;
+  esac
   shift 2
 fi
 template="$1"; shift
@@ -109,7 +112,10 @@ if [ -n "$out_path" ]; then
     echo "fill-brief: cannot write output file: $out_path" >&2
     exit 1
   fi
-  back="$(cat "$out_path"; printf x)"
+  if ! back="$(cat "$out_path" 2>/dev/null; inner=$?; printf x; exit "$inner")"; then
+    echo "fill-brief: cannot read output file: $out_path" >&2
+    exit 1
+  fi
   back="${back%x}"
   if [ "$back" != "$out" ]; then
     echo "fill-brief: output file does not match filled text: $out_path" >&2
