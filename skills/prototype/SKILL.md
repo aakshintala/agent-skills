@@ -18,7 +18,7 @@ The two branches produce very different artifacts, so getting this wrong wastes 
 
 ## Rules that apply to both
 
-0. **Build 2–3 competing options.** Each takes a genuinely different approach; a variant of the first doesn't count.
+Build 2–3 competing options, each a genuinely different approach; a variant of the first doesn't count.
 
 1. **Throwaway from day one, and clearly marked as such.** Locate the prototype code close to where it will actually be used (next to the module or page it's prototyping for) so context is obvious, but name it so a casual reader can see it's a prototype, not production. For throwaway UI routes, obey whatever routing convention the project already uses; don't invent a new top-level structure.
 2. **Trivial to run.** A UI prototype starts from one command in the project's task runner: `pnpm <name>`, `python <path>`, `bun <path>`, etc. A logic demo is a single HTML file the user double-clicks. Either way, no thinking required to start it.
