@@ -2,4 +2,11 @@ Code review of PR #__PR__ in __REPO__ for issue #__ISSUE__ (spec #__SPEC__). Do 
 
 Follow `__SKILLS__/code-review/SKILL.md` as a single reviewer covering both axes. Your working directory is a checkout of the PR head; the diff is `gh pr diff __PR__ --repo __REPO__`. The project's workflow doc is __WORKFLOW_DOC__; it wins where it speaks. When the ticket carries a plan, judge the Spec axis against its `Rules this ticket implements`, quoted word for word.
 
-Max 250 words of findings. End with a STATUS line.
+Max 250 words of findings. End with both verdict lines, exactly (one value each), each axis's findings under its verdict, then a STATUS line:
+
+```
+VERDICT standards: APPROVE
+...
+VERDICT spec: CHANGES
+...
+```

@@ -1,64 +1,43 @@
 #!/usr/bin/env bash
 # review-pr: run a PR's reviews through the delegate CLI, post one PR comment,
 # and print a verdict digest for the orchestrator.
-# Usage: review-pr <pr> --repo OWNER/NAME --cwd CLONE [--issue N] [--spec N] --model M --overbuild-model M2 [--workflow-doc PATH]
-#        review-pr <pr> --repo OWNER/NAME --cwd CLONE --model M --verify FINDINGS_FILE --since SHA [--workflow-doc PATH]
+# Usage:
+#   review-pr start <pr> --repo OWNER/NAME --cwd CLONE [--issue N] [--spec N] --model M --overbuild-model M2 [--workflow-doc PATH]
+#   review-pr start <pr> --repo OWNER/NAME --cwd CLONE --model M --verify FINDINGS_FILE --since SHA [--workflow-doc PATH]
+#     launches one job per review role, prints "<role> <job-id>" per job, and
+#     returns at once. Wait for the ids with the delegation tool's wait command
+#     (delegate watch), in the wait mode your harness instructions prescribe.
+#   review-pr collect <job-id>...
+#     posts the one PR comment with the patch-id, prints the verdict digest,
+#     removes the worktrees, and exits 1 when any job is unfinished or wrote a
+#     verdict outside the shared vocabulary below.
 set -euo pipefail
 
+# Verdict vocabulary. This block is the one place every verdict line the
+# parser accepts is defined; the review briefs and the review skills state
+# the same lines.
+#   review role:    VERDICT standards: APPROVE|CHANGES
+#                   VERDICT spec: APPROVE|CHANGES
+#   overbuild role: VERDICT: APPROVE|CHANGES
+#   verify role:    FIX-OK | FIX-INCOMPLETE (trailing detail allowed)
+# Matching tolerates decoration: leading/trailing whitespace, **bold**, `code`.
+# A line containing VERDICT or FIX- that matches none of these is a bad
+# verdict: loud failure, never UNFINISHED.
+
 usage() {
-  echo "usage: review-pr <pr> --repo OWNER/NAME --cwd CLONE [--issue N] [--spec N] --model M --overbuild-model M2 [--workflow-doc PATH]" >&2
-  echo "       review-pr <pr> --repo OWNER/NAME --cwd CLONE --model M --verify FINDINGS_FILE --since SHA [--workflow-doc PATH]" >&2
+  echo "usage: review-pr start <pr> --repo OWNER/NAME --cwd CLONE [--issue N] [--spec N] --model M --overbuild-model M2 [--workflow-doc PATH]" >&2
+  echo "       review-pr start <pr> --repo OWNER/NAME --cwd CLONE --model M --verify FINDINGS_FILE --since SHA [--workflow-doc PATH]" >&2
+  echo "       review-pr collect <job-id>..." >&2
   exit 2
 }
-
-[ $# -ge 1 ] || usage
-pr="$1"; shift
-case "$pr" in -*|"") usage;; esac
-
-repo=""; clone=""; issue=""; specn=""; model=""; omodel=""
-verify=""; since=""; wdoc=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --repo) [ $# -ge 2 ] || usage; repo="$2"; shift 2;;
-    --cwd) [ $# -ge 2 ] || usage; clone="$2"; shift 2;;
-    --issue) [ $# -ge 2 ] || usage; issue="$2"; shift 2;;
-    --spec) [ $# -ge 2 ] || usage; specn="$2"; shift 2;;
-    --model) [ $# -ge 2 ] || usage; model="$2"; shift 2;;
-    --overbuild-model) [ $# -ge 2 ] || usage; omodel="$2"; shift 2;;
-    --verify) [ $# -ge 2 ] || usage; verify="$2"; shift 2;;
-    --since) [ $# -ge 2 ] || usage; since="$2"; shift 2;;
-    --workflow-doc) [ $# -ge 2 ] || usage; wdoc="$2"; shift 2;;
-    *) usage;;
-  esac
-done
-
-[ -n "$repo" ] || usage
-[ -n "$clone" ] && [ -d "$clone" ] || usage
-[ -n "$model" ] || usage
-if [ -n "$verify" ]; then
-  mode="verify"
-  [ -n "$since" ] || usage
-  [ -f "$verify" ] || usage
-  { [ -z "$issue" ] && [ -z "$specn" ] && [ -z "$omodel" ]; } || usage
-else
-  mode="review"
-  [ -n "$omodel" ] || usage
-  # A PR with no ticket is its own spec: gh issue view accepts a PR number.
-  issue="${issue:-$pr}"; specn="${specn:-$pr}"
-  [ -z "$since" ] || usage
-fi
-if [ -z "$wdoc" ]; then wdoc="none"; fi
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 skills_dir="$(dirname "$script_dir")/skills"
 briefs_dir="$skills_dir/review-loop/briefs"
 fill_brief="$script_dir/fill-brief"
+jobs_dir="${TMPDIR:-/tmp}/delegate-jobs"
+state_dir="${TMPDIR:-/tmp}/review-pr"
 
-if [ "$mode" = "review" ]; then
-  roles="review overbuild"
-else
-  roles="verify"
-fi
 brief_for() {
   case "$1" in
     review) printf '%s' "$briefs_dir/review.md";;
@@ -66,154 +45,371 @@ brief_for() {
     verify) printf '%s' "$briefs_dir/verify.md";;
   esac
 }
-model_for() {
+
+# norm_line: strip verdict decoration (asterisks, backticks) and trim
+# surrounding whitespace, so decorated verdicts match the vocabulary.
+norm_line() {
+  printf '%s' "$1" | tr -d '*`' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
+# is_verdict ROLE NORMALISED_LINE: the line is a recognised verdict form.
+is_verdict() {
   case "$1" in
-    review|verify) printf '%s' "$model";;
-    overbuild) printf '%s' "$omodel";;
-  esac
-}
-
-sha="$(gh pr view "$pr" --repo "$repo" --json headRefOid | jq -r .headRefOid)"
-if [ -z "$sha" ] || [ "$sha" = "null" ]; then
-  echo "review-pr: no head SHA for PR $pr in $repo" >&2
-  exit 1
-fi
-
-# Patch-id of the diff the reviews will see, taken before they start.
-patch_id="$(gh pr diff "$pr" --repo "$repo" | git patch-id --stable | awk '{print $1}')"
-if [ -z "$patch_id" ]; then patch_id="none"; fi
-
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/review-pr.XXXXXX")"
-wt_list=()
-cleanup() {
-  if [ "${#wt_list[@]}" -gt 0 ]; then
-    for wt in "${wt_list[@]}"; do
-      git -C "$clone" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
-    done
-  fi
-  git -C "$clone" worktree prune >/dev/null 2>&1 || true
-  rm -rf "$tmp"
-}
-trap cleanup EXIT
-
-git -C "$clone" fetch origin "pull/$pr/head" >&2
-
-id_list=()
-for role in $roles; do
-  wt="$tmp/wt-$role"
-  git -C "$clone" worktree add --detach "$wt" "$sha" >&2
-  wt_list[${#wt_list[@]}]="$wt"
-
-  brief_src="$(brief_for "$role")"
-  brief="$tmp/brief-$role.md"
-  case "$role" in
     review)
-      "$fill_brief" "$brief_src" "PR=$pr" "REPO=$repo" "ISSUE=$issue" \
-        "SPEC=$specn" "SKILLS=$skills_dir" "WORKFLOW_DOC=$wdoc" >"$brief"
-      ;;
+      case "$2" in
+        "VERDICT standards: APPROVE"|"VERDICT standards: CHANGES"|\
+        "VERDICT spec: APPROVE"|"VERDICT spec: CHANGES") return 0;;
+      esac
+      return 1;;
     overbuild)
-      "$fill_brief" "$brief_src" "PR=$pr" "REPO=$repo" \
-        "SKILLS=$skills_dir" >"$brief"
-      ;;
+      case "$2" in
+        "VERDICT: APPROVE"|"VERDICT: CHANGES") return 0;;
+      esac
+      return 1;;
     verify)
-      "$fill_brief" "$brief_src" "PR=$pr" "REPO=$repo" "SKILLS=$skills_dir" \
-        "SINCE=$since" "FINDINGS=@$verify" >"$brief"
-      ;;
+      case "$2" in
+        "FIX-OK"[[:space:]]*|"FIX-INCOMPLETE"[[:space:]]*) return 0;;
+      esac
+      return 1;;
   esac
+  return 1
+}
 
-  echo "review-pr: starting $role job ($(model_for "$role"))" >&2
-  jid="$(delegate run --model "$(model_for "$role")" --cwd "$wt" --prompt-file "$brief")"
-  jid="${jid%%$'\n'*}"
-  id_list[${#id_list[@]}]="$role:$jid"
-done
+# looks_like_verdict NORMALISED_LINE: the line claims to be a verdict without
+# matching a recognised form.
+looks_like_verdict() {
+  case "$1" in
+    *VERDICT*|*FIX-*) return 0;;
+  esac
+  return 1
+}
 
-watch_ids=""
-for pair in "${id_list[@]}"; do
-  watch_ids="$watch_ids ${pair#*:}"
-done
-# shellcheck disable=SC2086
-delegate watch $watch_ids --timeout 3600 >/dev/null 2>&1 || true
+state_get() {
+  # state_get FILE KEY: print the value of a KEY=VALUE line in a state file.
+  sed -n "s/^$2=//p" "$1" | head -1
+}
 
+ci_state() {
+  # ci_state PR REPO: pass, pending, fail or none, from gh pr checks.
+  checks="$(gh pr checks "$1" --repo "$2" 2>/dev/null || true)"
+  ci="none"
+  if [ -n "$checks" ]; then
+    ci="pass"
+    while IFS= read -r line; do
+      case "$line" in ""|NAME*|Name*) continue;; esac
+      state="$(printf '%s\n' "$line" | awk -F'\t' '{print $2}')"
+      if [ -z "$state" ]; then
+        state="$(printf '%s\n' "$line" | awk '{print $2}')"
+      fi
+      case "$state" in
+        fail|failed|failure|cancel|cancelled|timed_out|action_required) ci="fail"; break;;
+        pending|queued|requested|waiting|in_progress)
+          if [ "$ci" != "fail" ]; then ci="pending"; fi;;
+      esac
+    done <<<"$checks"
+  fi
+  printf '%s' "$ci"
+}
 
-jobs_dir="${TMPDIR:-/tmp}/delegate-jobs"
+cmd_start() {
+  [ $# -ge 1 ] || usage
+  pr="$1"; shift
+  case "$pr" in -*|"") usage;; esac
 
-body="$tmp/comment.md"
-{
-  printf 'review-pr: patch-id %s, head %s\n' "$patch_id" "$sha"
-  for pair in "${id_list[@]}"; do
-    role="${pair%%:*}"; jid="${pair#*:}"
+  repo=""; clone=""; issue=""; specn=""; model=""; omodel=""
+  verify=""; since=""; wdoc=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo) [ $# -ge 2 ] || usage; repo="$2"; shift 2;;
+      --cwd) [ $# -ge 2 ] || usage; clone="$2"; shift 2;;
+      --issue) [ $# -ge 2 ] || usage; issue="$2"; shift 2;;
+      --spec) [ $# -ge 2 ] || usage; specn="$2"; shift 2;;
+      --model) [ $# -ge 2 ] || usage; model="$2"; shift 2;;
+      --overbuild-model) [ $# -ge 2 ] || usage; omodel="$2"; shift 2;;
+      --verify) [ $# -ge 2 ] || usage; verify="$2"; shift 2;;
+      --since) [ $# -ge 2 ] || usage; since="$2"; shift 2;;
+      --workflow-doc) [ $# -ge 2 ] || usage; wdoc="$2"; shift 2;;
+      *) usage;;
+    esac
+  done
+
+  [ -n "$repo" ] || usage
+  [ -n "$clone" ] && [ -d "$clone" ] || usage
+  [ -n "$model" ] || usage
+  if [ -n "$verify" ]; then
+    mode="verify"
+    [ -n "$since" ] || usage
+    [ -f "$verify" ] || usage
+    { [ -z "$issue" ] && [ -z "$specn" ] && [ -z "$omodel" ]; } || usage
+  else
+    mode="review"
+    [ -n "$omodel" ] || usage
+    # A PR with no ticket is its own spec: gh issue view accepts a PR number.
+    issue="${issue:-$pr}"; specn="${specn:-$pr}"
+    [ -z "$since" ] || usage
+  fi
+  if [ -z "$wdoc" ]; then wdoc="none"; fi
+
+  if [ "$mode" = "review" ]; then
+    roles="review overbuild"
+  else
+    roles="verify"
+  fi
+  model_for() {
+    case "$1" in
+      review|verify) printf '%s' "$model";;
+      overbuild) printf '%s' "$omodel";;
+    esac
+  }
+
+  sha="$(gh pr view "$pr" --repo "$repo" --json headRefOid | jq -r .headRefOid)"
+  if [ -z "$sha" ] || [ "$sha" = "null" ]; then
+    echo "review-pr: no head SHA for PR $pr in $repo" >&2
+    exit 1
+  fi
+
+  # Patch-id of the diff the reviews will see, taken before they start.
+  patch_id="$(gh pr diff "$pr" --repo "$repo" | git patch-id --stable | awk '{print $1}')"
+  if [ -z "$patch_id" ]; then patch_id="none"; fi
+
+  mkdir -p "$state_dir"
+  run_dir="$(mktemp -d "${TMPDIR:-/tmp}/review-pr.run.XXXXXX")"
+
+  started_ok=""
+  wt_list=()
+  cleanup_on_fail() {
+    if [ -z "$started_ok" ]; then
+      for wt in ${wt_list[@]+"${wt_list[@]}"}; do
+        git -C "$clone" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+      done
+      rm -rf "$run_dir"
+    fi
+  }
+  trap cleanup_on_fail EXIT
+
+  git -C "$clone" fetch origin "pull/$pr/head" >&2
+
+  for role in $roles; do
+    wt="$run_dir/wt-$role"
+    git -C "$clone" worktree add --detach "$wt" "$sha" >&2
+    wt_list[${#wt_list[@]}]="$wt"
+
+    brief_src="$(brief_for "$role")"
+    brief="$run_dir/brief-$role.md"
+    case "$role" in
+      review)
+        "$fill_brief" "$brief_src" "PR=$pr" "REPO=$repo" "ISSUE=$issue" \
+          "SPEC=$specn" "SKILLS=$skills_dir" "WORKFLOW_DOC=$wdoc" >"$brief"
+        ;;
+      overbuild)
+        "$fill_brief" "$brief_src" "PR=$pr" "REPO=$repo" \
+          "SKILLS=$skills_dir" >"$brief"
+        ;;
+      verify)
+        "$fill_brief" "$brief_src" "PR=$pr" "REPO=$repo" "SKILLS=$skills_dir" \
+          "SINCE=$since" "FINDINGS=@$verify" >"$brief"
+        ;;
+    esac
+
+    echo "review-pr: starting $role job ($(model_for "$role"))" >&2
+    jid="$(delegate run --model "$(model_for "$role")" --cwd "$wt" --prompt-file "$brief")"
+    jid="${jid%%$'\n'*}"
+
+    {
+      printf 'role=%s\n' "$role"
+      printf 'jid=%s\n' "$jid"
+      printf 'repo=%s\n' "$repo"
+      printf 'pr=%s\n' "$pr"
+      printf 'sha=%s\n' "$sha"
+      printf 'patch_id=%s\n' "$patch_id"
+      printf 'model=%s\n' "$(model_for "$role")"
+      printf 'clone=%s\n' "$clone"
+      printf 'worktree=%s\n' "$wt"
+      printf 'run_dir=%s\n' "$run_dir"
+    } >"$state_dir/$jid"
+
+    printf '%s %s\n' "$role" "$jid"
+  done
+
+  started_ok="1"
+  trap - EXIT
+}
+
+cmd_collect() {
+  [ $# -ge 1 ] || usage
+
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/review-pr.collect.XXXXXX")"
+  wt_rm=()
+  wc_rm=()
+  run_rm=()
+  state_rm=()
+  cleanup() {
+    i=0
+    for wt in ${wt_rm[@]+"${wt_rm[@]}"}; do
+      wclone="${wc_rm[$i]:-}"
+      i=$((i + 1))
+      [ -n "$wt" ] || continue
+      if [ -n "$wclone" ]; then
+        git -C "$wclone" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+        git -C "$wclone" worktree prune >/dev/null 2>&1 || true
+      else
+        rm -rf "$wt"
+      fi
+    done
+    for rd in ${run_rm[@]+"${run_rm[@]}"}; do
+      case "$rd" in "${TMPDIR:-/tmp}"/review-pr.run.*) rm -rf "$rd";; esac
+    done
+    for sf in ${state_rm[@]+"${state_rm[@]}"}; do
+      rm -f "$sf"
+    done
+    rm -rf "$tmp"
+  }
+  trap cleanup EXIT
+
+  # debt: single-run collect (repo/PR/SHA/patch-id come from the first state
+  # file found), per-run grouping when callers mix runs in one collect.
+  repo=""; pr=""; sha=""; patch_id=""
+  id_list=()
+  unknown_f="$tmp/unknown.txt"
+  : >"$unknown_f"
+  for jid in "$@"; do
+    case "$jid" in ""|-*) usage;; esac
+    sf="$state_dir/$jid"
+    if [ ! -f "$sf" ]; then
+      printf 'UNFINISHED %s MISSING gate=none %s\n' "$jid" "$sf" >>"$unknown_f"
+      continue
+    fi
+    state_rm[${#state_rm[@]}]="$sf"
+    if [ -z "$pr" ]; then
+      repo="$(state_get "$sf" repo)"
+      pr="$(state_get "$sf" pr)"
+      sha="$(state_get "$sf" sha)"
+      patch_id="$(state_get "$sf" patch_id)"
+    fi
+    wt="$(state_get "$sf" worktree)"
+    rd="$(state_get "$sf" run_dir)"
+    wclone="$(state_get "$sf" clone)"
+    wt_rm[${#wt_rm[@]}]="$wt"
+    wc_rm[${#wc_rm[@]}]="$wclone"
+    seen_rd=""
+    for have in ${run_rm[@]+"${run_rm[@]}"}; do
+      [ "$have" = "$rd" ] || continue
+      seen_rd="1"
+    done
+    [ -n "$seen_rd" ] || { [ -z "$rd" ] || run_rm[${#run_rm[@]}]="$rd"; }
+    id_list[${#id_list[@]}]="$jid"
+  done
+
+  short="unknown"
+  if [ -n "$sha" ]; then short="${sha:0:8}"; fi
+
+  body="$tmp/comment.md"
+  {
+    printf 'review-pr: patch-id %s, head %s\n' "${patch_id:-none}" "${sha:-unknown}"
+    for jid in ${id_list[@]+"${id_list[@]}"}; do
+      role="$(state_get "$state_dir/$jid" role)"
+      rmodel="$(state_get "$state_dir/$jid" model)"
+      rec="$jobs_dir/$jid.json"
+      text=""
+      if [ -f "$rec" ]; then
+        text="$(jq -r '.result.text // empty' "$rec" 2>/dev/null || true)"
+      fi
+      printf '\n## %s (%s)\n\n%s\n' "$role" "$rmodel" "$text"
+    done
+  } >"$body"
+  if [ -n "$pr" ] && [ -n "$repo" ]; then
+    gh pr comment "$pr" --repo "$repo" --body-file "$body" >&2
+  else
+    echo "review-pr: no saved state for these jobs, no comment posted" >&2
+  fi
+
+  head_line="patch-id ${patch_id:-none}"
+
+  verdicts_f="$tmp/verdicts.txt"
+  bad_f="$tmp/bad.txt"
+  unfinished_f="$tmp/unfinished.txt"
+  : >"$verdicts_f"
+  : >"$bad_f"
+  : >"$unfinished_f"
+  cat "$unknown_f" >>"$unfinished_f"
+  unfinished="$(wc -l <"$unknown_f" | tr -d ' ')"
+  bad=0
+  for jid in ${id_list[@]+"${id_list[@]}"}; do
+    sf="$state_dir/$jid"
+    role="$(state_get "$sf" role)"
     rec="$jobs_dir/$jid.json"
-    text=""
+    status="MISSING"; gate="none"; text=""
     if [ -f "$rec" ]; then
+      status="$(jq -r '.status // "MISSING"' "$rec" 2>/dev/null || echo MISSING)"
+      gate="$(jq -r '.result.gateResult.exitCode // "none"' "$rec" 2>/dev/null || echo none)"
       text="$(jq -r '.result.text // empty' "$rec" 2>/dev/null || true)"
     fi
-    printf '\n## %s (%s)\n\n%s\n' "$role" "$(model_for "$role")" "$text"
+    std_ok=""; spec_ok=""; ob_ok=""; fix_ok=""; role_bad=""
+    if [ -n "$text" ]; then
+      while IFS= read -r line; do
+        norm="$(norm_line "$line")"
+        [ -n "$norm" ] || continue
+        if is_verdict "$role" "$norm"; then
+          printf '%s\n' "$norm" >>"$verdicts_f"
+          case "$role:$norm" in
+            review:"VERDICT standards: "*) std_ok="1";;
+            review:"VERDICT spec: "*) spec_ok="1";;
+            overbuild:*) ob_ok="1";;
+            verify:*) fix_ok="1";;
+          esac
+          continue
+        fi
+        if looks_like_verdict "$norm"; then
+          printf 'BAD-VERDICT %s %s\n' "$role" "$norm" >>"$bad_f"
+          role_bad="1"
+          bad=$((bad + 1))
+          continue
+        fi
+        case "$line" in
+          P1\ *|P2\ *|P3\ *) printf '%s\n' "$line" >>"$verdicts_f";;
+        esac
+      done <<<"$text"
+    fi
+    # A reviewer with findings may end DONE_WITH_CONCERNS; its verdict still stands.
+    if [ -n "$role_bad" ]; then
+      : # a bad verdict fails loudly as BAD-VERDICT, never UNFINISHED
+    elif [ "$status" != "DONE" ] && [ "$status" != "DONE_WITH_CONCERNS" ]; then
+      printf 'UNFINISHED %s %s gate=%s %s\n' "$role" "$status" "$gate" "$rec" >>"$unfinished_f"
+      unfinished=$((unfinished + 1))
+    else
+      complete=""
+      case "$role" in
+        review) [ -n "$std_ok" ] && [ -n "$spec_ok" ] && complete="1";;
+        overbuild) [ -n "$ob_ok" ] && complete="1";;
+        verify) [ -n "$fix_ok" ] && complete="1";;
+      esac
+      if [ -z "$complete" ]; then
+        printf 'UNFINISHED %s %s gate=%s %s\n' "$role" "$status" "$gate" "$rec" >>"$unfinished_f"
+        unfinished=$((unfinished + 1))
+      fi
+    fi
   done
-} >"$body"
-gh pr comment "$pr" --repo "$repo" --body-file "$body" >&2
 
-head_line="patch-id $patch_id"
+  if [ -n "$pr" ] && [ -n "$repo" ]; then
+    ci="$(ci_state "$pr" "$repo")"
+  else
+    ci="none"
+  fi
 
-# has_verdict <role> <text>: the role's full verdict is present (a review
-# needs both axes; overbuild one VERDICT line; verify FIX-OK or FIX-INCOMPLETE).
-has_verdict() {
-  case "$1" in
-    review) printf '%s\n' "$2" | grep -qE '^VERDICT standards: ' &&
-            printf '%s\n' "$2" | grep -qE '^VERDICT spec: ';;
-    overbuild) printf '%s\n' "$2" | grep -qE '^VERDICT: ';;
-    verify) printf '%s\n' "$2" | grep -qE '^FIX-(OK|INCOMPLETE)';;
-  esac
+  printf '%s\n' "$head_line"
+  cat "$verdicts_f"
+  printf 'CI %s %s\n' "$short" "$ci"
+  cat "$bad_f"
+  cat "$unfinished_f"
+
+  if [ "$unfinished" -gt 0 ] || [ "$bad" -gt 0 ]; then exit 1; fi
+  exit 0
 }
 
-verdicts_f="$tmp/verdicts.txt"
-unfinished_f="$tmp/unfinished.txt"
-: >"$verdicts_f"
-: >"$unfinished_f"
-unfinished=0
-for pair in "${id_list[@]}"; do
-  role="${pair%%:*}"; jid="${pair#*:}"
-  rec="$jobs_dir/$jid.json"
-  status="MISSING"; gate="none"; text=""
-  if [ -f "$rec" ]; then
-    status="$(jq -r '.status // "MISSING"' "$rec" 2>/dev/null || echo MISSING)"
-    gate="$(jq -r '.result.gateResult.exitCode // "none"' "$rec" 2>/dev/null || echo none)"
-    text="$(jq -r '.result.text // empty' "$rec" 2>/dev/null || true)"
-  fi
-  if [ -n "$text" ]; then
-    printf '%s\n' "$text" | grep -E '^(VERDICT|P[123] |FIX-OK|FIX-INCOMPLETE)' >>"$verdicts_f" || true
-  fi
-  # A reviewer with findings may end DONE_WITH_CONCERNS; its verdict still stands.
-  if [ "$status" != "DONE" ] && [ "$status" != "DONE_WITH_CONCERNS" ]; then
-    printf 'UNFINISHED %s %s gate=%s %s\n' "$role" "$status" "$gate" "$rec" >>"$unfinished_f"
-    unfinished=$((unfinished + 1))
-  elif ! has_verdict "$role" "$text"; then
-    printf 'UNFINISHED %s %s gate=%s %s\n' "$role" "$status" "$gate" "$rec" >>"$unfinished_f"
-    unfinished=$((unfinished + 1))
-  fi
-done
-short="${sha:0:8}"
-checks="$(gh pr checks "$pr" --repo "$repo" 2>/dev/null || true)"
-ci="none"
-if [ -n "$checks" ]; then
-  ci="pass"
-  while IFS= read -r line; do
-    case "$line" in ""|NAME*|Name*) continue;; esac
-    state="$(printf '%s\n' "$line" | awk -F'\t' '{print $2}')"
-    if [ -z "$state" ]; then
-      state="$(printf '%s\n' "$line" | awk '{print $2}')"
-    fi
-    case "$state" in
-      fail|failed|failure|cancel|cancelled|timed_out|action_required) ci="fail"; break;;
-      pending|queued|requested|waiting|in_progress)
-        if [ "$ci" != "fail" ]; then ci="pending"; fi;;
-    esac
-  done <<<"$checks"
-fi
-
-printf '%s\n' "$head_line"
-cat "$verdicts_f"
-printf 'CI %s %s\n' "$short" "$ci"
-cat "$unfinished_f"
-
-if [ "$unfinished" -gt 0 ]; then exit 1; fi
-exit 0
+[ $# -ge 1 ] || usage
+sub="$1"; shift
+case "$sub" in
+  start) cmd_start "$@";;
+  collect) cmd_collect "$@";;
+  *) usage;;
+esac
