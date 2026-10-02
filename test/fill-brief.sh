@@ -54,4 +54,45 @@ out="$("$FILL" "$T/r.md" 'A=Z')" || fail "repeat fill exits 0"
 "$FILL" "$T/t.md" 'NOEQUALS' >/dev/null 2>&1; [ "$?" = "2" ] || fail "key without = exits 2"
 "$FILL" "$T/does-not-exist.md" 'A=1' >/dev/null 2>&1; [ "$?" = "2" ] || fail "missing template exits 2"
 
+# --out writes the file and prints exactly the launch line
+printf 'a __A__ b\n' >"$T/o.md"
+"$FILL" --out "$T/brief.md" "$T/o.md" 'A=1' >"$T/line.txt" || fail "--out exits 0"
+[ "$(wc -l <"$T/line.txt" | tr -d ' ')" = "1" ] || fail "--out prints exactly one line"
+[ "$(cat "$T/line.txt")" = "Read $T/brief.md and follow it." ] || fail "--out prints launch line"
+"$FILL" "$T/o.md" 'A=1' >"$T/std.txt" || fail "stdout mode exits 0"
+cmp -s "$T/brief.md" "$T/std.txt" || fail "--out file matches stdout mode"
+
+# --out with a relative path exits 2, nothing on stdout
+stdout="$("$FILL" --out rel/brief.md "$T/o.md" 'A=1' 2>"$T/err-rel.txt")"; [ "$?" = "2" ] || fail "relative --out exits 2"
+[ -z "$stdout" ] || fail "relative --out prints nothing on stdout"
+
+# --out to an unwritable path exits 1, nothing on stdout
+stdout="$("$FILL" --out "$T/no-such-dir/brief.md" "$T/o.md" 'A=1' 2>/dev/null)"; [ "$?" = "1" ] || fail "unwritable --out exits 1"
+[ -z "$stdout" ] || fail "unwritable --out prints nothing on stdout"
+[ ! -e "$T/no-such-dir/brief.md" ] || fail "unwritable --out writes nothing"
+
+# a failing placeholder check with --out exits 1 and writes nothing
+printf 'hello __NAME__\n' >"$T/ou.md"
+rm -f "$T/should-not-exist.md"
+stdout="$("$FILL" --out "$T/should-not-exist.md" "$T/ou.md" 2>"$T/err-ou.txt")"; [ "$?" = "1" ] || fail "unfilled --out exits 1"
+[ -z "$stdout" ] || fail "unfilled --out prints nothing on stdout"
+grep -q '^unfilled: __NAME__$' "$T/err-ou.txt" || fail "unfilled --out names __NAME__"
+[ ! -e "$T/should-not-exist.md" ] || fail "unfilled --out writes nothing"
+
+# --out with a newline in the path exits 2, nothing on stdout, writes nothing
+nl_path="$T/bad
+name.md"
+stdout="$("$FILL" --out "$nl_path" "$T/o.md" 'A=1' 2>"$T/err-nl.txt")"; [ "$?" = "2" ] || fail "newline --out exits 2"
+[ -z "$stdout" ] || fail "newline --out prints nothing on stdout"
+[ ! -e "$nl_path" ] || fail "newline --out writes nothing"
+
+# --out to a write-only file exits 1: the read-back cannot be verified
+printf '' >"$T/empty.md"
+: >"$T/wo.md"
+chmod 200 "$T/wo.md"
+stdout="$("$FILL" --out "$T/wo.md" "$T/empty.md" 2>"$T/err-wo.txt")"; [ "$?" = "1" ] || fail "unreadable --out exits 1"
+[ -z "$stdout" ] || fail "unreadable --out prints nothing on stdout"
+grep -q 'cannot read output file' "$T/err-wo.txt" || fail "unreadable --out names read error"
+chmod 600 "$T/wo.md"
+
 echo "fill-brief: all cases passed"

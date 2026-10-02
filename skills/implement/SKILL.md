@@ -24,7 +24,7 @@ Done when you know the tracker, labels, workflow doc and models.
 
 ### 2. Preflight
 
-Fill `../planning/briefs/preflight.md` and run it on a model from a different family than yours, as its own job, before any plan exists. A `core` item parks the ticket. `non-blocking` items and the file list go to the plan.
+Fill `../planning/briefs/preflight.md` with `fill-brief --out <absolute path>` (e.g. `/tmp/<repo>-<issue>-preflight.md`) and run it as its own job, on a model from a different family than yours, before any plan exists, using the printed line verbatim as the prompt, never a hand-written path. A `core` item parks the ticket. `non-blocking` items and the file list go to the plan.
 
 Done when the preflight has returned and no `core` item is open.
 
@@ -36,7 +36,7 @@ Done when the lane brief is filled.
 
 ### 4. Lane
 
-Cut a worktree from `origin/main` and dispatch the lane brief on a Work-tier model (per the `delegate` skill).
+Cut a worktree from `origin/main` and dispatch the lane brief on a Work-tier model (per the `delegate` skill). The lane brief was filled with `fill-brief --out <absolute path>`; use the printed line verbatim as the lane's prompt, never a hand-written path.
 
 Done when the lane reports a PR URL and head SHA, or a failure triage.
 
