@@ -1,37 +1,32 @@
 ---
 name: code-review
-description: "Review the changes since a fixed point (commit, branch, tag, or merge-base) along two axes: Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/spec asked for?). Runs both reviews in parallel sub-agents and reports them side by side. Use when the user wants to review a branch, a PR, work-in-progress changes, or asks to \"review since X\"."
+description: "Review the changes since a fixed point (commit, branch, tag, or merge-base) on two axes: Standards (does the code follow this repo's documented standards?) and Spec (does it do what the issue or spec asked, and nothing else?). Ends in one verdict per axis. Use when asked to review a branch, a PR or work in progress, to review since X, or to verify a repair against earlier findings."
 ---
 
-Two-axis review of the diff between `HEAD` and a fixed point the user supplies:
+One review pass on the diff between `HEAD` and a fixed point, on two axes:
 
-- **Standards**: does the code conform to this repo's documented coding standards?
-- **Spec**: does the code faithfully implement the originating issue / spec?
+- **Standards**: does the code conform to this repo's documented standards?
+- **Spec**: does the code do what the originating issue or spec asked, and nothing else?
 
-Both axes run as **parallel sub-agents** so they don't pollute each other's context, then this skill aggregates their findings.
+The axes stay separate: code can follow every standard and build the wrong thing, or build the right thing against the project's conventions. Reporting them apart stops one from masking the other.
 
-Fetch issues through `docs/agents/issue-tracker.md` when it exists. Otherwise use the repo's remote: `gh issue view <n> --comments` on GitHub, `glab issue view <n> --comments` on GitLab, and on any other host ask the user for the issue text.
+Read the workflow doc `docs/agents/workflow.md` points at; its review rules win where they speak. Fetch issues through `docs/agents/issue-tracker.md`. When anything this review needs is missing (the fixed point, the diff, the spec), report a failed review naming what is missing to whoever started you; a review that guesses its inputs is worse than none.
+
+When earlier findings are passed in, skip to **Scoped verify**.
 
 ## Process
 
 ### 1. Pin the fixed point
 
-Whatever the user said is the fixed point (a commit SHA, branch name, tag, `main`, `HEAD~5`, etc.). If they didn't specify one, ask for it.
+Run `git fetch origin`, then take the diff against the remote base: `git diff origin/<base>...HEAD` (three-dot, so the comparison is against the merge-base). A worktree's local `main` may predate landed merges, and diffing against it both fabricates scope creep and hides real creep. List the commits with `git log <fixed-point>..HEAD --oneline`.
 
-Run `git fetch origin` first, then capture the diff against the remote base: `git diff origin/<base>...HEAD` (three-dot, so the comparison is against the merge-base). A worktree's local `main` may predate landed merges, and diffing against it both fabricates scope creep and hides real creep. Also note the list of commits via `git log <fixed-point>..HEAD --oneline`.
+Done when the fixed point resolves (`git rev-parse <fixed-point>`) and the diff is non-empty.
 
-Before going further, confirm the fixed point resolves (`git rev-parse <fixed-point>`) and the diff is non-empty. A bad ref or empty diff should fail here, not inside two parallel sub-agents.
+### 2. Find the spec
 
-### 2. Identify the spec source
+In order: issue references in the commit messages or PR body (`#123`, `Fixes #45`), a path passed as an argument, a spec file under `docs/`, `specs/` or `.scratch/` matching the branch. With no spec, the Spec axis reports `no spec available` and its verdict is `CHANGES`.
 
-Look for the originating spec, in this order:
-
-1. Issue references in the commit messages (`#123`, `Closes #45`, GitLab `!67`, etc.), fetched through the issue tracker (above).
-2. A path the user passed as an argument.
-3. A spec file under `docs/`, `specs/`, or `.scratch/` matching the branch name or feature.
-4. If nothing is found, ask the user where the spec is. If they say there isn't one, the **Spec** sub-agent will skip and report "no spec available".
-
-### 3. Identify the standards sources
+### 3. Find the standards
 
 Start from the repo's `AGENTS.md` or `CLAUDE.md`: the docs it indexes for code rules and review are the standards sources, and a list headed as the reviewer's checks is the core of the Standards brief. Then add any other file that documents how code should be written, such as `CODING_STANDARDS.md` or `CONTRIBUTING.md`.
 
@@ -54,40 +49,39 @@ Each smell reads *what it is* → *how to fix*; match it against the diff:
 - **Message Chains**: long `a.b().c().d()` navigation the caller shouldn't depend on. → hide the walk behind one method on the first object.
 - **Middle Man**: a class or function that mostly just delegates onward. → cut it, call the real target direct.
 - **Refused Bequest**: a subclass or implementer that ignores or overrides most of what it inherits. → drop the inheritance, use composition.
+- **Parallel APIs**: a new API lands beside the legacy one it replaces, with callers split between them. → migrate the callers, then delete the legacy API.
 
-### 4. Spawn both sub-agents in parallel
+### 4. Review
 
-**The repo's review procedure wins.** When the repo documents one (how many reviewers, which model family, where findings are posted), follow it: a single reviewer gets both briefs below and reports under both headings. A reviewer required to be from a different model family than the implementer runs on that family through whatever reaches it (a CLI or a delegate tool), never as a same-model sub-agent.
+Read the diff once per axis, and follow each hunk into the code around it as far as the finding needs.
 
-**Standards sub-agent prompt** should include:
+- **Standards**: every place the diff breaks a documented standard (cite the file and rule), and any baseline smell (name it, quote the hunk). Skip anything tooling enforces.
+- **Spec**: requirements missing or partial; requirements that look implemented but wrong (quote the spec line).
+- **Scope check** (Spec axis): every file or hunk the diff modified that the ticket didn't ask for. An unrequested edit is a finding even when it looks like an improvement.
+- When the change touches security, permission, authentication or persistence, add the adversarial branch: try spelling tricks, fail-open inputs, weaker fallback identities, unresolvable indirection and TOCTOU gaps, plus one bypass family beyond the list.
 
-- The full diff command and commit list.
-- The list of standards-source files you found in step 3, **plus the smell baseline from step 3** pasted in full (the sub-agent has no other access to it).
-- The brief: "Report, per file/hunk where relevant, (a) every place the diff violates a documented standard: cite the standard (file + the rule); and (b) any baseline smell you spot: name it and quote the hunk. Distinguish hard violations from judgement calls: documented-standard breaches can be hard, but baseline smells are always judgement calls, and a documented repo standard overrides the baseline. Skip anything tooling enforces. Under 400 words."
+### 5. Report
 
-**Spec sub-agent prompt** should include:
+Write the report where the workflow doc says findings go (a PR comment, for example), else in chat:
 
-- The diff command and commit list.
-- The path or fetched contents of the spec.
-- The brief: "Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for (scope creep); (c) requirements that look implemented but where the implementation looks wrong. Quote the spec line for each finding. Under 400 words."
-- When the change is security, permission, authentication, or persistence surface, add the adversarial branch: the brief carries an explicit bypass checklist for that surface (spelling tricks, fail-open inputs, weaker-fallback identities, unresolvable indirection, TOCTOU gaps) and invites one more bypass family beyond the list. Generic briefs do not find `chatgpt-auth.{json,bak}`.
+```
+VERDICT standards: APPROVE|CHANGES
+P2 src/order.ts:41 — catches and drops the write error (AGENTS.md: "never swallow errors") — rethrow, or return it to the caller
+VERDICT spec: APPROVE|CHANGES
+P1 src/order.ts:88 — refund skips the ledger entry the spec requires — write the entry before returning
+```
 
-If the spec is missing, skip the Spec sub-agent and note this in the final report.
+Each finding is `P1|P2|P3 file:line — defect — fix`, under its axis's verdict, most severe first. P1 is wrong behaviour or a security hole, P2 a missed acceptance criterion, an unrequested edit or a hard standards breach, P3 anything smaller, baseline smells included. An axis with any P1 or P2 is `CHANGES`. A merge needs both axes `APPROVE`.
 
-### 5. Aggregate
+## Scoped verify
 
-Present the two reports under `## Standards` and `## Spec` headings, verbatim or lightly cleaned, where the repo's procedure says findings go (a PR comment, for example), else in chat. Do **not** merge or rerank findings, because the two axes are deliberately separate (see _Why two axes_).
+The input is the earlier findings and the repair diff (the commits since the reviewed head). Check each finding against the code: fixed, or still open. Run the scope check (step 4) on the repair diff: a repair that edits beyond its findings is a new finding.
 
-End with a one-line summary: total findings per axis, and the worst issue _within each axis_ (if any). Don't pick a single winner across axes: that's the reranking the separation exists to prevent.
+```
+FIX-OK
+```
 
-## Why two axes
-
-A change can pass one axis and fail the other:
-
-- Code that follows every standard but implements the wrong thing → **Standards pass, Spec fail.**
-- Code that does exactly what the issue asked but breaks the project's conventions → **Spec pass, Standards fail.**
-
-Reporting them separately stops one axis from masking the other.
+or `FIX-INCOMPLETE`, followed by every finding still open and every new one, in the finding format above.
 
 ## Answering the findings
 
