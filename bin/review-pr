@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # review-pr: run a PR's reviews through the delegate CLI, post one PR comment,
 # and print a verdict digest for the orchestrator.
-# Usage: review-pr <pr> --repo OWNER/NAME --cwd CLONE --issue N --spec N --model M --ponytail-model M2 [--workflow-doc PATH]
+# Usage: review-pr <pr> --repo OWNER/NAME --cwd CLONE [--issue N] [--spec N] --model M --ponytail-model M2 [--workflow-doc PATH]
 #        review-pr <pr> --repo OWNER/NAME --cwd CLONE --model M --verify FINDINGS_FILE --since SHA [--workflow-doc PATH]
 set -euo pipefail
 
 usage() {
-  echo "usage: review-pr <pr> --repo OWNER/NAME --cwd CLONE --issue N --spec N --model M --ponytail-model M2 [--workflow-doc PATH]" >&2
+  echo "usage: review-pr <pr> --repo OWNER/NAME --cwd CLONE [--issue N] [--spec N] --model M --ponytail-model M2 [--workflow-doc PATH]" >&2
   echo "       review-pr <pr> --repo OWNER/NAME --cwd CLONE --model M --verify FINDINGS_FILE --since SHA [--workflow-doc PATH]" >&2
   exit 2
 }
@@ -42,7 +42,9 @@ if [ -n "$verify" ]; then
   { [ -z "$issue" ] && [ -z "$specn" ] && [ -z "$pmodel" ]; } || usage
 else
   mode="review"
-  [ -n "$issue" ] && [ -n "$specn" ] && [ -n "$pmodel" ] || usage
+  [ -n "$pmodel" ] || usage
+  # A PR with no ticket is its own spec: gh issue view accepts a PR number.
+  issue="${issue:-$pr}"; specn="${specn:-$pr}"
   [ -z "$since" ] || usage
 fi
 if [ -z "$wdoc" ]; then wdoc="none"; fi
@@ -180,7 +182,8 @@ for pair in "${id_list[@]}"; do
   if [ -n "$text" ]; then
     printf '%s\n' "$text" | grep -E '^(VERDICT|P[123] |FIX-OK|FIX-INCOMPLETE)' >>"$verdicts_f" || true
   fi
-  if [ "$status" != "DONE" ]; then
+  # A reviewer with findings may end DONE_WITH_CONCERNS; its verdict still stands.
+  if [ "$status" != "DONE" ] && [ "$status" != "DONE_WITH_CONCERNS" ]; then
     printf 'UNFINISHED %s %s gate=%s %s\n' "$role" "$status" "$gate" "$rec" >>"$unfinished_f"
     unfinished=$((unfinished + 1))
   elif ! has_verdict "$role" "$text"; then
