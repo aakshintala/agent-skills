@@ -152,6 +152,17 @@ gh pr comment "$pr" --repo "$repo" --body-file "$body" >&2
 
 head_line="patch-id $patch_id"
 
+# has_verdict <role> <text>: the role's full verdict is present (a review
+# needs both axes; ponytail one VERDICT line; verify FIX-OK or FIX-INCOMPLETE).
+has_verdict() {
+  case "$1" in
+    review) printf '%s\n' "$2" | grep -qE '^VERDICT standards: ' &&
+            printf '%s\n' "$2" | grep -qE '^VERDICT spec: ';;
+    ponytail) printf '%s\n' "$2" | grep -qE '^VERDICT: ';;
+    verify) printf '%s\n' "$2" | grep -qE '^FIX-(OK|INCOMPLETE)';;
+  esac
+}
+
 verdicts_f="$tmp/verdicts.txt"
 unfinished_f="$tmp/unfinished.txt"
 : >"$verdicts_f"
@@ -172,7 +183,7 @@ for pair in "${id_list[@]}"; do
   if [ "$status" != "DONE" ]; then
     printf 'UNFINISHED %s %s gate=%s %s\n' "$role" "$status" "$gate" "$rec" >>"$unfinished_f"
     unfinished=$((unfinished + 1))
-  elif ! printf '%s' "$text" | grep -qE '^(VERDICT|FIX-)'; then
+  elif ! has_verdict "$role" "$text"; then
     printf 'UNFINISHED %s %s gate=%s %s\n' "$role" "$status" "$gate" "$rec" >>"$unfinished_f"
     unfinished=$((unfinished + 1))
   fi

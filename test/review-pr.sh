@@ -110,16 +110,17 @@ reset_state() {
 reset_state
 printf 'ci\tpass\nlint\tpass\n' >"$T/checks.txt"
 write_record review DONE "too long, will quote the verdict lines
-VERDICT: accept
+VERDICT standards: APPROVE
+VERDICT spec: CHANGES
 P1 fix the off-by-one
 STATUS: DONE" 0
 write_record ponytail DONE "looks lean
-VERDICT: accept
+VERDICT: APPROVE
 STATUS: DONE" 0
 out="$("$REVIEW" 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
   --model M --ponytail-model M2 2>"$T/stderr.txt")" || fail "success exits 0"
 [ "$(printf '%s' "$out" | head -1)" = "patch-id $EXPECTED_PID" ] || fail "success patch-id line"
-printf '%s' "$out" | grep -q "^VERDICT: accept$" || fail "success carries VERDICT lines"
+printf '%s' "$out" | grep -q "^VERDICT spec: CHANGES$" || fail "success carries VERDICT lines"
 printf '%s' "$out" | grep -q "^P1 fix the off-by-one$" || fail "success carries P1 lines"
 printf '%s' "$out" | grep -q "^CI $SHORT pass$" || fail "success CI line"
 printf '%s' "$out" | grep -q UNFINISHED && fail "success has no UNFINISHED"
@@ -140,7 +141,7 @@ grep -q 'workflow doc is none' "$T/state/prompt-review.md" || fail "workflow doc
 reset_state
 printf 'ci\tfail\n' >"$T/checks.txt"
 write_record review ERROR "something broke mid-run"
-write_record ponytail DONE "VERDICT: accept
+write_record ponytail DONE "VERDICT: APPROVE
 STATUS: DONE" 0
 out="$("$REVIEW" 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
   --model M --ponytail-model M2 2>/dev/null)" && fail "unfinished exits 1"
@@ -153,7 +154,7 @@ reset_state
 : >"$T/checks.txt"
 write_record review DONE "all good, nothing to report
 STATUS: DONE" 3
-write_record ponytail DONE "VERDICT: accept
+write_record ponytail DONE "VERDICT: APPROVE
 STATUS: DONE" 0
 out="$("$REVIEW" 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
   --model M --ponytail-model M2 2>/dev/null)" && fail "no-verdict exits 1"
@@ -181,4 +182,15 @@ grep -q '^## verify (M)$' "$T/state/comment.md" || fail "comment verify heading"
 "$REVIEW" >/dev/null 2>&1; [ "$?" = "2" ] || fail "no args exits 2"
 "$REVIEW" 7 --repo O/N --cwd "$T/clone" --model M >/dev/null 2>&1; [ "$?" = "2" ] || fail "review missing flags exits 2"
 
+
+# --- case: a review with only one axis's verdict is UNFINISHED; exit 1
+reset_state
+: >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+STATUS: DONE" 0
+write_record ponytail DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+out="$("$REVIEW" 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
+  --model M --ponytail-model M2 2>/dev/null)" && fail "one-axis review exits 1"
+printf '%s' "$out" | grep -q "^UNFINISHED review DONE" || fail "one-axis review is UNFINISHED"
 echo "review-pr: all cases passed"

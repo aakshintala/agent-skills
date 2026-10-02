@@ -9,7 +9,7 @@ Schedule many tickets through `implement` in parallel lanes, or many PRs through
 
 ### 1. Confirm the session
 
-With the owner, at start (a typed start means they're present now):
+First run `implement` step 1 (check setup). Then, with the owner, at start (a typed start means they're present now):
 
 - Repo, work source (a list of tickets, or a stack of PRs for PR-stack mode), base commit.
 - Models: the Work and Hard tier picks (per the `delegate` skill), and the lane budget (2 works).
@@ -34,7 +34,7 @@ Done when every lane is filled or its idle reason is recorded.
 
 ### 3. Rule and merge
 
-Answer each sub-orchestrator's escalations as `implement`'s rules say. Merge a PR only within the confirmed terms; a case the terms don't cover waits for the owner, posted on its ticket.
+Answer each sub-orchestrator's escalations as `implement`'s rules say. Merge a PR only within the confirmed terms; a case the terms don't cover goes to the owner by `implement`'s presence rule.
 
 Done when every reported PR is merged, or waits on the owner with the exact action posted.
 

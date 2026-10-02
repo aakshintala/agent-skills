@@ -11,7 +11,7 @@ The orchestrator writes every ticket's plan, after reading the code it describes
 
 Read every file the preflight listed and every file the plan will name. Send bulk reading beyond that (history, issue archives, unrelated modules) to sub-agents that return summaries.
 
-Done when you have read every file the plan will cite.
+Done when you have read every file the preflight listed and every file the plan will cite.
 
 ### 2. Write the plan
 

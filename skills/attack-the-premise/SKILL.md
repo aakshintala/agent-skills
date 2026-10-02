@@ -23,6 +23,10 @@ Done when the script runs and its output is posted beside the premise.
 
 When the same few actors hold most of the imbalance on every run, something assigns them that role: find it. That assignment is the cause. When the census is even across actors, the premise is not the cause: look elsewhere, and keep the census as evidence.
 
+Done when you can name what assigns the role, or the census shows an even spread.
+
 ### 4. Remove the asymmetry
 
 Change what assigns the role (rotate it, randomize it, move it) so no actor holds it on every run. A return path, a retry, a shared pool or a periodic rebalance compensates instead: it leaves the assignment in place and adds work on every run.
+
+Done when the census, rerun, shows the imbalance gone, and the check that failed passes.
