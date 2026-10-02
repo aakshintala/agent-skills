@@ -24,7 +24,7 @@ Done when the owner has confirmed every bullet.
 ### 2. Fill the lanes
 
 - Take the **frontier**: open tickets whose blockers are all closed. A ticket enters a lane only when its fence (the plan's Files) is disjoint from every running lane's.
-- Start each ticket's sub-orchestrator with `briefs/ticket-orchestrator.md`, filled with `~/.agents/bin/fill-brief`. It runs `implement` for that ticket and reports back here.
+- Start each ticket's sub-orchestrator with `briefs/ticket-orchestrator.md`, filled with `~/.agents/bin/fill-brief` (`SKILLS` is this pack's `skills` folder as an absolute path, so a harness that doesn't load the pack still finds `implement`). It runs `implement` for that ticket and reports back here.
 - Give every job its own worktree: delegation doesn't enforce read-only, so a shared directory lets parallel jobs damage each other. In the shared checkout run only `git fetch`.
 - When a lane closes, start the next disjoint ticket at once. An idle lane needs a reason in the state file (no disjoint work, or a pending ruling reshapes the queue).
 
