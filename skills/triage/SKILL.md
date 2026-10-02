@@ -22,10 +22,11 @@ Every comment or issue posted to the issue tracker during triage **must** start 
 
 ## Roles
 
-Two **category** roles:
+Three **category** roles:
 
-- `bug`: something is broken
+- `bug`: something is broken in the product
 - `enhancement`: new feature or improvement
+- `test-only`: the defect is in test code, such as a flaky test. Its fix proves itself by root cause and evidence (runs under load), since a fixed test passes on the base commit
 
 Five **state** roles:
 

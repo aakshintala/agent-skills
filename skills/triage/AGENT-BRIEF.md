@@ -41,7 +41,7 @@ State what is out of scope. This prevents the agent from gold-plating or making 
 ```markdown
 ## Agent Brief
 
-**Category:** bug / enhancement
+**Category:** bug / enhancement / test-only
 **Summary:** one-line description of what needs to happen
 
 **Current behavior:**
