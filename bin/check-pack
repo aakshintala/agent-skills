@@ -100,11 +100,13 @@ while IFS= read -r f; do
 
   # --- file references ---
 
-  # Relative markdown links ](path).
+  # Relative markdown links ](path), outside fenced code blocks (examples).
+  fenced="|$(awk '/^ *```/{f=!f;next} f{printf "%d|",NR}' "$f")"
   hits="$(grep -onE '\[[^]]*\]\([^)]*\)' "$f" 2>/dev/null || true)"
   while IFS= read -r hit; do
     [ -n "$hit" ] || continue
     line="${hit%%:*}"; m="${hit#*:}"
+    case "$fenced" in *"|$line|"*) continue;; esac
     text="${m%%\]*}"; text="${text#[}"
     rest="${m#*\](}"; target="${rest%)}"
     case "$target" in
@@ -139,7 +141,7 @@ while IFS= read -r f; do
         fi
         ;;
       \~/.agents/*)
-        rest="${inner#\~}"
+        rest="${inner#\~/.agents}"
         if [ ! -e "$root$rest" ]; then
           fail "$rel" "$line" "missing file: $inner"
         fi

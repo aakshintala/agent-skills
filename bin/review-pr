@@ -77,6 +77,10 @@ if [ -z "$sha" ] || [ "$sha" = "null" ]; then
   exit 1
 fi
 
+# Patch-id of the diff the reviews will see, taken before they start.
+patch_id="$(gh pr diff "$pr" --repo "$repo" | git patch-id --stable | awk '{print $1}')"
+if [ -z "$patch_id" ]; then patch_id="none"; fi
+
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/review-pr.XXXXXX")"
 wt_list=()
 cleanup() {
@@ -128,8 +132,6 @@ done
 # shellcheck disable=SC2086
 delegate watch $watch_ids --timeout 3600 >/dev/null 2>&1 || true
 
-patch_id="$(gh pr diff "$pr" --repo "$repo" | git patch-id --stable | awk '{print $1}')"
-if [ -z "$patch_id" ]; then patch_id="none"; fi
 
 jobs_dir="${TMPDIR:-/tmp}/delegate-jobs"
 
@@ -187,7 +189,7 @@ if [ -n "$checks" ]; then
       state="$(printf '%s\n' "$line" | awk '{print $2}')"
     fi
     case "$state" in
-      fail|failed|failure) ci="fail"; break;;
+      fail|failed|failure|cancel|cancelled|timed_out|action_required) ci="fail"; break;;
       pending|queued|requested|waiting|in_progress)
         if [ "$ci" != "fail" ]; then ci="pending"; fi;;
     esac
