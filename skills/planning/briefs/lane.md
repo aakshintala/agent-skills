@@ -11,6 +11,7 @@ __PLAN__
 - The plan's Files section is your fence. When you need a file outside it, stop and report.
 - Stop and report at these limits: __STOP_LIMITS__
 - Run the tasks in order, each test first, and pass each task's gate before starting the next.
+- Mark a deliberate shortcut with a `debt: <ceiling>, <upgrade trigger>` comment. A shortcut that would weaken a rule a doc, spec or ticket states gets no marker: stop and report.
 - Before pushing, the gate passes: `__GATE__`.
 - Push the branch and open a draft PR whose body says `Fixes #__ISSUE__`.
 
