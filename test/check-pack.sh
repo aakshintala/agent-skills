@@ -27,8 +27,8 @@ The binary lives at `~/.agents/bin/alpha`.
 EOF
 printf '# Guide\n' >"$BAD/skills/alpha/guide.md"
 printf '# Beta\n' >"$BAD/skills/beta/SKILL.md"
-mkdir -p "$BAD/.agents/bin"
-printf 'x\n' >"$BAD/.agents/bin/alpha"
+mkdir -p "$BAD/bin"
+printf 'x\n' >"$BAD/bin/alpha"
 cat >"$BAD/skills/alpha/briefs/job.md" <<'EOF'
 Do __WORK__ on __work__ now.
 Template uses {{thing}} too.
@@ -57,8 +57,8 @@ The binary lives at `~/.agents/bin/alpha`.
 EOF
 printf '# Guide\n' >"$GOOD/skills/alpha/guide.md"
 printf '# Beta\n' >"$GOOD/skills/beta/SKILL.md"
-mkdir -p "$GOOD/.agents/bin"
-printf 'x\n' >"$GOOD/.agents/bin/alpha"
+mkdir -p "$GOOD/bin"
+printf 'x\n' >"$GOOD/bin/alpha"
 cat >"$GOOD/skills/alpha/briefs/job.md" <<'EOF'
 Do __WORK__ on __OTHER_WORK2__ now.
 EOF
