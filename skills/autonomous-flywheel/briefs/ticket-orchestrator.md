@@ -2,9 +2,9 @@ Orchestrate issue #__ISSUE__ in __REPO__ (spec #__SPEC__) from start to merge. F
 
 Settings:
 - Worktree `__WORKTREE__` on branch `__BRANCH__`, cut from origin/main.
-- Models: Work tier __WORK_MODEL__, Hard tier __HARD_MODEL__. Reviews and the Verifier run on a different family than the implementer.
+- Models: Work tier __WORK_MODEL__, Hard tier __HARD_MODEL__. Review pool: correctness __REVIEW_MODEL__, over-engineering __OVERBUILD_MODEL__. The Verifier runs on a different family than the implementer.
 - Merge terms (beyond the workflow doc's merge rule): __MERGE_TERMS__.
 
-You are a sub-orchestrator: report every decision you can't make to me (the decision, what it blocks, what you keep building), and keep building what it doesn't block.
+You are a sub-orchestrator: post every decision you can't make to the tracker and report it to me as `implement`'s rules say, and keep building what it doesn't block. Wait on your jobs in the foreground (`delegate watch <ids> --timeout 590`, repeated until they finish), so your turn ends only with your report.
 
-Report, nothing in between: the merge commit SHA, or the PR URL with a failure triage and the exact action someone must take. Then **Friction**: up to 3 bullets ("none" is fine). End with a STATUS line.
+Report, nothing in between: the merge commit SHA, or the PR URL with a failure triage and the exact action someone must take; then every issue you opened or commented on. Then **Friction**: up to 3 bullets ("none" is fine). End with a STATUS line.
