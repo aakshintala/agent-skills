@@ -23,7 +23,7 @@ Done when both reviews have verdict lines for the current patch-id.
 
 Every verdict `APPROVE` and no open P1 or P2: the loop is done. Otherwise send every open finding in one fix round: fill `briefs/fix.md` with `~/.agents/bin/fill-brief` (findings as `FINDINGS=@<file>`) and dispatch it in the PR's worktree as a gated job. When every open finding is trivial by `implement`'s fix-by-churn rule, fix them inline and run the gate yourself instead; the round still counts, and step 3 still verifies it.
 
-Done when the fix round is dispatched with all open findings.
+Done when the fix round covers every open finding: dispatched as a gated job, or fixed inline with the gate's output stated.
 
 ### 3. Verify
 
