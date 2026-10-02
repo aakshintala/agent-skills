@@ -12,10 +12,16 @@ The loop for one PR. Reviews run on models from a different family than the PR's
 ### 1. Review
 
 ```
-~/.agents/bin/review-pr <pr> --repo <owner/name> --cwd <clone> [--issue <n> --spec <n>] --model <correctness> --overbuild-model <over-engineering> [--workflow-doc <path>]
+~/.agents/bin/review-pr start <pr> --repo <owner/name> --cwd <clone> [--issue <n> --spec <n>] --model <correctness> --overbuild-model <over-engineering> [--workflow-doc <path>]
 ```
 
-A PR with no ticket leaves out `--issue` and `--spec` and is reviewed against its own description. It runs the correctness review (`code-review`) and the over-engineering review (`overbuild-review`) as separate jobs, posts both on the PR with the patch-id, and prints only the verdicts, findings, CI state, and any job that didn't finish. An `UNFINISHED` line means that review didn't run: rerun it, and read nothing in its absence as approval.
+A PR with no ticket leaves out `--issue` and `--spec` and is reviewed against its own description. It launches the correctness review (`code-review`) and the over-engineering review (`overbuild-review`) as separate jobs, prints one `<role> <job-id>` line per job, and returns at once. Wait for the job ids with the delegation tool's wait command (`delegate watch <ids>`), in the wait mode your harness instructions prescribe, then:
+
+```
+~/.agents/bin/review-pr collect <job-id>...
+```
+
+It posts both reviews on the PR with the patch-id, and prints only the verdicts, findings, CI state, and any job that didn't finish. An `UNFINISHED` line means that review didn't run: start again, and read nothing in its absence as approval. A `BAD-VERDICT` line names a reviewer line outside the shared vocabulary: treat it as no verdict and start again.
 
 Done when both reviews have verdict lines for the current patch-id.
 
@@ -27,10 +33,11 @@ Done when the fix round covers every open finding: dispatched as a gated job, or
 
 ### 3. Verify
 
-Judge the repair by its diff (`git diff <reviewed head>..<new head>`) and gate output, never the fix worker's report. Then:
+Judge the repair by its diff (`git diff <reviewed head>..<new head>`) and gate output, never the fix worker's report. Then start the scoped verify (it returns its job id at once), wait as in step 1, and collect it:
 
 ```
-~/.agents/bin/review-pr <pr> --repo <owner/name> --cwd <clone> --model <correctness> --verify <findings file> --since <reviewed head>
+~/.agents/bin/review-pr start <pr> --repo <owner/name> --cwd <clone> --model <correctness> --verify <findings file> --since <reviewed head>
+~/.agents/bin/review-pr collect <job-id>
 ```
 
 `FIX-OK`: the loop is done. `FIX-INCOMPLETE`: back to step 2 with the open findings, while the counter is below 2.
