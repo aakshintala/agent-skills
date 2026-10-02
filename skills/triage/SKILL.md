@@ -109,3 +109,7 @@ Capture everything resolved during grilling under "established so far" so the wo
 ## Resuming a previous session
 
 If prior triage notes exist on the issue or PR, read them, check whether the reporter has answered any outstanding questions, and present an updated picture before continuing. Don't re-ask resolved questions.
+
+## Next phase
+
+Stop once the issue or PR has its role. Name the next phase with its input: `implement #<n>` for an issue now `ready-for-agent`, or `review-loop` on a `ready-for-agent` PR.

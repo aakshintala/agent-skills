@@ -72,3 +72,7 @@ A description of the things that are out of scope for this spec.
 Any further notes about the feature.
 
 </spec-template>
+
+## Next phase
+
+Stop once the spec is published; the next phase starts in a new session. Name it with its input: `/to-tickets #<spec issue>`.

@@ -32,5 +32,6 @@ When the shape of that interface is itself in question (how deep the module is, 
 ## Rules of the loop
 
 - **Red before green.** Write the failing test first, then only enough code to pass it. Don't anticipate future tests or add speculative features.
-- **One slice at a time.** One seam, one test, one minimal implementation per cycle.
+- **One slice at a time.** One seam, one test, one minimal implementation per cycle. Verify each unit (its test green, the suite still green) before starting the next.
+- **A regression test proves itself.** Record its negative control: the exact failure with the fix reverted, then green with it. A test that passes both ways proves nothing about the fix.
 - **Refactoring is not part of the loop.** It belongs to the review stage (see the `code-review` skill), not the red → green implementation cycle.

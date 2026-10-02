@@ -1,17 +1,25 @@
 ---
 name: retro
-description: "Conduct a retrospective on a coding session."
+description: "Conduct a retrospective on a coding session or a flywheel round, and file the durable lessons. Use when asked for a retro, or when a flywheel round closes."
 ---
 
 The user has asked for a **retrospective**. You are suggesting improvements to the coding agent's **environment** to improve future runs.
 
 ## Steps
 
-1. Call the Skill tool with `writing-for-agents` for the writing style guide.
+### 1. Load the style guide
 
-2. Read the primary sources for the session the user specifies. This may mean searching through session logs on this machine. If the user doesn't specify a session, default to the current one.
+Call the Skill tool with `writing-for-agents`.
 
-3. Look for candidates for improvement in these categories.
+### 2. Gather evidence
+
+Read the primary sources for the session or round the user names, defaulting to the current one. After a flywheel round or an `implement` run, read where the lessons happened: the lanes' **Friction** bullets, the rulings made mid-lane, and the review and verify rounds on each PR.
+
+Done when every lane, ruling and verify round in scope has been read.
+
+### 3. Find candidates
+
+Look in these categories:
 
 - **Navigation**: how easy was it for the agent to find the right files? Are there hidden dependencies between files? Would a **navigation pointer** make it easier? _Use when_ the session took a long time to find a piece of information.
 - **Automated checks**: are there automated checks that could catch errors the agent made? Pick the strongest that fits: a type that cannot hold the bad value, then a lint or test that fails CI, then one shared helper every caller uses, then a runtime check. Agents copy the guard the surrounding code uses, so a weak one spreads. _Use when_ the agent made a mistake that could have been caught by an automated check.
@@ -22,7 +30,41 @@ The user has asked for a **retrospective**. You are suggesting improvements to t
 - **No-ops**: look for instructions in steering files that don't modify the agent's behavior. _Use when_ the steering files are large and unwieldy.
 - **Information access**: look for opportunities to increase the agent's access to information. Teeing dev server logs, readonly access to third-party services. _Use when_ a crucial piece of information was not available to the agent.
 
-4. Present these candidates to the user, in order of severity.
+Done when every category has been checked against the evidence.
+
+### 4. Keep only lessons
+
+One-offs are not lessons. Keep a candidate only when it is durable (it will recur), decision-changing (it would change what an agent does), about a skill or doc that actually ran, and not already covered. Then sort what's left:
+
+- **Mechanical**: the failure has one correct check. Turn it into an automated check, not prose.
+- **Judgement**: the failure needs a call. Write it as prose in the one right place.
+
+A repo with no guardrail at all where one failed (no CI, no lint, no tests on the failing path) is itself a finding.
+
+Done when every surviving lesson is tagged mechanical or judgement.
+
+### 5. Route
+
+One rule decides where each lesson lands:
+
+- A check or an environment change goes to the repo where the failure happened.
+- A change to how one project works goes to that project's workflow doc.
+- Anything else goes to agent-skills.
+
+### 6. File
+
+When the owner is present, present the lessons in chat, most severe first, and let them reshape each one.
+
+When the owner is away:
+
+1. Search the destination repo's open issues labelled `retro-candidate` (create the label when it's missing). Close any with no new evidence for 30 days, commenting "expired, no recurrence".
+2. A lesson matching an open (or closed, then reopened) candidate is a second sighting: open a PR with the change.
+3. A first sighting becomes an issue labelled `retro-candidate`, holding the evidence.
+4. A lesson about data loss, or a destructive or out-of-scope edit, becomes a PR on its first sighting.
+
+Every retro PR opens with its evidence and its destination, so the owner can decide without reading the diff.
+
+Done when every lesson is presented, filed or merged into an existing candidate.
 
 ## Reference
 

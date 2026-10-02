@@ -63,6 +63,8 @@ When designing an interface, ask:
 - **The deletion test.** Imagine deleting the module. If complexity vanishes, it was a pass-through. If complexity reappears across N callers, it was earning its keep.
 - **The interface is the test surface.** Callers and tests cross the same seam. If you want to test *past* the interface, the module is probably the wrong shape.
 - **One adapter means a hypothetical seam. Two adapters means a real one.** Don't introduce a seam unless something actually varies across it.
+- **Make operations idempotent.** An operation that is safe to repeat makes retries, replays and crash recovery free; one that isn't pushes that work onto every caller.
+- **Separate writers before reaching for locks.** Give each piece of state one writer; a lock is what you add when two writers share state, and the cheaper fix is usually to stop sharing it.
 
 ## Designing for testability
 

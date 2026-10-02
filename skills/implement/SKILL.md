@@ -57,7 +57,7 @@ Done when CI is green on the head a verdict covers.
 
 ### 8. Merge
 
-Merge by the workflow doc's rule, plus any session terms the flywheel confirmed. Close linked issues and delete the worktree.
+Promote the draft PR to ready, then merge by the workflow doc's rule, plus any session terms the flywheel confirmed. Close linked issues and delete the worktree.
 
 Done when the PR is merged, or escalated as the rules above say.
 
