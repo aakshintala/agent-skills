@@ -57,7 +57,7 @@ Done when CI is green on the head a verdict covers.
 
 ### 8. Merge
 
-Promote the draft PR to ready, then merge by the workflow doc's rule, plus any session terms the flywheel confirmed. Close linked issues and delete the worktree. Delete the remote branch only when it still exists (`git ls-remote --exit-code --heads origin <branch>`): repos that delete merged branches have already done it.
+Promote the draft PR to ready, then merge by the workflow doc's rule, plus any session terms the flywheel confirmed. Close linked issues and delete the worktree. Delete the remote branch only when it still exists (`git ls-remote --exit-code origin refs/heads/<branch>`, an exact ref): repos that delete merged branches have already done it.
 
 Done when the PR is merged, or escalated as the rules above say.
 
