@@ -1,6 +1,6 @@
 Doc preflight for issue #__ISSUE__ in __REPO__. Do not edit anything. Do not delegate further.
 
-Read #__ISSUE__ (`gh issue view __ISSUE__ --repo __REPO__ --comments`), spec #__SPEC__ (`gh issue view __SPEC__ --repo __REPO__ --comments`), and the project's workflow doc (__WORKFLOW_DOC__). Then read the code on origin/main that #__ISSUE__ touches: the files it names, their callers, and their tests.
+Read #__ISSUE__ (`gh issue view __ISSUE__ --repo __REPO__ --comments`), spec #__SPEC__ (`gh issue view __SPEC__ --repo __REPO__ --comments`), and the project's workflow doc (__WORKFLOW_DOC__). Then read the code at __BASE__, in your working directory, that #__ISSUE__ touches: the files it names, their callers, and their tests.
 
 List, max 250 words, one line each:
 1. Contradictions between #__ISSUE__, #__SPEC__, the workflow doc and the code.

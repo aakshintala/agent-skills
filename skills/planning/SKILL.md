@@ -7,6 +7,8 @@ The orchestrator writes every ticket's plan, after reading the code it describes
 
 **Briefs.** The templates are `briefs/preflight.md`, `briefs/verifier.md` and `briefs/lane.md`. Fill them with `~/.agents/bin/fill-brief <template> KEY=VALUE...` (a value of `@<file>` reads the file), which fails on any unfilled placeholder or unknown key, so the brief never goes out half-filled and you write only the values. When a filled brief starts another job, fill it with `--out <absolute path>` (e.g. `/tmp/<repo>-<issue>-<template>.md`) and use the printed line verbatim as its prompt, never a hand-written path.
 
+**Base.** Every brief takes `BASE`, the code the plan describes, which the orchestrator prepares (see `implement` step 2): `origin/main` for a new ticket, the PR's branch with `origin/main` merged in for a re-plan. Read, plan and verify against that base.
+
 ### 1. Read
 
 Read every file the preflight listed and every file the plan will name. Send bulk reading beyond that (history, issue archives, unrelated modules) to sub-agents that return summaries.
@@ -43,7 +45,7 @@ Done when every section is filled, every ruling is tagged, and every known hazar
 
 ### 3. Verify
 
-Fill `briefs/verifier.md` with `PLAN=@<plan file>` and run it on a `strong` model from a different family than yours, or a `frontier` one when the plan's rung is `frontier`. For each line it returns, fix the plan or record a ruling. A core ruling still open parks the ticket (see `implement`).
+Fill `briefs/verifier.md` with `PLAN=@<plan file>` and the base, and run it in a checkout of the base on a `strong` model from a different family than yours, or a `frontier` one when the plan's rung is `frontier`. For each line it returns, fix the plan or record a ruling. A core ruling still open parks the ticket (see `implement`).
 
 Done when the Verifier says `PLAN OK`, or every line it returned is answered in the plan.
 
@@ -55,6 +57,6 @@ Done when the ticket's plan comment holds the current plan.
 
 ### 5. Brief the lane
 
-Fill `briefs/lane.md` with `PLAN=@<plan file>`, the worktree, branch and gate command. The brief's stop limits are structural: they catch a change of scope, and a large change inside scope is review's to judge.
+Fill `briefs/lane.md` with `PLAN=@<plan file>`, the base, worktree, branch and gate command. The brief's stop limits are structural: they catch a change of scope, and a large change inside scope is review's to judge.
 
 Done when `fill-brief` exits 0.

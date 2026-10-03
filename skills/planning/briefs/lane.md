@@ -1,4 +1,4 @@
-Implement issue #__ISSUE__ in __REPO__ in worktree `__WORKTREE__` on branch `__BRANCH__`, cut from origin/main. Do not delegate further.
+Implement issue #__ISSUE__ in __REPO__ in worktree `__WORKTREE__` on branch `__BRANCH__`, starting from __BASE__. Do not delegate further.
 
 The project's workflow doc is __WORKFLOW_DOC__; it wins where it speaks.
 
@@ -13,7 +13,7 @@ __PLAN__
 - Run the tasks in order, each test first, and pass each task's gate before starting the next.
 - Mark a deliberate shortcut with a `debt: <ceiling>, <upgrade trigger>` comment. A shortcut that would weaken a rule a doc, spec or ticket states gets no marker: stop and report.
 - Before pushing, the gate passes: `__GATE__`.
-- Push the branch and open a draft PR whose body says `Resolves #__ISSUE__`.
+- Push the branch. When no PR is open on it, open a draft PR whose body says `Resolves #__ISSUE__`.
 
 ## Report
 
