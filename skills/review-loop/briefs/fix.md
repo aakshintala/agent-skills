@@ -12,6 +12,7 @@ __FINDINGS__
 - Mark a deliberate shortcut with a `debt: <ceiling>, <upgrade trigger>` comment. A shortcut that would weaken a rule a doc, spec or ticket states gets no marker: stop and report.
 - Keep every test's timeouts, waits, retry counts and numeric tolerances as they are. A fix that needs a looser one stops and reports the cause it would hide.
 - When the same check fails twice after your fixes, stop: report the assumption your fixes share, and start no third patch.
+- Refer to issues as `see #N` or `#N's case` in commit messages; a closing keyword (close, fix, resolve and their forms) before an issue number closes that issue on merge.
 - Before pushing, the gate passes: `__GATE__`. Commit and push.
 
 ## Report
