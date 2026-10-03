@@ -28,7 +28,7 @@ Done when the owner has confirmed every bullet.
 - Give every job its own worktree: delegation doesn't enforce read-only, so a shared directory lets parallel jobs damage each other. In the shared checkout run only `git fetch`.
 - When a lane closes, start the next disjoint ticket at once. An idle lane needs a reason in the state file (no disjoint work, or a pending ruling reshapes the queue).
 
-**PR-stack mode**: for PRs with no ticket, run `review-loop`, then `ci-triage`, then merge, for each PR in the stack.
+**PR-stack mode**: for PRs with no ticket, run `review-loop`, then `ci-triage`, then merge by `implement` step 8, for each PR in the stack.
 
 Done when every lane is filled or its idle reason is recorded.
 
