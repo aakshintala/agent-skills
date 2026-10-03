@@ -2,8 +2,8 @@
 # review-pr: run a PR's reviews through the delegate CLI, post one PR comment,
 # and print a verdict digest for the orchestrator.
 # Usage:
-#   review-pr start <pr> --repo OWNER/NAME --cwd CLONE [--issue N] [--spec N] --model M --overbuild-model M2 [--workflow-doc PATH]
-#   review-pr start <pr> --repo OWNER/NAME --cwd CLONE --model M --verify FINDINGS_FILE --since SHA [--workflow-doc PATH]
+#   review-pr start <pr> --repo OWNER/NAME --cwd CLONE [--issue N] [--spec N] --model M --overbuild-model M2 [--workflow-doc PATH] [--head SHA]
+#   review-pr start <pr> --repo OWNER/NAME --cwd CLONE --model M --verify FINDINGS_FILE --since SHA [--workflow-doc PATH] [--head SHA]
 #     launches one job per review role, prints "<role> <job-id>" per job, and
 #     returns at once. Wait for the ids with the delegation tool's wait command
 #     (delegate watch), in the wait mode your harness instructions prescribe.
@@ -26,8 +26,8 @@ set -euo pipefail
 # verdict: loud failure, never UNFINISHED.
 
 usage() {
-  echo "usage: review-pr start <pr> --repo OWNER/NAME --cwd CLONE [--issue N] [--spec N] --model M --overbuild-model M2 [--workflow-doc PATH]" >&2
-  echo "       review-pr start <pr> --repo OWNER/NAME --cwd CLONE --model M --verify FINDINGS_FILE --since SHA [--workflow-doc PATH]" >&2
+  echo "usage: review-pr start <pr> --repo OWNER/NAME --cwd CLONE [--issue N] [--spec N] --model M --overbuild-model M2 [--workflow-doc PATH] [--head SHA]" >&2
+  echo "       review-pr start <pr> --repo OWNER/NAME --cwd CLONE --model M --verify FINDINGS_FILE --since SHA [--workflow-doc PATH] [--head SHA]" >&2
   echo "       review-pr collect <job-id>..." >&2
   exit 2
 }
@@ -119,7 +119,7 @@ cmd_start() {
   case "$pr" in -*|"") usage;; esac
 
   repo=""; clone=""; issue=""; specn=""; model=""; omodel=""
-  verify=""; since=""; wdoc=""
+  verify=""; since=""; wdoc=""; head=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo) [ $# -ge 2 ] || usage; repo="$2"; shift 2;;
@@ -131,6 +131,7 @@ cmd_start() {
       --verify) [ $# -ge 2 ] || usage; verify="$2"; shift 2;;
       --since) [ $# -ge 2 ] || usage; since="$2"; shift 2;;
       --workflow-doc) [ $# -ge 2 ] || usage; wdoc="$2"; shift 2;;
+      --head) [ $# -ge 2 ] || usage; head="$2"; shift 2;;
       *) usage;;
     esac
   done
@@ -151,6 +152,9 @@ cmd_start() {
     [ -z "$since" ] || usage
   fi
   if [ -z "$wdoc" ]; then wdoc="none"; fi
+  if [ -n "$head" ]; then
+    printf '%s' "$head" | grep -Eq '^[0-9a-f]{40}$' || usage
+  fi
 
   if [ "$mode" = "review" ]; then
     roles="review overbuild"
@@ -164,15 +168,32 @@ cmd_start() {
     esac
   }
 
-  sha="$(gh pr view "$pr" --repo "$repo" --json headRefOid | jq -r .headRefOid)"
-  if [ -z "$sha" ] || [ "$sha" = "null" ]; then
-    echo "review-pr: no head SHA for PR $pr in $repo" >&2
-    exit 1
-  fi
+  if [ -n "$head" ]; then
+    # Wait for the API to report the head the caller pushed; create nothing
+    # until it does.
+    sha="$head"
+    waited=0
+    while :; do
+      api_head="$(gh pr view "$pr" --repo "$repo" --json headRefOid 2>/dev/null | jq -r '.headRefOid // empty' 2>/dev/null)" || api_head=""
+      [ "$api_head" = "$head" ] && break
+      if [ "$waited" -ge 30 ]; then
+        echo "review-pr: PR $pr head is ${api_head:-none}, expected $head; gave up after 60s" >&2
+        exit 1
+      fi
+      sleep 2
+      waited=$((waited + 1))
+    done
+  else
+    sha="$(gh pr view "$pr" --repo "$repo" --json headRefOid | jq -r .headRefOid)"
+    if [ -z "$sha" ] || [ "$sha" = "null" ]; then
+      echo "review-pr: no head SHA for PR $pr in $repo" >&2
+      exit 1
+    fi
 
-  # Patch-id of the diff the reviews will see, taken before they start.
-  patch_id="$(gh pr diff "$pr" --repo "$repo" | git patch-id --stable | awk '{print $1}')"
-  if [ -z "$patch_id" ]; then patch_id="none"; fi
+    # Patch-id of the diff the reviews will see, taken before they start.
+    patch_id="$(gh pr diff "$pr" --repo "$repo" | git patch-id --stable | awk '{print $1}')"
+    if [ -z "$patch_id" ]; then patch_id="none"; fi
+  fi
 
   mkdir -p "$state_dir"
   run_dir="$(mktemp -d "${TMPDIR:-/tmp}/review-pr.run.XXXXXX")"
@@ -196,6 +217,23 @@ cmd_start() {
   trap cleanup_on_fail EXIT
 
   git -C "$clone" fetch origin "pull/$pr/head" >&2
+
+  if [ -n "$head" ]; then
+    if ! git -C "$clone" cat-file -e "$head^{commit}" 2>/dev/null; then
+      git -C "$clone" fetch origin "$head" >&2 || true
+    fi
+    if ! git -C "$clone" cat-file -e "$head^{commit}" 2>/dev/null; then
+      echo "review-pr: expected head $head is not fetchable for PR $pr" >&2
+      exit 1
+    fi
+    # Patch-id from the same state the reviews check out: the merge-base diff
+    # against a freshly fetched base tip, as GitHub shows it.
+    base="$(gh pr view "$pr" --repo "$repo" --json baseRefName | jq -r .baseRefName)"
+    git -C "$clone" fetch origin "$base" >&2
+    base_tip="$(git -C "$clone" rev-parse FETCH_HEAD)"
+    patch_id="$(git -C "$clone" diff "$base_tip...$head" | git patch-id --stable | awk '{print $1}')"
+    if [ -z "$patch_id" ]; then patch_id="none"; fi
+  fi
 
   for role in $roles; do
     wt="$run_dir/wt-$role"
