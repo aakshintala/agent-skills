@@ -81,6 +81,27 @@ check "$(pr_json 'Thing' 'Resolves #1' 3333333 'fix #4' 'closes #5')"
 [ "$rc" = "1" ] || fail "two strays exit 1 (got $rc)"
 [ "$(printf '%s\n' "$out" | grep -c '^#')" = "2" ] || fail "two strays, two lines: [$out]"
 
+# a control character in a commit body cannot hide a keyword after it.
+check "$(pr_json 'Thing' 'Resolves #1' 4444444 'Work' $'text\001Fixes #5')"
+[ "$rc" = "1" ] || fail "keyword after SOH exits 1 (got $rc: $out)"
+printf '%s\n' "$out" | grep -q '^#5 commit 4444444' || fail "keyword after SOH flagged: [$out]"
+
+# a keyword in the commit headline is flagged too.
+check "$(pr_json 'Thing' 'Resolves #1' 5555555 'closes #8' '')"
+[ "$rc" = "1" ] || fail "headline closes #8 exits 1 (got $rc)"
+
+# input that is not PR JSON exits 2
+printf '{}' | "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "{} exits 2"
+printf '' | "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "empty stdin exits 2"
+printf '{"title":"t","body":"b"}' | "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "missing commits exits 2"
+
+# gh failing (repo discovery or PR read) exits 2, not 1
+T="$(mktemp -d "${TMPDIR:-/tmp}/test-pr-closes.XXXXXX")"
+trap 'rm -rf "$T"' EXIT
+printf '#!/bin/sh\nexit 1\n' >"$T/gh"; chmod +x "$T/gh"
+PATH="$T:$PATH" "$PRC" 12 >/dev/null 2>&1; [ "$?" = "2" ] || fail "repo discovery failure exits 2"
+PATH="$T:$PATH" "$PRC" 12 --repo o/r >/dev/null 2>&1; [ "$?" = "2" ] || fail "PR read failure exits 2"
+
 # bad usage exits 2
 "$PRC" >/dev/null 2>&1; [ "$?" = "2" ] || fail "no args exits 2"
 "$PRC" 12 --bogus >/dev/null 2>&1; [ "$?" = "2" ] || fail "unknown flag exits 2"
