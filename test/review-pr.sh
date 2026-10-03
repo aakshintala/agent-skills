@@ -18,7 +18,7 @@ export TMPDIR="$T/tmp"
 mkdir -p "$TMPDIR" "$T/fakebin" "$T/canned" "$T/state"
 
 # --- throwaway repos: ORIGIN carries refs/pull/7/head, CLONE is cloned from it
-git init -q "$T/origin"
+git init -q -b main "$T/origin"
 git -C "$T/origin" config user.email t@t
 git -C "$T/origin" config user.name t
 echo v1 >"$T/origin/file.txt"
@@ -30,6 +30,17 @@ echo v2 >"$T/origin/file.txt"
 git -C "$T/origin" diff >"$T/diff.txt"
 git -C "$T/origin" checkout -q -- file.txt
 git -C "$T/origin" update-ref refs/pull/7/head "$FAKE_SHA"
+# PR 8: NEW_SHA is one commit on top of main (OLD_SHA is main's tip).
+OLD_SHA="$FAKE_SHA"
+git -C "$T/origin" checkout -q -b feat
+echo pr >"$T/origin/pr.txt"
+git -C "$T/origin" add pr.txt
+git -C "$T/origin" commit -qm pr
+NEW_SHA="$(git -C "$T/origin" rev-parse HEAD)"
+git -C "$T/origin" checkout -q main
+git -C "$T/origin" update-ref refs/pull/8/head "$NEW_SHA"
+EXPECTED_NEW_PID="$(git -C "$T/origin" diff "main...$NEW_SHA" | git patch-id --stable | awk '{print $1}')"
+[ -n "$EXPECTED_NEW_PID" ] || fail "fixture new patch-id computable"
 git clone -q "$T/origin" "$T/clone"
 EXPECTED_PID="$(git patch-id --stable <"$T/diff.txt" | awk '{print $1}')"
 [ -n "$EXPECTED_PID" ] || fail "fixture patch-id computable"
@@ -41,7 +52,15 @@ set -euo pipefail
 [ "\$1" = "pr" ] || { echo "fake gh: only pr supported" >&2; exit 2; }
 shift
 case "\$1" in
-  view) printf '{"headRefOid":"$FAKE_SHA"}\n';;
+  view)
+    h="$FAKE_SHA"
+    if [ -f "$T/state/heads.txt" ]; then
+      h="\$(head -1 "$T/state/heads.txt")"
+      if [ "\$(wc -l <"$T/state/heads.txt")" -gt 1 ]; then
+        tail -n +2 "$T/state/heads.txt" >"$T/state/heads.tmp"; mv "$T/state/heads.tmp" "$T/state/heads.txt"
+      fi
+    fi
+    printf '{"headRefOid":"%s","baseRefName":"main"}\n' "\$h";;
   diff) cat "$T/diff.txt";;
   checks) cat "$T/checks.txt";;
   comment)
@@ -92,7 +111,12 @@ case "\$cmd" in
   *) echo "fake delegate: unknown \$cmd" >&2; exit 2;;
 esac
 EOF
-chmod +x "$T/fakebin/gh" "$T/fakebin/delegate"
+# --- fake sleep: log the call, return at once
+cat >"$T/fakebin/sleep" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$T/state/sleeps.txt"
+EOF
+chmod +x "$T/fakebin/gh" "$T/fakebin/delegate" "$T/fakebin/sleep"
 export PATH="$T/fakebin:$PATH"
 
 write_record() {
@@ -106,7 +130,7 @@ write_record() {
 
 reset_state() {
   rm -f "$T/state/runs.txt" "$T/state/watch.txt" "$T/state/comment.md" "$T/state/comment-pr.txt"
-  rm -f "$T/state"/fail-*
+  rm -f "$T/state"/fail-* "$T/state/heads.txt" "$T/state/sleeps.txt"
   rm -f "$T/state"/prompt-*.md "$TMPDIR"/delegate-jobs/*.json "$TMPDIR"/review-pr/* 2>/dev/null || true
 }
 
@@ -402,4 +426,70 @@ git -C "$T/clone" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
 rm -rf "$rd"
 rm -f "$TMPDIR/review-pr/job-review"
 [ "$(git -C "$T/clone" worktree list | grep -c 'wt-')" = "0" ] || fail "failed-start cleanup leaves no worktree"
+# --- case: --head with a lagging API head: wait, then review exactly the pushed head
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+printf '%s\n%s\n%s\n' "$OLD_SHA" "$OLD_SHA" "$NEW_SHA" >"$T/state/heads.txt"
+start_review 8 --repo O/N --cwd "$T/clone" --model M --overbuild-model M2 \
+  --head "$NEW_SHA" >/dev/null 2>&1 || fail "--head lagging start exits 0"
+[ "$(wc -l <"$T/state/sleeps.txt")" -eq 2 ] || fail "--head lagging sleeps twice"
+wt="$(sed -n 's/^worktree=//p' "$TMPDIR/review-pr/job-review")"
+[ "$(git -C "$wt" rev-parse HEAD)" = "$NEW_SHA" ] || fail "--head worktree is at the expected head"
+[ "$(sed -n 's/^sha=//p' "$TMPDIR/review-pr/job-review")" = "$NEW_SHA" ] || fail "--head state sha"
+[ "$(sed -n 's/^patch_id=//p' "$TMPDIR/review-pr/job-review")" = "$EXPECTED_NEW_PID" ] || fail "--head state patch_id"
+"$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "--head collect exits 0"
+[ "$(head -1 "$T/state/comment.md")" = "review-pr: patch-id $EXPECTED_NEW_PID, head $NEW_SHA" ] || fail "--head comment first line"
+
+# --- case: --head the API never reaches: exit 1, nothing created or posted
+reset_state
+printf '%s\n' "$OLD_SHA" >"$T/state/heads.txt"
+err="$(start_review 8 --repo O/N --cwd "$T/clone" --model M --overbuild-model M2 \
+  --head "$NEW_SHA" 2>&1 >/dev/null)" && fail "--head timeout exits nonzero"
+printf '%s' "$err" | grep -q "$OLD_SHA" || fail "--head timeout names the API head"
+printf '%s' "$err" | grep -q "$NEW_SHA" || fail "--head timeout names the expected head"
+[ ! -e "$T/state/runs.txt" ] || fail "--head timeout starts no job"
+[ "$(git -C "$T/clone" worktree list | grep -c 'wt-')" = "0" ] || fail "--head timeout makes no worktree"
+[ -z "$(ls -d "$TMPDIR"/review-pr.run.* 2>/dev/null)" ] || fail "--head timeout makes no run dir"
+[ -z "$(ls "$TMPDIR/review-pr" 2>/dev/null)" ] || fail "--head timeout saves no state"
+[ ! -e "$T/state/comment.md" ] || fail "--head timeout posts nothing"
+[ "$(wc -l <"$T/state/sleeps.txt")" -eq 30 ] || fail "--head timeout polls 30 times"
+
+# --- case: --head already matching: no wait
+reset_state
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+printf '%s\n' "$NEW_SHA" >"$T/state/heads.txt"
+start_review 8 --repo O/N --cwd "$T/clone" --model M --overbuild-model M2 \
+  --head "$NEW_SHA" >/dev/null 2>&1 || fail "--head matching start exits 0"
+[ ! -e "$T/state/sleeps.txt" ] || fail "--head matching does not sleep"
+wt="$(sed -n 's/^worktree=//p' "$TMPDIR/review-pr/job-review")"
+[ "$(git -C "$wt" rev-parse HEAD)" = "$NEW_SHA" ] || fail "--head matching worktree head"
+"$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "--head matching collect exits 0"
+
+# --- case: --head must be a full SHA
+reset_state
+start_review 8 --repo O/N --cwd "$T/clone" --model M --overbuild-model M2 \
+  --head abc123 >/dev/null 2>&1
+[ $? -eq 2 ] || fail "--head short sha is a usage error"
+
+# --- case: --head in verify mode
+reset_state
+write_record verify DONE "FIX-OK
+STATUS: DONE" 0
+printf 'P1 x\n' >"$T/findings.txt"
+printf '%s\n' "$NEW_SHA" >"$T/state/heads.txt"
+start_review 8 --repo O/N --cwd "$T/clone" --model M --verify "$T/findings.txt" \
+  --since "$OLD_SHA" --head "$NEW_SHA" >/dev/null 2>&1 || fail "--head verify start exits 0"
+wt="$(sed -n 's/^worktree=//p' "$TMPDIR/review-pr/job-verify")"
+[ "$(git -C "$wt" rev-parse HEAD)" = "$NEW_SHA" ] || fail "--head verify worktree head"
+"$REVIEW" collect job-verify >/dev/null 2>&1 || true
+
 echo "review-pr: all cases passed"
