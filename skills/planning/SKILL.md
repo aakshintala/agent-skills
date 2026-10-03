@@ -27,18 +27,23 @@ A plan is a sketch of contracts and invariants, never code: a function body in a
 ## Files                each file touched and what changes; this is the lane's fence
 ## Tasks                in order; each: behaviour, test first, gate command, done-when
 ## Interfaces           signatures, invariants, one literal example per line on the wire; no bodies
-## Review Focus         input classes and failure modes the tests may not cover
+## Review Focus         where reviewers look: input classes and failure modes the tests may not cover
+## Rung                 the lane's rung (per the `delegate` skill) and the reason
 ```
 
 The quoted rules are what the Verifier, the reviews and any finding are judged against: a finding that contradicts a quoted rule is refuted by quoting it.
 
+A hazard you know of is settled in the plan: a ruling (what the code does about it), or an invariant under Interfaces, which the Verifier attacks and the lane keeps. Review Focus holds only places to look. A hazard you can't rule on is a `core` ruling, and parks the ticket.
+
+The rung is `standard` by default. It is `strong` when Interfaces or Review Focus involve state carried across calls, concurrency or timing, replay, or a quoted rule with several cases, and `frontier` for cross-cutting design.
+
 Size each task as the smallest unit that carries its own test cycle. Tasks run in order in one lane, under one `review-loop` for the PR. A migration may break the callers it lists under Rulings instead of paying for interim compatibility.
 
-Done when every section is filled and every ruling is tagged.
+Done when every section is filled, every ruling is tagged, and every known hazard is a ruling or an invariant.
 
 ### 3. Verify
 
-Fill `briefs/verifier.md` with `PLAN=@<plan file>` and run it on a cheap-tier model from a different family than yours. For each line it returns, fix the plan or record a ruling. A core ruling still open parks the ticket (see `implement`).
+Fill `briefs/verifier.md` with `PLAN=@<plan file>` and run it on a `strong` model from a different family than yours, or a `frontier` one when the plan's rung is `frontier`. For each line it returns, fix the plan or record a ruling. A core ruling still open parks the ticket (see `implement`).
 
 Done when the Verifier says `PLAN OK`, or every line it returned is answered in the plan.
 

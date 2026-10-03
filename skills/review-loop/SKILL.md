@@ -3,7 +3,7 @@ name: review-loop
 description: "Review, repair and verify a PR until it can merge: two reviews from a different model family, fix rounds with scoped verifies, and a two-round stop. Use when a PR needs review before merge, whether it came from implement, the flywheel's PR-stack mode, or triage."
 ---
 
-The loop for one PR. Reviews run on models from a different family than the PR's implementer; pick them per the `delegate` skill.
+The loop for one PR. Reviews run on models from a different family than the PR's implementer, at the same rung or higher; pick them per the `delegate` skill.
 
 **Identity.** A verdict covers the `git patch-id --stable` of the PR's diff: a rebase that keeps the patch keeps its verdict, and any other change needs a new one. CI covers the head SHA: a green run on an older SHA never satisfies merge.
 
