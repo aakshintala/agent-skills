@@ -35,12 +35,12 @@ Template uses {{thing}} too.
 EOF
 
 out="$("$CHECK" "$BAD" 2>"$T/baderr.txt")" && fail "bad pack exits 1"
-printf '%s' "$out" | grep -q '^skills/alpha/SKILL.md:[0-9]*: .*nosuch' || fail "bad pack flags missing skill"
-printf '%s' "$out" | grep -q '^skills/alpha/SKILL.md:[0-9]*: .*nope.md' || fail "bad pack flags broken link"
-printf '%s' "$out" | grep -q '^skills/alpha/SKILL.md:[0-9]*: .*ghost' || fail "bad pack flags missing __SKILLS__ file"
-printf '%s' "$out" | grep -q '^skills/alpha/briefs/job.md:[0-9]*: .*[Pp]laceholder.*__work__' || fail "bad pack flags bad placeholder"
-printf '%s' "$out" | grep -q '^skills/alpha/briefs/job.md:[0-9]*: .*{{thing}}' || fail "bad pack flags braces token"
-printf '%s' "$out" | grep -q 'beta' && fail "bad pack never flags the good skill"
+grep -q '^skills/alpha/SKILL.md:[0-9]*: .*nosuch' <<<"$out" || fail "bad pack flags missing skill"
+grep -q '^skills/alpha/SKILL.md:[0-9]*: .*nope.md' <<<"$out" || fail "bad pack flags broken link"
+grep -q '^skills/alpha/SKILL.md:[0-9]*: .*ghost' <<<"$out" || fail "bad pack flags missing __SKILLS__ file"
+grep -q '^skills/alpha/briefs/job.md:[0-9]*: .*[Pp]laceholder.*__work__' <<<"$out" || fail "bad pack flags bad placeholder"
+grep -q '^skills/alpha/briefs/job.md:[0-9]*: .*{{thing}}' <<<"$out" || fail "bad pack flags braces token"
+grep -q 'beta' <<<"$out" && fail "bad pack never flags the good skill"
 [ -s "$T/baderr.txt" ] && fail "bad pack is silent on stderr"
 
 # --- fixture pack holding only good references passes silently

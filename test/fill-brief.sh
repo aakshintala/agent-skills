@@ -37,6 +37,11 @@ printf 'hi __WHO__\n' >"$T/k2.md"
 "$FILL" "$T/k2.md" 'WHO=you' 'EXTRA=1' >/dev/null 2>"$T/err3.txt" && fail "unknown key with valid fill exits 1"
 grep -q '^unknown key: EXTRA$' "$T/err3.txt" || fail "unknown key with valid fill names EXTRA"
 
+# key early in a long template must not trip pipefail + grep -q EPIPE (issue #55)
+{ echo '__A__'; seq 1 5000 | sed 's/^/filler line /'; } >"$T/big.md"
+"$FILL" "$T/big.md" 'A=x' >"$T/big-out.txt" 2>"$T/big-err.txt" || fail "a key early in a long template is known"
+[ "$(head -1 "$T/big-out.txt")" = "x" ] || fail "a key early in a long template fills first line"
+
 # multi-line @file value containing & \ $ / passes through unchanged
 printf 'first __V__ last\n' >"$T/m.md"
 printf 'a&b\\c$d/e\nsecond & \\ line\n' >"$T/val.txt"

@@ -81,7 +81,7 @@ done
 
 if [ "$nkeys" -gt 0 ]; then
   for k in "${keys[@]}"; do
-    if ! printf '%s' "$orig" | grep -qF "__${k}__"; then
+    if [[ "$orig" != *"__${k}__"* ]]; then
       add_error "unknown key: $k"
     fi
   done
