@@ -10,6 +10,7 @@ __FINDINGS__
 - An over-engineering finding is a hypothesis: apply it only when the cut costs no memory, behaviour or lines.
 - Stay inside the fence: __FENCE__. When you need a file outside it, stop and report.
 - Mark a deliberate shortcut with a `debt: <ceiling>, <upgrade trigger>` comment. A shortcut that would weaken a rule a doc, spec or ticket states gets no marker: stop and report.
+- Keep every test's timeouts, waits, retry counts and numeric tolerances as they are. A fix that needs a looser one stops and reports the cause it would hide.
 - When the same check fails twice after your fixes, stop: report the assumption your fixes share, and start no third patch.
 - Before pushing, the gate passes: `__GATE__`. Commit and push.
 

@@ -54,7 +54,7 @@ Done when `review-loop` is done.
 
 ### 7. CI
 
-Run `ci-triage` until the required checks are green on the current head SHA.
+Run `ci-triage` until the required checks are green on the current head SHA. Green comes from a fix, never a rerun: a flake gets `ci-triage`'s one fresh build and a `test-only` issue, and `gh-ci resample` only measures how often a failure happens.
 
 Done when CI is green on the head a verdict covers.
 
