@@ -78,27 +78,6 @@ is_verdict() {
   return 1
 }
 
-# canon_verdict ROLE NORMALISED_LINE: print the canonical verdict (verify
-# keeps its trailing detail on the same line).
-canon_verdict() {
-  case "$1" in
-    review)
-      case "$2" in
-        "VERDICT standards: APPROVE") printf '%s' "VERDICT standards: APPROVE";;
-        "VERDICT standards: CHANGES") printf '%s' "VERDICT standards: CHANGES";;
-        "VERDICT spec: APPROVE") printf '%s' "VERDICT spec: APPROVE";;
-        "VERDICT spec: CHANGES") printf '%s' "VERDICT spec: CHANGES";;
-      esac;;
-    overbuild)
-      case "$2" in
-        "VERDICT: APPROVE") printf '%s' "VERDICT: APPROVE";;
-        "VERDICT: CHANGES") printf '%s' "VERDICT: CHANGES";;
-      esac;;
-    verify)
-      printf '%s' "$2";;
-  esac
-}
-
 # looks_like_verdict NORMALISED_LINE: the line starts with a verdict shape
 # that does not match a recognised form. Shape is VERDICT with an optional
 # single word, then a colon and a value (VERDICT: X, VERDICT spec: X), or
@@ -406,9 +385,8 @@ cmd_collect() {
         norm="$(norm_line "$line")"
         [ -n "$norm" ] || continue
         if is_verdict "$role" "$norm"; then
-          canon="$(canon_verdict "$role" "$norm")"
-          printf '%s\n' "$canon" >>"$verdicts_f"
-          case "$role:$canon" in
+          printf '%s\n' "$norm" >>"$verdicts_f"
+          case "$role:$norm" in
             review:"VERDICT standards: "*) std_ok="1";;
             review:"VERDICT spec: "*) spec_ok="1";;
             overbuild:*) ob_ok="1";;
