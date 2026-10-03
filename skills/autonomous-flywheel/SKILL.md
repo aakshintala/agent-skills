@@ -12,7 +12,7 @@ Schedule many tickets through `implement` in parallel lanes, or many PRs through
 First run `implement` step 1 (check setup). Then, with the owner, at start (a typed start means they're present now):
 
 - Repo, work source (a list of tickets, or a stack of PRs for PR-stack mode), base commit.
-- Models: the Work and Hard tier picks (per the `delegate` skill), a review pool (a correctness and an over-engineering reviewer, each from a family other than the implementers'), and the lane budget (2 works).
+- Models: the pool for each rung (per the `delegate` skill), a review pool (a correctness and an over-engineering reviewer, each from a family other than the implementers', at the same rung or higher), and the lane budget (2 works).
 - Merge terms: the cases that need the owner's call beyond the workflow doc's merge rule. Terms only add cases; the workflow doc's merge rule always holds. CI-boundary changes (workflows, rulesets) need the owner's call unless the terms include them.
 - `gh auth status` shows the `workflow` scope; without it, PRs touching `.github/workflows/*` fail to merge.
 - Whether the owner will be around for rulings (see `implement`).
