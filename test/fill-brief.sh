@@ -51,7 +51,9 @@ out="$("$FILL" "$T/r.md" 'A=Z')" || fail "repeat fill exits 0"
 
 # bad usage exits 2
 "$FILL" >/dev/null 2>&1; [ "$?" = "2" ] || fail "no args exits 2"
-"$FILL" "$T/t.md" 'NOEQUALS' >/dev/null 2>&1; [ "$?" = "2" ] || fail "key without = exits 2"
+usage_out="$("$FILL" 2>&1 >/dev/null)" || true
+case "$usage_out" in *"--out must come first"*) ;; *) fail "usage mentions --out must come first" ;; esac
+"$FILL" "$T/t.md" 'NOEQUALS'>/dev/null 2>&1; [ "$?" = "2" ] || fail "key without = exits 2"
 "$FILL" "$T/does-not-exist.md" 'A=1' >/dev/null 2>&1; [ "$?" = "2" ] || fail "missing template exits 2"
 
 # --out writes the file and prints exactly the launch line
