@@ -15,7 +15,11 @@ set -euo pipefail
 shopt -u patsub_replacement 2>/dev/null || true
 
 usage() {
-  echo "usage: fill-brief TEMPLATE KEY=VALUE... (a VALUE of @FILE reads that file)" >&2
+  {
+    echo "usage: fill-brief TEMPLATE KEY=VALUE..."
+    echo "       fill-brief --out <absolute path> TEMPLATE KEY=VALUE..."
+    echo "       (a VALUE of @FILE reads that file; --out must come first)"
+  } >&2
   exit 2
 }
 
