@@ -20,8 +20,9 @@ set -euo pipefail
 #                   VERDICT spec: APPROVE|CHANGES
 #   overbuild role: VERDICT: APPROVE|CHANGES
 #   verify role:    FIX-OK | FIX-INCOMPLETE (trailing detail allowed)
+# Verdict lines must start with the form below (after normalisation).
 # Matching tolerates decoration: leading/trailing whitespace, **bold**, `code`.
-# A line containing VERDICT or FIX- that matches none of these is a bad
+# A line that starts with VERDICT or FIX- but matches none of these is a bad
 # verdict: loud failure, never UNFINISHED.
 
 usage() {
@@ -52,61 +53,58 @@ norm_line() {
   printf '%s' "$1" | tr -d '*`' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
 }
 
-# is_verdict ROLE NORMALISED_LINE: the line ends with a recognised verdict
-# form. Narration glued onto the front (no newline) still counts.
+# is_verdict ROLE NORMALISED_LINE: the line starts with a recognised verdict
+# form (verify may have trailing detail after whitespace).
 is_verdict() {
   case "$1" in
     review)
       case "$2" in
-        *"VERDICT standards: APPROVE"|*"VERDICT standards: CHANGES"|\
-        *"VERDICT spec: APPROVE"|*"VERDICT spec: CHANGES") return 0;;
+        "VERDICT standards: APPROVE"|"VERDICT standards: CHANGES"|\
+        "VERDICT spec: APPROVE"|"VERDICT spec: CHANGES") return 0;;
       esac
       return 1;;
     overbuild)
       case "$2" in
-        *"VERDICT: APPROVE"|*"VERDICT: CHANGES") return 0;;
+        "VERDICT: APPROVE"|"VERDICT: CHANGES") return 0;;
       esac
       return 1;;
     verify)
       case "$2" in
-        *"FIX-OK"|*"FIX-OK"[[:space:]]*|\
-        *"FIX-INCOMPLETE"|*"FIX-INCOMPLETE"[[:space:]]*) return 0;;
+        FIX-OK|FIX-OK[[:space:]]*|\
+        FIX-INCOMPLETE|FIX-INCOMPLETE[[:space:]]*) return 0;;
       esac
       return 1;;
   esac
   return 1
 }
 
-# canon_verdict ROLE NORMALISED_LINE: print the verdict form the line ends
-# with (verify keeps its trailing detail), so the digest stays one clean
-# line even when narration is glued onto the front.
+# canon_verdict ROLE NORMALISED_LINE: print the canonical verdict (verify
+# keeps its trailing detail on the same line).
 canon_verdict() {
   case "$1" in
     review)
       case "$2" in
-        *"VERDICT standards: APPROVE") printf '%s' "VERDICT standards: APPROVE";;
-        *"VERDICT standards: CHANGES") printf '%s' "VERDICT standards: CHANGES";;
-        *"VERDICT spec: APPROVE") printf '%s' "VERDICT spec: APPROVE";;
-        *"VERDICT spec: CHANGES") printf '%s' "VERDICT spec: CHANGES";;
+        "VERDICT standards: APPROVE") printf '%s' "VERDICT standards: APPROVE";;
+        "VERDICT standards: CHANGES") printf '%s' "VERDICT standards: CHANGES";;
+        "VERDICT spec: APPROVE") printf '%s' "VERDICT spec: APPROVE";;
+        "VERDICT spec: CHANGES") printf '%s' "VERDICT spec: CHANGES";;
       esac;;
     overbuild)
       case "$2" in
-        *"VERDICT: APPROVE") printf '%s' "VERDICT: APPROVE";;
-        *"VERDICT: CHANGES") printf '%s' "VERDICT: CHANGES";;
+        "VERDICT: APPROVE") printf '%s' "VERDICT: APPROVE";;
+        "VERDICT: CHANGES") printf '%s' "VERDICT: CHANGES";;
       esac;;
     verify)
-      canon="${2##*FIX-}"
-      printf 'FIX-%s' "$canon";;
+      printf '%s' "$2";;
   esac
 }
 
-# looks_like_verdict NORMALISED_LINE: the line attempts a verdict without
-# matching a recognised form. A verdict shape is VERDICT with an optional
+# looks_like_verdict NORMALISED_LINE: the line starts with a verdict shape
+# that does not match a recognised form. Shape is VERDICT with an optional
 # single word, then a colon and a value (VERDICT: X, VERDICT spec: X), or
-# FIX- followed by an uppercase word. P1/P2/P3 finding lines never count.
+# FIX- followed by an uppercase word.
 looks_like_verdict() {
-  case "$1" in P1\ *|P2\ *|P3\ *) return 1;; esac
-  printf '%s' "$1" | grep -Eq 'VERDICT([[:space:]]+[A-Za-z0-9_*-]+)?[[:space:]]*:[[:space:]]*[^[:space:]]|FIX-[A-Z]+'
+  printf '%s' "$1" | grep -Eq '^VERDICT([[:space:]]+[A-Za-z0-9_*-]+)?[[:space:]]*:[[:space:]]*[^[:space:]]|^FIX-[A-Z]+'
 }
 
 state_get() {
