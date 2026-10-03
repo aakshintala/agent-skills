@@ -19,7 +19,8 @@ A `debt:` comment marks a deliberate shortcut: `debt: <ceiling>, <upgrade trigge
 For each marker, read the code it sits on and the rules the repo's docs state for that code. Tag it:
 
 - `no-trigger`: it names no upgrade trigger. These are the ones that rot.
-- `weakens-rule`: the shortcut falls short of a rule a doc, spec or ticket states. Name the rule's file and section.
+- `weakens-rule`: the shortcut falls short of a rule a doc, spec or ticket states, and that rule applies to code paths that run today. Name the rule's file and section.
+- `awaits-feature`: the rule it falls short of governs a feature not built yet, so it can't fire on today's code. Name the rule and the ticket that builds the feature; the upgrade trigger should name that ticket.
 
 ## 3. Report
 
@@ -27,4 +28,4 @@ One row per marker, grouped by file:
 
 `<file>:<line>, <what was simplified>. ceiling: <limit>. upgrade: <trigger>. [tags]`
 
-End with `<N> markers, <M> with no trigger, <K> weakening a stated rule.` Nothing found: `No debt: markers.`
+End with `<N> markers, <M> with no trigger, <K> weakening a stated rule, <F> awaiting a feature.` Nothing found: `No debt: markers.`
