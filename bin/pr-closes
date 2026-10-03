@@ -27,9 +27,10 @@ usage() {
 SCAN='
   def clean: (. // "") | gsub("\r"; "");
   def ref: "(?<ref>(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+)";
-  if (.title | type) != "string" or (.commits | type) != "array"
-     or ((.body | type) | . != "string" and . != "null")
-     or any(.commits[]; (.oid | type) != "string")
+  if type != "object" or (.title | type) != "string" or (.body | type) != "string"
+     or (.commits | type) != "array"
+     or any(.commits[]; type != "object" or ([.oid, .messageHeadline, .messageBody]
+                                            | map(type) != ["string", "string", "string"]))
   then error("not PR JSON") else . end
   | [.body | clean | split("\n")[]
      | capture("^\\s*resolves:?[ \\t]*" + ref; "i") | .ref | ascii_downcase] as $resolves
@@ -38,7 +39,7 @@ SCAN='
                     ((.messageHeadline | clean) + "\n\n" + (.messageBody | clean))]))
   | .[0] as $label
   | .[1] | clean
-  | match("(?<![A-Za-z0-9_])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \\t]*" + ref; "gi")
+  | match("(?<![A-Za-z0-9_])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\\s*" + ref; "gi")
   | (.captures[] | select(.name == "ref") | .string | ascii_downcase) as $ref
   | [($resolves | index([$ref]) != null), $ref, $label, .string] | @tsv
 '

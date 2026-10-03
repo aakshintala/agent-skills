@@ -94,6 +94,16 @@ check "$(pr_json 'Thing' 'Resolves #1' 5555555 'closes #8' '')"
 printf '{}' | "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "{} exits 2"
 printf '' | "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "empty stdin exits 2"
 printf '{"title":"t","body":"b"}' | "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "missing commits exits 2"
+printf '{"title":"t","commits":[]}' | "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "missing body exits 2"
+printf '{"title":"t","body":"b","commits":[{"oid":"a"}]}' | "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "commit without message exits 2"
+printf '{"title":"t","body":"b","commits":[{"oid":"a","messageHeadline":false,"messageBody":""}]}' | "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "non-string message exits 2"
+
+# any whitespace between keyword and reference counts (vertical tab, newline).
+check "$(pr_json 'Thing' $'Resolves #1\nFixes\v#5')"
+[ "$rc" = "1" ] || fail "Fixes<VT>#5 exits 1 (got $rc: $out)"
+check "$(pr_json 'Thing' $'Resolves #1\nthis closes\n#6')"
+[ "$rc" = "1" ] || fail "closes<newline>#6 exits 1 (got $rc: $out)"
+[ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = "1" ] || fail "multi-line match prints one line: [$out]"
 
 # gh failing (repo discovery or PR read) exits 2, not 1
 T="$(mktemp -d "${TMPDIR:-/tmp}/test-pr-closes.XXXXXX")"
