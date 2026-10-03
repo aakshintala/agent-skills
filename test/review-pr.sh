@@ -277,7 +277,7 @@ out="$("$REVIEW" collect job-review job-overbuild 2>/dev/null)" || fail "concern
 printf '%s' "$out" | grep -q UNFINISHED && fail "concerns with a verdict is finished"
 grep -q 'for issue #7 (spec #7)' "$T/state/prompt-review.md" || fail "ticketless PR is its own issue and spec"
 
-# --- case: narration glued onto the verdict with no newline still counts
+# --- case: a verdict glued onto narration is no verdict
 reset_state
 printf 'ci\tpass\n' >"$T/checks.txt"
 write_record review DONE "VERDICT standards: APPROVE
@@ -287,10 +287,37 @@ write_record overbuild DONE "long narration about what to drop no behavior.VERDI
 STATUS: DONE" 0
 start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
   --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start exits 0"
-out="$("$REVIEW" collect job-review job-overbuild 2>/dev/null)" || fail "glued verdict collect exits 0"
-printf '%s' "$out" | grep -q "^VERDICT: APPROVE$" || fail "glued verdict counts"
+out="$("$REVIEW" collect job-review job-overbuild 2>/dev/null)" && fail "glued verdict collect exits 1"
+printf '%s' "$out" | grep -q 'UNFINISHED overbuild' || fail "glued verdict is unfinished overbuild"
 printf '%s' "$out" | grep -q BAD-VERDICT && fail "glued verdict is not bad"
-printf '%s' "$out" | grep -q UNFINISHED && fail "glued verdict is finished"
+printf '%s' "$out" | grep -q '^VERDICT: APPROVE$' && fail "glued line is not a verdict line"
+
+# --- case: verify with a finding line that mentions VERDICT and a real FIX-OK line
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+printf 'P2 findings text\n' >"$T/findings.txt"
+write_record verify DONE "- P2 fixture/test: fixed. Fixture's final assistant message (line 30) begins \`VERDICT: APPROVE\`, and the test's exact \`assert_eq!\` pins \`\nVERDICT: APPROVE\n\`, asserting the verdict starts a line.
+FIX-OK
+STATUS: DONE" 0
+start_review 7 --repo O/N --cwd "$T/clone" --model M \
+  --verify "$T/findings.txt" --since "$FAKE_SHA" >/dev/null 2>&1 || fail "verify start exits 0"
+out="$("$REVIEW" collect job-verify 2>/dev/null)" || fail "mention plus FIX-OK collect exits 0"
+printf '%s' "$out" | grep -q '^FIX-OK$' || fail "FIX-OK counts"
+printf '%s' "$out" | grep -q BAD-VERDICT && fail "mention line is not bad"
+printf '%s' "$out" | grep -q UNFINISHED && fail "mention plus FIX-OK is finished"
+
+# --- case: prose that merely contains FIX-OK is not a verify verdict
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+printf 'P2 findings text\n' >"$T/findings.txt"
+write_record verify DONE "this is not FIX-OK yet
+STATUS: DONE" 0
+start_review 7 --repo O/N --cwd "$T/clone" --model M \
+  --verify "$T/findings.txt" --since "$FAKE_SHA" >/dev/null 2>&1 || fail "verify start exits 0"
+out="$("$REVIEW" collect job-verify 2>/dev/null)" && fail "not FIX-OK prose collect exits 1"
+printf '%s' "$out" | grep -q 'UNFINISHED verify' || fail "not FIX-OK prose is unfinished verify"
+printf '%s' "$out" | grep -q '^FIX-OK$' && fail "not FIX-OK prose is not FIX-OK"
+printf '%s' "$out" | grep -q BAD-VERDICT && fail "not FIX-OK prose is not bad"
 
 # --- case: a bare FIX-OK line is a verdict
 reset_state
