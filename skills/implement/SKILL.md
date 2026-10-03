@@ -24,6 +24,8 @@ Done when you know the tracker, labels, workflow doc and models.
 
 ### 2. Preflight
 
+Prepare the base first. A new ticket's base is `origin/main`. A re-plan's base is the PR's branch, brought up to date: merge `origin/main` into it in the PR's worktree and push, so the preflight and the Verifier never read a stale branch. Run the preflight and the Verifier in a checkout of the base: an up-to-date clone on `origin/main`, or the PR's worktree.
+
 Fill `../planning/briefs/preflight.md` with `fill-brief --out <absolute path>` (e.g. `/tmp/<repo>-<issue>-preflight.md`) and run it as its own job, on a `strong` model from a different family than yours, before any plan exists, using the printed line verbatim as the prompt, never a hand-written path. A `core` item parks the ticket. `non-blocking` items and the file list go to the plan.
 
 Done when the preflight has returned and no `core` item is open.
@@ -36,7 +38,7 @@ Done when the lane brief is filled.
 
 ### 4. Lane
 
-Cut a worktree from `origin/main` and dispatch the lane brief on a model at the plan's Rung (per the `delegate` skill). The lane brief was filled with `fill-brief --out <absolute path>`; use the printed line verbatim as the lane's prompt, never a hand-written path.
+For a new ticket, cut a worktree from `origin/main`; a re-plan's lane works in the PR's worktree. Dispatch the lane brief on a model at the plan's Rung (per the `delegate` skill). The lane brief was filled with `fill-brief --out <absolute path>`; use the printed line verbatim as the lane's prompt, never a hand-written path.
 
 Done when the lane reports a PR URL and head SHA, or a failure triage.
 
