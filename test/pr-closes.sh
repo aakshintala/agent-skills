@@ -40,15 +40,15 @@ case "$out" in OK*) ;; *) fail "OK line starts with OK: [$out]" ;; esac
 # closes: #333 in a commit message: flagged with the commit sha and matched text.
 check "$(pr_json 'Pipe fix' 'Resolves #330' abcdef1234567890 'Fix the pipe' 'the pipe closes: #333 now')"
 [ "$rc" = "1" ] || fail "commit closes: #333 exits 1 (got $rc)"
-printf '%s\n' "$out" | grep -q '#333' || fail "commit closes: names #333: [$out]"
-printf '%s\n' "$out" | grep -q 'commit abcdef1' || fail "commit closes: names the commit: [$out]"
-printf '%s\n' "$out" | grep -q 'closes: #333' || fail "commit closes: shows matched text: [$out]"
-printf '%s\n' "$out" | grep -q '#330' && fail "Resolves #330 is not flagged: [$out]"
+grep -q '#333' <<<"$out" || fail "commit closes: names #333: [$out]"
+grep -q 'commit abcdef1' <<<"$out" || fail "commit closes: names the commit: [$out]"
+grep -q 'closes: #333' <<<"$out" || fail "commit closes: shows matched text: [$out]"
+grep -q '#330' <<<"$out" && fail "Resolves #330 is not flagged: [$out]"
 
 # Fixes #5 in the title: flagged as title.
 check "$(pr_json 'Fixes #5 crash' 'Resolves #4')"
 [ "$rc" = "1" ] || fail "title Fixes #5 exits 1 (got $rc)"
-printf '%s\n' "$out" | grep -q '#5.*title.*Fixes #5' || fail "title Fixes #5 flagged as title: [$out]"
+grep -q '#5.*title.*Fixes #5' <<<"$out" || fail "title Fixes #5 flagged as title: [$out]"
 
 # see #7 is not a closing keyword.
 check "$(pr_json 'Tidy, see #7' $'see #7 for context\n\nResolves #6' 1111111 'see #7' '')"
@@ -61,12 +61,12 @@ check "$(pr_json 'Thing' 'Resolves #9' 2222222 'Work' 'this resolved #9')"
 # cross-repo fixes owner/repo#3: flagged.
 check "$(pr_json 'Thing' $'Resolves #3\nAlso fixes owner/repo#3')"
 [ "$rc" = "1" ] || fail "cross-repo fixes exits 1 (got $rc)"
-printf '%s\n' "$out" | grep -q 'owner/repo#3.*body' || fail "cross-repo fixes flagged in body: [$out]"
+grep -q 'owner/repo#3.*body' <<<"$out" || fail "cross-repo fixes flagged in body: [$out]"
 
 # case-insensitive keyword in the body, outside the Resolves list: flagged.
 check "$(pr_json 'Thing' $'Resolves #1\nThis CLOSED #2 too')"
 [ "$rc" = "1" ] || fail "CLOSED #2 exits 1 (got $rc)"
-printf '%s\n' "$out" | grep -q '#2.*body' || fail "CLOSED #2 flagged in body: [$out]"
+grep -q '#2.*body' <<<"$out" || fail "CLOSED #2 flagged in body: [$out]"
 
 # a keyword inside a longer word is not a keyword.
 check "$(pr_json 'Thing' $'Resolves #1\nprefixes #2 and unfixed #3')"
@@ -84,7 +84,7 @@ check "$(pr_json 'Thing' 'Resolves #1' 3333333 'fix #4' 'closes #5')"
 # a control character in a commit body cannot hide a keyword after it.
 check "$(pr_json 'Thing' 'Resolves #1' 4444444 'Work' $'text\001Fixes #5')"
 [ "$rc" = "1" ] || fail "keyword after SOH exits 1 (got $rc: $out)"
-printf '%s\n' "$out" | grep -q '^#5 commit 4444444' || fail "keyword after SOH flagged: [$out]"
+grep -q '^#5 commit 4444444' <<<"$out" || fail "keyword after SOH flagged: [$out]"
 
 # a keyword in the commit headline is flagged too.
 check "$(pr_json 'Thing' 'Resolves #1' 5555555 'closes #8' '')"

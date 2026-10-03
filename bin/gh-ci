@@ -51,7 +51,7 @@ cmd_failures() {
   echo "$jobs" | while read -r jid _; do
     echo "--- $jid failing tests ---"
     gh run view "$run" --repo "$REPO" --job "$jid" --log-failed 2>&1 \
-      | grep -E "\(fail\)" | sed 's/^[^Z]*Z //' | sort -u | head -10
+      | grep -E "\(fail\)" | sed 's/^[^Z]*Z //' | sort -u | sed -n '1,10p'
   done
 }
 
