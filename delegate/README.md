@@ -47,4 +47,4 @@ Optional JSON at `~/.config/delegate/host-profile.json` (or `$XDG_CONFIG_HOME/de
 
 ## Skill
 
-The skill lives in switchyard's `skills/delegate/`. Setup links `~/.claude/skills/delegate` to `~/.agents/skills/delegate`, and pi reads `~/.agents/skills` directly, so both load it from the checkout and an edit is live without a reinstall.
+The skill lives in switchyard's `skills/delegate/`. Setup links `~/.claude/skills/delegate` to it, and pi reads `~/.agents/skills` directly, so both load it from the checkout and an edit is live without a reinstall.

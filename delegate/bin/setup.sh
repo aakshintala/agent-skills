@@ -64,14 +64,11 @@ if [ -f "$CURSOR_CONFIG" ]; then
   fi
 fi
 
-# The skill lives in switchyard's skills/, beside the others. Claude gets the
-# same relative link as every switchyard skill; pi reads ~/.agents/skills itself.
+# The skill lives in switchyard's skills/, beside the others; pi reads
+# ~/.agents/skills itself, so only Claude needs a link.
 SKILLS_ROOT="$(dirname "$REPO_ROOT")/skills"
-if [ "$SKILLS_ROOT" != "$HOME/.agents/skills" ]; then
-  echo "WARNING: this checkout is not at ~/.agents; the skill link points at ~/.agents/skills/delegate." >&2
-fi
 run mkdir -p "$HOME/.claude/skills"
-run ln -sfn ../../.agents/skills/delegate "$HOME/.claude/skills/delegate"
+run ln -sfn "$SKILLS_ROOT/delegate" "$HOME/.claude/skills/delegate"
 if command -v claude >/dev/null 2>&1 && claude plugin list 2>/dev/null | grep -q 'delegate@delegate'; then
   echo "NOTE: the delegate plugin duplicates the linked skill; remove it with: claude plugin uninstall delegate@delegate && claude plugin marketplace remove delegate"
 fi
