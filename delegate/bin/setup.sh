@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# delegate setup: build the CLI, install on PATH, migrate host profile, install the skill.
+# delegate setup: build the CLI, install on PATH, migrate host profile, link the skill.
+# Run from switchyard cloned at ~/.agents: ~/.agents/delegate/bin/setup.sh
 #   DRY_RUN=1 ./bin/setup.sh   # preview commands without making changes
 set -euo pipefail
 
@@ -63,20 +64,19 @@ if [ -f "$CURSOR_CONFIG" ]; then
   fi
 fi
 
-# Both harnesses load the skill from this checkout, so an edit is live
-# without a reinstall. A plugin install would copy the whole checkout,
-# untracked files included, into Claude's plugin cache.
-SKILL_DIR="$REPO_ROOT/skills/delegate"
+# The skill lives in switchyard's skills/, beside the others. Claude gets the
+# same relative link as every switchyard skill; pi reads ~/.agents/skills itself.
+SKILLS_ROOT="$(dirname "$REPO_ROOT")/skills"
+if [ "$SKILLS_ROOT" != "$HOME/.agents/skills" ]; then
+  echo "WARNING: this checkout is not at ~/.agents; the skill link points at ~/.agents/skills/delegate." >&2
+fi
 run mkdir -p "$HOME/.claude/skills"
-run ln -sfn "$SKILL_DIR" "$HOME/.claude/skills/delegate"
+run ln -sfn ../../.agents/skills/delegate "$HOME/.claude/skills/delegate"
 if command -v claude >/dev/null 2>&1 && claude plugin list 2>/dev/null | grep -q 'delegate@delegate'; then
   echo "NOTE: the delegate plugin duplicates the linked skill; remove it with: claude plugin uninstall delegate@delegate && claude plugin marketplace remove delegate"
 fi
-
-if command -v pi >/dev/null 2>&1; then
-  run pi install "$REPO_ROOT"
-else
-  echo "NOTE: 'pi' not found. For pi, run: pi install $REPO_ROOT"
+if command -v pi >/dev/null 2>&1 && pi list 2>/dev/null | grep -q '/delegate$'; then
+  echo "NOTE: pi still lists a delegate package; pi now loads the skill from ~/.agents/skills. Find it with 'pi list' and remove it with 'pi remove <source>'."
 fi
 
 echo "Done."

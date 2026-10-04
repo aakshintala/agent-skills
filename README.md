@@ -22,7 +22,11 @@ git clone https://github.com/aakshintala/agent-skills ~/.agents
 for s in ~/.agents/skills/*/; do ln -s "$s" ~/.claude/skills/; done
 ```
 
-The skills call scripts at `~/.agents/bin/`. Delegated work runs through [delegate](https://github.com/aakshintala/delegate).
+The skills call scripts at `~/.agents/bin/`.
+
+## delegate
+
+Delegated work runs through the `delegate` CLI in `delegate/`, a Rust binary that runs tasks on Cursor, pi and Claude Code models. Install it with `~/.agents/delegate/bin/setup.sh`; see [delegate/README.md](delegate/README.md). It moved here from `aakshintala/delegate`, which is archived and keeps the old issue and PR history.
 
 ## Working on it
 

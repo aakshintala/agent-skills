@@ -4,13 +4,13 @@ A small CLI that runs coding and research tasks on Cursor, pi, or Claude Code mo
 
 ## Install
 
-From this repo:
+delegate ships inside [switchyard](https://github.com/aakshintala/switchyard). With switchyard cloned at `~/.agents`:
 
 ```bash
-./bin/setup.sh
+~/.agents/delegate/bin/setup.sh
 ```
 
-This builds `delegate`, copies it to `~/.local/bin/delegate`, optionally migrates an old host profile, and installs the skill for Claude Code and pi.
+This builds `delegate`, copies it to `~/.local/bin/delegate`, optionally migrates an old host profile, and links the skill for Claude Code. pi loads it from `~/.agents/skills` without a link.
 
 You need Rust (`cargo`), and `cursor-agent` on PATH with `cursor-agent login` before running jobs.
 
@@ -47,4 +47,4 @@ Optional JSON at `~/.config/delegate/host-profile.json` (or `$XDG_CONFIG_HOME/de
 
 ## Skill
 
-The skill lives in `skills/delegate/`. Setup links it into `~/.claude/skills/delegate` and registers this checkout as a local pi package, so both load it from the repo and an edit is live without a reinstall. The plugin manifest under `.claude-plugin/` ships the same skill for installs from a marketplace.
+The skill lives in switchyard's `skills/delegate/`. Setup links `~/.claude/skills/delegate` to `~/.agents/skills/delegate`, and pi reads `~/.agents/skills` directly, so both load it from the checkout and an edit is live without a reinstall.
