@@ -13,8 +13,8 @@ __PLAN__
 - Run the tasks in order, each test first, and pass each task's gate before starting the next.
 - Mark a deliberate shortcut with a `debt: <ceiling>, <upgrade trigger>` comment. A shortcut that would weaken a rule a doc, spec or ticket states gets no marker: stop and report.
 - Before pushing, the gate passes: `__GATE__`.
-- Refer to other issues as `see #N` or `#N's case` in commit messages and PR text. GitHub closes any issue a closing keyword (close, fix, resolve and their forms) precedes, so the only one you write is the PR body's `Resolves #__ISSUE__`.
-- Push the branch. When no PR is open on it, open a draft PR whose body says `Resolves #__ISSUE__`.
+- Refer to other issues as `see #N` or `#N's case` in commit messages and PR text. GitHub closes any issue a closing keyword (close, fix, resolve and their forms) precedes, so the only issue reference you write with one is the PR body's closing line.
+- Push the branch. When no PR is open on it, open a draft PR whose body starts with `__CLOSING__`.
 
 ## Report
 
