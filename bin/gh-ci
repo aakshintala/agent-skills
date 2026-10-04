@@ -144,51 +144,20 @@ cmd_wait() {
   [ -n "$pr" ] || usage
   case "$timeout" in ''|*[!0-9]*) usage;; esac
   local interval="${GH_CI_INTERVAL:-30}"
-  local slept=0 head head2 checks_json jq_out verdict
-  local failing_list pending_list line payload decoded name
+  local slept=0 head head2 checks_json verdict
   while true; do
     head=$(pr_head "$pr") || return $?
     checks_json=$(gh pr checks "$pr" --repo "$REPO" --required --json name,bucket 2>&1 || true)
-    verdict="pending"; failing_list=""; pending_list=""
-    if jq_out=$(printf '%s' "$checks_json" | jq -r '
-      (if type == "array" then . else [] end) as $checks
-      | (if ($checks | length) == 0 then "pending"
-         elif any($checks[]; (try (.bucket | IN("pass","skipping","fail","cancel")) catch false) | not) then "pending"
-         elif any($checks[]; try (.bucket == "fail" or .bucket == "cancel") catch false) then "fail"
-         else "pass" end),
-        ($checks[] | select(try (.bucket == "fail" or .bucket == "cancel") catch false)
-          | "F:\(try (.name // "" | tostring) catch "" | @json)"),
-        ($checks[] | select((try (.bucket | IN("pass","skipping","fail","cancel")) catch false) | not)
-          | "P:\(try (.name // "" | tostring) catch "" | @json)")
-    ' 2>/dev/null); then
-      verdict=$(head -n 1 <<<"$jq_out")
-      case "$verdict" in pass|fail) ;;
-        *) verdict="pending";;
-      esac
-      while IFS= read -r line; do
-        case "$line" in
-          F:*|P:*)
-            payload=${line#?:}
-            if decoded=$(printf '%s' "$payload" | jq -r . 2>/dev/null); then
-              name="$decoded"
-            else
-              continue
-            fi
-            case "$line" in
-              F:*) failing_list="$failing_list$name
-";;
-              P:*) pending_list="$pending_list$name
-";;
-            esac;;
-        esac
-      done <<<"$(tail -n +2 <<<"$jq_out")"
-    fi
+    verdict=$(printf '%s' "$checks_json" | jq -r '
+      if type != "array" or length == 0 then "pending"
+      elif any(.[]; .bucket != "pass" and .bucket != "skipping" and .bucket != "fail" and .bucket != "cancel") then "pending"
+      elif any(.[]; .bucket == "fail" or .bucket == "cancel") then "fail"
+      else "pass" end' 2>/dev/null) || verdict=pending
+    case "$verdict" in pass|fail) ;; *) verdict="pending";; esac
     if [ "$verdict" = "pending" ]; then
       if [ "$slept" -ge "$timeout" ]; then
         echo "head: ${head:0:8} timeout after ${timeout}s"
-        if [ -n "$pending_list" ]; then
-          printf '%s' "$pending_list" | while IFS= read -r name; do echo "pending: $name"; done
-        fi
+        printf '%s' "$checks_json" | jq -r '.[] | select(.bucket != "pass" and .bucket != "skipping" and .bucket != "fail" and .bucket != "cancel") | "pending: \(.name)"' 2>/dev/null || true
         return 124
       fi
       sleep "$interval"
@@ -201,7 +170,7 @@ cmd_wait() {
     fi
     if [ "$verdict" = "fail" ]; then
       echo "head: ${head:0:8} CI: fail"
-      printf '%s' "$failing_list" | while IFS= read -r name; do echo "failing: $name"; done
+      printf '%s' "$checks_json" | jq -r '.[] | select(.bucket == "fail" or .bucket == "cancel") | "failing: \(.name)"' 2>/dev/null || true
       return 1
     fi
     echo "head: ${head:0:8} CI: pass"
