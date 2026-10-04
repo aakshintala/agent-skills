@@ -2,7 +2,7 @@
 # review-pr: run a PR's reviews through the delegate CLI, post one PR comment,
 # and print a verdict digest for the orchestrator.
 # Usage:
-#   review-pr start <pr> --repo OWNER/NAME --cwd CLONE [--issue N] [--spec N] --model M --overbuild-model M2 [--workflow-doc PATH] [--head SHA]
+#   review-pr start <pr> --repo OWNER/NAME --cwd CLONE [--issue N]... [--spec N] --model M --overbuild-model M2 [--workflow-doc PATH] [--head SHA]
 #   review-pr start <pr> --repo OWNER/NAME --cwd CLONE --model M --verify FINDINGS_FILE --since SHA [--workflow-doc PATH] [--head SHA]
 #     --since is the reviewed head; verify diffs from its repair base on current base.
 #     launches one job per review role, prints "<role> <job-id>" per job, and
@@ -27,7 +27,7 @@ set -euo pipefail
 # verdict: loud failure, never UNFINISHED.
 
 usage() {
-  echo "usage: review-pr start <pr> --repo OWNER/NAME --cwd CLONE [--issue N] [--spec N] --model M --overbuild-model M2 [--workflow-doc PATH] [--head SHA]" >&2
+  echo "usage: review-pr start <pr> --repo OWNER/NAME --cwd CLONE [--issue N]... [--spec N] --model M --overbuild-model M2 [--workflow-doc PATH] [--head SHA]" >&2
   echo "       review-pr start <pr> --repo OWNER/NAME --cwd CLONE --model M --verify FINDINGS_FILE --since SHA [--workflow-doc PATH] [--head SHA]" >&2
   echo "       review-pr collect <job-id>..." >&2
   exit 2
@@ -119,13 +119,30 @@ cmd_start() {
   pr="$1"; shift
   case "$pr" in -*|"") usage;; esac
 
-  repo=""; clone=""; issue=""; specn=""; model=""; omodel=""
+  repo=""; clone=""; issues=(); issue_count=0; specn=""; model=""; omodel=""
   verify=""; since=""; wdoc=""; head=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo) [ $# -ge 2 ] || usage; repo="$2"; shift 2;;
       --cwd) [ $# -ge 2 ] || usage; clone="$2"; shift 2;;
-      --issue) [ $# -ge 2 ] || usage; issue="$2"; shift 2;;
+      --issue)
+        [ $# -ge 2 ] || usage
+        issue_value="$2"
+        case "$issue_value" in ""|*[!0-9]*) usage;; esac
+        issue_found=""
+        issue_index=0
+        while [ "$issue_index" -lt "$issue_count" ]; do
+          if [ "${issues[$issue_index]}" = "$issue_value" ]; then
+            issue_found="1"
+            break
+          fi
+          issue_index=$((issue_index + 1))
+        done
+        if [ -z "$issue_found" ]; then
+          issues[$issue_count]="$issue_value"
+          issue_count=$((issue_count + 1))
+        fi
+        shift 2;;
       --spec) [ $# -ge 2 ] || usage; specn="$2"; shift 2;;
       --model) [ $# -ge 2 ] || usage; model="$2"; shift 2;;
       --overbuild-model) [ $# -ge 2 ] || usage; omodel="$2"; shift 2;;
@@ -144,12 +161,27 @@ cmd_start() {
     mode="verify"
     [ -n "$since" ] || usage
     [ -f "$verify" ] || usage
-    { [ -z "$issue" ] && [ -z "$specn" ] && [ -z "$omodel" ]; } || usage
+    { [ "$issue_count" -eq 0 ] && [ -z "$specn" ] && [ -z "$omodel" ]; } || usage
   else
     mode="review"
     [ -n "$omodel" ] || usage
     # A PR with no ticket is its own spec: gh issue view accepts a PR number.
-    issue="${issue:-$pr}"; specn="${specn:-$pr}"
+    if [ "$issue_count" -eq 0 ]; then
+      issue="$pr"
+    else
+      issue="${issues[0]}"
+      issue_index=1
+      while [ "$issue_index" -lt "$issue_count" ]; do
+        issue_value="${issues[$issue_index]}"
+        if [ "$issue_index" -eq "$((issue_count - 1))" ]; then
+          issue="$issue and #$issue_value"
+        else
+          issue="$issue, #$issue_value"
+        fi
+        issue_index=$((issue_index + 1))
+      done
+    fi
+    specn="${specn:-$pr}"
     [ -z "$since" ] || usage
   fi
   if [ -z "$wdoc" ]; then wdoc="none"; fi

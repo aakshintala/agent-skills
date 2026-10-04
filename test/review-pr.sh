@@ -179,6 +179,52 @@ grep -q 'workflow doc is none' "$T/state/prompt-review.md" || fail "workflow doc
 [ "$(git -C "$T/clone" worktree list | grep -c 'wt-')" = "0" ] || fail "collect removes the worktrees"
 [ ! -e "$T/state/watch.txt" ] || fail "collect does not wait"
 
+# --- case: repeated --issue values fill the review brief together
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --issue 3 --spec 2 \
+  --model M --overbuild-model M2 >/dev/null 2>&1 || fail "multi-issue start exits 0"
+grep -q 'Code review of PR #7 in O/N for issue #1 and #3 (spec #2)' \
+  "$T/state/prompt-review.md" || fail "review brief joins multiple issues"
+grep -q '__[A-Z]' "$T/state/prompt-review.md" && fail "multi-issue review brief has no placeholders"
+"$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "multi-issue collect exits 0"
+
+# --- case: three issues keep first-occurrence order and drop duplicates
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --issue 3 --issue 1 --issue 4 --spec 2 \
+  --model M --overbuild-model M2 >/dev/null 2>&1 || fail "deduplicated multi-issue start exits 0"
+grep -q 'Code review of PR #7 in O/N for issue #1, #3 and #4 (spec #2)' \
+  "$T/state/prompt-review.md" || fail "review brief joins three distinct issues in order"
+"$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "deduplicated multi-issue collect exits 0"
+
+# --- case: malformed issue values and issues in verify mode fail before launch
+for bad_issue in '#3' '3x'; do
+  reset_state
+  start_review 7 --repo O/N --cwd "$T/clone" --issue "$bad_issue" --spec 2 \
+    --model M --overbuild-model M2 >/dev/null 2>&1
+  [ "$?" -eq 2 ] || fail "malformed --issue $bad_issue exits 2"
+  [ ! -e "$T/state/runs.txt" ] || fail "malformed --issue $bad_issue starts no job"
+done
+reset_state
+printf 'P1 findings text\n' >"$T/findings.txt"
+start_review 7 --repo O/N --cwd "$T/clone" --model M --verify "$T/findings.txt" \
+  --since "$FAKE_SHA" --issue 1 --issue 2 >/dev/null 2>&1
+[ "$?" -eq 2 ] || fail "verify rejects repeated --issue values"
+[ ! -e "$T/state/runs.txt" ] || fail "verify with --issue starts no job"
+[ "$(git -C "$T/clone" worktree list | grep -c 'wt-' || true)" = "0" ] || \
+  fail "verify with --issue creates no worktree"
+
 # --- case: a job that did not finish is UNFINISHED, never done; collect exits 1
 reset_state
 printf 'ci\tfail\n' >"$T/checks.txt"
