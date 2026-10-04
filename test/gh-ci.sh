@@ -17,6 +17,7 @@ trap 'rm -rf "$T"' EXIT
 
 mkdir -p "$T/fakebin" "$T/state"
 export GH_CI_REPO="O/N"
+export GH_CI_INTERVAL=7
 
 A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -38,6 +39,7 @@ advance() {
 }
 case "\$1" in
   view)
+    if [ -e "$T/state/view-fail" ]; then exit 3; fi
     h="\$(advance "$T/state/heads.txt")"
     if [ -e "$T/state/dirty" ]; then printf '%s DIRTY\n' "\$h";
     else printf '%s CLEAN\n' "\$h"; fi;;
@@ -61,7 +63,7 @@ chmod +x "$T/fakebin/gh" "$T/fakebin/sleep"
 export PATH="$T/fakebin:$PATH"
 
 reset_state() {
-  rm -f "$T/state/sleeps.txt" "$T/state/gh-args.txt" "$T/state/dirty"
+  rm -f "$T/state/sleeps.txt" "$T/state/gh-args.txt" "$T/state/dirty" "$T/state/view-fail"
   rm -f "$T/state/heads.txt" "$T/state/checks.txt"
   : >"$T/state/gh-args.txt"
 }
@@ -77,7 +79,6 @@ run_wait() {
 # --- case: pending then green, with a passing name containing
 # --- "failing: 0 pending: 0" (proves no substring matching)
 reset_state
-export GH_CI_INTERVAL=7
 set_heads "$A"
 set_checks \
   '[{"bucket":"pending","name":"ci"},{"bucket":"pass","name":"setup"}]' \
@@ -93,7 +94,6 @@ grep -q "^7$" "$T/state/sleeps.txt" || fail "sleep uses GH_CI_INTERVAL: [$(cat "
 
 # --- case: pending then one failure (plus one pass)
 reset_state
-export GH_CI_INTERVAL=7
 set_heads "$A"
 set_checks \
   '[{"bucket":"pending","name":"ci"}]' \
@@ -111,6 +111,23 @@ set_checks '[{"bucket":"cancel","name":"ci"}]'
 run_wait 7
 [ "$CODE" = "1" ] || fail "cancel exits 1 (got $CODE): [$OUT]"
 grep -q "^failing: ci$" <<<"$OUT" || fail "cancel named as failing: [$OUT]"
+
+# --- case: failing name with an embedded newline still fails (not timeout)
+reset_state
+set_heads "$A"
+set_checks '[{"bucket":"fail","name":"ci\nextra"}]'
+run_wait 7 --timeout 0
+[ "$CODE" = "1" ] || fail "newline failing name exits 1 (got $CODE): [$OUT]"
+grep -q "head: ${A:0:8} CI: fail" <<<"$OUT" || fail "newline failing name header: [$OUT]"
+
+# --- case: passing name with an embedded newline plus a fake record still passes
+reset_state
+set_heads "$A"
+set_checks '[{"bucket":"pass","name":"ok\nfail\u001fphantom"}]'
+run_wait 7
+[ "$CODE" = "0" ] || fail "injection passing name exits 0 (got $CODE): [$OUT]"
+grep -q "head: ${A:0:8} CI: pass" <<<"$OUT" || fail "injection passing name line: [$OUT]"
+grep -q "failing:" <<<"$OUT" && fail "injection names never listed as failing: [$OUT]"
 
 # --- case: always pending hits the timeout
 reset_state
@@ -146,7 +163,6 @@ grep -q "head: ${A:0:8} CI: pass" <<<"$OUT" || fail "empty-then-green pass line:
 
 # --- case: head changes mid-wait waits on the new head
 reset_state
-export GH_CI_INTERVAL=7
 set_heads "$A" "$B"
 set_checks \
   '[{"bucket":"pending","name":"ci"}]' \
@@ -157,7 +173,6 @@ grep -q "head: ${B:0:8} CI: pass" <<<"$OUT" || fail "head change names new head:
 
 # --- case: head moves during a verdict discards it
 reset_state
-export GH_CI_INTERVAL=7
 set_heads "$A" "$B"
 set_checks \
   '[{"bucket":"fail","name":"ci"}]' \
@@ -168,7 +183,6 @@ grep -q "head: ${B:0:8} CI: pass" <<<"$OUT" || fail "verdict race names new head
 
 # --- case: conflicting PR fails at once
 reset_state
-export GH_CI_INTERVAL=7
 set_heads "$A"
 set_checks '[{"bucket":"pass","name":"ci"}]'
 touch "$T/state/dirty"
@@ -176,6 +190,16 @@ OUT="$("$GHCI" wait 7 2>"$T/stderr.txt")"; CODE=$?
 [ "$CODE" != "0" ] || fail "conflict exits non-zero"
 grep -qi "merge conflicts" "$T/stderr.txt" || fail "conflict message: [$(cat "$T/stderr.txt")]"
 [ ! -e "$T/state/sleeps.txt" ] || fail "conflict never sleeps"
+
+# --- case: unreadable head never exits 0
+reset_state
+set_heads "$A"
+set_checks '[{"bucket":"pass","name":"ci"}]'
+touch "$T/state/view-fail"
+OUT="$("$GHCI" wait 7 2>"$T/stderr.txt")"; CODE=$?
+[ "$CODE" != "0" ] || fail "unreadable head exits non-zero (got $CODE): [$OUT]"
+grep -qi "could not read the head" "$T/stderr.txt" || fail "unreadable head message: [$(cat "$T/stderr.txt")]"
+[ ! -e "$T/state/sleeps.txt" ] || fail "unreadable head never sleeps"
 
 # --- case: usage errors exit 2
 reset_state

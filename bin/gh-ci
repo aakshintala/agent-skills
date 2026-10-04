@@ -18,7 +18,13 @@ usage() {
 # because GitHub never runs CI on one and a watch would wait forever.
 pr_head() {
   local sha state
-  read -r sha state < <(gh pr view "$1" --repo "$REPO" --json headRefOid,mergeStateStatus --jq '"\(.headRefOid) \(.mergeStateStatus)"')
+  read -r sha state < <(gh pr view "$1" --repo "$REPO" --json headRefOid,mergeStateStatus --jq '"\(.headRefOid) \(.mergeStateStatus)"') || true
+  if [[ "${sha:-}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    :
+  else
+    echo "could not read the head of PR $1" >&2
+    return 1
+  fi
   if [ "$state" = "DIRTY" ]; then
     echo "PR $1 has merge conflicts: GitHub runs no CI on it. Rebase first." >&2
     return 1
@@ -138,32 +144,46 @@ cmd_wait() {
   [ -n "$pr" ] || usage
   case "$timeout" in ''|*[!0-9]*) usage;; esac
   local interval="${GH_CI_INTERVAL:-30}"
-  local slept=0 head head2 checks_json rows
-  local total pending_n fail_n failing_list pending_list bucket name
-  local SEP
-  SEP=$(printf '\037')
+  local slept=0 head head2 checks_json jq_out verdict
+  local failing_list pending_list line payload decoded name
   while true; do
     head=$(pr_head "$pr") || return $?
     checks_json=$(gh pr checks "$pr" --repo "$REPO" --required --json name,bucket 2>&1 || true)
-    total=0; pending_n=0; fail_n=0; failing_list=""; pending_list=""
-    if rows=$(printf '%s' "$checks_json" | jq -r 'if type == "array" then .[] | "\(.bucket)\u001f\(.name)" else error("not array") end' 2>/dev/null); then
-      while IFS="$SEP" read -r bucket name; do
-        [ -n "$bucket" ] || continue
-        total=$((total + 1))
-        case "$bucket" in
-          pending) pending_n=$((pending_n + 1)); pending_list="$pending_list$name
+    verdict="pending"; failing_list=""; pending_list=""
+    if jq_out=$(printf '%s' "$checks_json" | jq -r '
+      (if type == "array" then . else [] end) as $checks
+      | (if ($checks | length) == 0 then "pending"
+         elif any($checks[]; (try (.bucket | IN("pass","skipping","fail","cancel")) catch false) | not) then "pending"
+         elif any($checks[]; try (.bucket == "fail" or .bucket == "cancel") catch false) then "fail"
+         else "pass" end),
+        ($checks[] | select(try (.bucket == "fail" or .bucket == "cancel") catch false)
+          | "F:\(try (.name // "" | tostring) catch "" | @json)"),
+        ($checks[] | select((try (.bucket | IN("pass","skipping","fail","cancel")) catch false) | not)
+          | "P:\(try (.name // "" | tostring) catch "" | @json)")
+    ' 2>/dev/null); then
+      verdict=$(head -n 1 <<<"$jq_out")
+      case "$verdict" in pass|fail) ;;
+        *) verdict="pending";;
+      esac
+      while IFS= read -r line; do
+        case "$line" in
+          F:*|P:*)
+            payload=${line#?:}
+            if decoded=$(printf '%s' "$payload" | jq -r . 2>/dev/null); then
+              name="$decoded"
+            else
+              continue
+            fi
+            case "$line" in
+              F:*) failing_list="$failing_list$name
 ";;
-          fail|cancel) fail_n=$((fail_n + 1)); failing_list="$failing_list$name
+              P:*) pending_list="$pending_list$name
 ";;
-          pass|skipping) ;;
-          *) pending_n=$((pending_n + 1)); pending_list="$pending_list$name
-";;
+            esac;;
         esac
-      done <<<"$rows"
-    else
-      pending_n=1
+      done <<<"$(tail -n +2 <<<"$jq_out")"
     fi
-    if [ "$total" -eq 0 ] || [ "$pending_n" -gt 0 ]; then
+    if [ "$verdict" = "pending" ]; then
       if [ "$slept" -ge "$timeout" ]; then
         echo "head: ${head:0:8} timeout after ${timeout}s"
         if [ -n "$pending_list" ]; then
@@ -179,7 +199,7 @@ cmd_wait() {
     if [ "$head2" != "$head" ]; then
       continue
     fi
-    if [ "$fail_n" -gt 0 ]; then
+    if [ "$verdict" = "fail" ]; then
       echo "head: ${head:0:8} CI: fail"
       printf '%s' "$failing_list" | while IFS= read -r name; do echo "failing: $name"; done
       return 1
