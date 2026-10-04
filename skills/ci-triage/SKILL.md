@@ -3,7 +3,7 @@ name: ci-triage
 description: "Classify a failed CI run before any retry or fix: real failure, flake, stale base, merge conflict or infrastructure. Use when CI fails on a PR, or before rerunning any CI job."
 ---
 
-Failed CI is evidence. Classify it before touching code or rerunning anything. The tool is `~/.agents/bin/gh-ci` (`snapshot`, `failures`, `watch-verified`, `resample`; usage at the top of the script).
+Failed CI is evidence. Classify it before touching code or rerunning anything. The tool is `~/.agents/bin/gh-ci` (`snapshot`, `wait`, `failures`, `watch-verified`, `resample`; usage at the top of the script).
 
 ### 1. Read
 
@@ -27,6 +27,6 @@ Done when every red leg has a class, posted as a PR comment with its evidence.
 
 ### 3. Act and re-enter
 
-Take each class's action. Any commit this makes re-enters `review-loop` at its verify step, on the same counter, so the merged head is one a verdict covers. Wait with `gh-ci watch-verified <run> --pr <n>`; a watch firing means look, so confirm with `gh-ci snapshot` before acting.
+Take each class's action. Any commit this makes re-enters `review-loop` at its verify step, on the same counter, so the merged head is one a verdict covers. Wait with `gh-ci wait <pr> [--timeout <s>]`, in the wait mode your harness instructions prescribe: it blocks until no required check on the PR's current head is pending, then exits 0 when all are green, 1 printing each `failing: <name>`, or 124 on timeout. Use it rather than a loop of your own over `gh-ci snapshot`.
 
 Done when the required checks are green on the PR's current head SHA, or the failure is reported with its class, run id and SHA.
