@@ -96,8 +96,12 @@ while [ "$i" -lt "$nkeys" ]; do
   i=$((i + 1))
 done
 
-leftovers="$(printf '%s' "$out" | grep -oE '__[A-Z][A-Z0-9_]*__' || true)"
+# Scan the template, not the output: substituted values are data.
+leftovers="$(printf '%s' "$orig" | grep -oE '__[A-Z][A-Z0-9_]*__' || true)"
 seen="|"
+if [ "$nkeys" -gt 0 ]; then
+  for k in "${keys[@]}"; do seen="${seen}__${k}__|"; done
+fi
 while IFS= read -r m; do
   [ -n "$m" ] || continue
   case "$seen" in
