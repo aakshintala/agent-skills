@@ -21,3 +21,17 @@ jobs:
         with:
           persist-credentials: false
       - run: test/run
+      - run: delegate/scripts/leak-scan.sh
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: delegate
+      - run: cargo fmt --check
+        working-directory: delegate
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: delegate
+      - run: cargo test
+        working-directory: delegate
