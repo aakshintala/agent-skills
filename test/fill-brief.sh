@@ -42,6 +42,21 @@ grep -q '^unknown key: EXTRA$' "$T/err3.txt" || fail "unknown key with valid fil
 "$FILL" "$T/big.md" 'A=x' >"$T/big-out.txt" 2>"$T/big-err.txt" || fail "a key early in a long template is known"
 [ "$(head -1 "$T/big-out.txt")" = "x" ] || fail "a key early in a long template fills first line"
 
+# a value that quotes a placeholder is data, not an unfilled placeholder (issue #70)
+printf 'Plan:\n__PLAN__\n' >"$T/q.md"
+printf 'quote: `diff __SINCE__..HEAD`\n' >"$T/qp.md"
+out="$("$FILL" "$T/q.md" "PLAN=@$T/qp.md" 2>"$T/err-q.txt")" || fail "quoted placeholder in value exits 0"
+case "$out" in *'diff __SINCE__..HEAD'*) ;; *) fail "quoted placeholder printed literally: got [$out]" ;; esac
+# a template placeholder with no key still fails as unfilled
+printf 'Plan:\n__PLAN__ __SINCE__\n' >"$T/q2.md"
+"$FILL" "$T/q2.md" "PLAN=@$T/qp.md" >/dev/null 2>"$T/err-q2.txt" && fail "template placeholder with no key exits 1"
+grep -q '^unfilled: __SINCE__$' "$T/err-q2.txt" || fail "template placeholder with no key names __SINCE__"
+
+# adjacent placeholders are filled separately
+printf '__A____B__\n' >"$T/adj.md"
+out="$("$FILL" "$T/adj.md" 'A=1' 'B=2')" || fail "adjacent placeholders exit 0"
+[ "$out" = "12" ] || fail "adjacent placeholders content: got [$out]"
+
 # multi-line @file value containing & \ $ / passes through unchanged
 printf 'first __V__ last\n' >"$T/m.md"
 printf 'a&b\\c$d/e\nsecond & \\ line\n' >"$T/val.txt"

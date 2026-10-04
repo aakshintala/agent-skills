@@ -96,7 +96,14 @@ while [ "$i" -lt "$nkeys" ]; do
   i=$((i + 1))
 done
 
-leftovers="$(printf '%s' "$out" | grep -oE '__[A-Z][A-Z0-9_]*__' || true)"
+# Scan the template minus the given keys, not the output: substituted values are data.
+rest="$orig"
+i=0
+while [ "$i" -lt "$nkeys" ]; do
+  rest="${rest//"__${keys[$i]}__"/ }"
+  i=$((i + 1))
+done
+leftovers="$(printf '%s' "$rest" | grep -oE '__[A-Z][A-Z0-9_]*__' || true)"
 seen="|"
 while IFS= read -r m; do
   [ -n "$m" ] || continue
