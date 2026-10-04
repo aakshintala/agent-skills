@@ -67,7 +67,7 @@ Done when CI is green on the head a verdict covers.
 
 Run `~/.agents/bin/pr-closes <pr> --repo <owner/name>` first. Exit 1 lists each issue a closing keyword would close outside the PR's `Resolves` lines. Reword a title or body match and rerun. When only commit-message matches remain, merge with `gh pr merge --subject <title> --body <body>` so the squash commit carries the PR text alone.
 
-Promote the draft PR to ready, then merge by the workflow doc's rule, plus any session terms the flywheel confirmed. Close linked issues and delete the worktree. Delete the remote branch (`git push origin --delete <branch>`); a `remote ref does not exist` error means the repo already deleted it on merge, which counts as done.
+Promote the draft PR to ready, then merge by the workflow doc's rule, plus any session terms the flywheel confirmed. Close the issues in the PR's `Resolves` lines, and no others: a `Part of` ticket stays open until its last part merges. Delete the worktree. Delete the remote branch (`git push origin --delete <branch>`); a `remote ref does not exist` error means the repo already deleted it on merge, which counts as done.
 
 Done when the PR is merged with `pr-closes` clean (OK, or only commit-message matches kept out of the squash), or escalated as the rules above say.
 
