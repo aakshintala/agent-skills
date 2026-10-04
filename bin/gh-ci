@@ -2,6 +2,7 @@
 # gh-ci: quiet, low-call GitHub CI helpers for agent flywheels.
 # Usage: gh-ci snapshot <pr> | failures <run> | watch-verified <run> --pr <n>
 #        gh-ci resample <pr> "<job name>" --until <regex> [--max <n>]
+#        gh-ci wait <pr> [--timeout <s>]
 # GH_CI_REPO overrides the repo (default: the current checkout's origin); GH_CI_INTERVAL the watch poll seconds (default 30).
 set -euo pipefail
 REPO="${GH_CI_REPO:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
@@ -9,6 +10,7 @@ REPO="${GH_CI_REPO:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
 usage() {
   echo "usage: gh-ci snapshot <pr> | failures <run> | watch-verified <run> --pr <n>" >&2
   echo "       gh-ci resample <pr> \"<job name>\" --until <regex> [--max <n>]" >&2
+  echo "       gh-ci wait <pr> [--timeout <s>]" >&2
   exit 2
 }
 
@@ -119,11 +121,80 @@ cmd_resample() {
   echo "no match in $max attempts"; return 1
 }
 
+# wait <pr> [--timeout <s>]: block until no required check on the PR's
+# current head is pending. Exit 0 when all green, 1 on failing checks,
+# 124 on timeout, 2 on usage. The timeout counts seconds slept, not
+# wall-clock time. A verdict is reported only for a head read both
+# before and after its checks call.
+cmd_wait() {
+  local pr="" timeout=1800
+  while [ $# -gt 0 ]; do case "$1" in
+    --timeout)
+      [ $# -ge 2 ] || usage
+      timeout="$2"; shift 2;;
+    --*) usage;;
+    *) [ -z "$pr" ] || usage; pr="$1"; shift;;
+  esac; done
+  [ -n "$pr" ] || usage
+  case "$timeout" in ''|*[!0-9]*) usage;; esac
+  local interval="${GH_CI_INTERVAL:-30}"
+  local slept=0 head head2 checks_json rows
+  local total pending_n fail_n failing_list pending_list bucket name
+  local SEP
+  SEP=$(printf '\037')
+  while true; do
+    head=$(pr_head "$pr") || return $?
+    checks_json=$(gh pr checks "$pr" --repo "$REPO" --required --json name,bucket 2>&1 || true)
+    total=0; pending_n=0; fail_n=0; failing_list=""; pending_list=""
+    if rows=$(printf '%s' "$checks_json" | jq -r 'if type == "array" then .[] | "\(.bucket)\u001f\(.name)" else error("not array") end' 2>/dev/null); then
+      while IFS="$SEP" read -r bucket name; do
+        [ -n "$bucket" ] || continue
+        total=$((total + 1))
+        case "$bucket" in
+          pending) pending_n=$((pending_n + 1)); pending_list="$pending_list$name
+";;
+          fail|cancel) fail_n=$((fail_n + 1)); failing_list="$failing_list$name
+";;
+          pass|skipping) ;;
+          *) pending_n=$((pending_n + 1)); pending_list="$pending_list$name
+";;
+        esac
+      done <<<"$rows"
+    else
+      pending_n=1
+    fi
+    if [ "$total" -eq 0 ] || [ "$pending_n" -gt 0 ]; then
+      if [ "$slept" -ge "$timeout" ]; then
+        echo "head: ${head:0:8} timeout after ${timeout}s"
+        if [ -n "$pending_list" ]; then
+          printf '%s' "$pending_list" | while IFS= read -r name; do echo "pending: $name"; done
+        fi
+        return 124
+      fi
+      sleep "$interval"
+      slept=$((slept + interval))
+      continue
+    fi
+    head2=$(pr_head "$pr") || return $?
+    if [ "$head2" != "$head" ]; then
+      continue
+    fi
+    if [ "$fail_n" -gt 0 ]; then
+      echo "head: ${head:0:8} CI: fail"
+      printf '%s' "$failing_list" | while IFS= read -r name; do echo "failing: $name"; done
+      return 1
+    fi
+    echo "head: ${head:0:8} CI: pass"
+    return 0
+  done
+}
+
 cmd="${1:?}"; shift
 case "$cmd" in
   snapshot) cmd_snapshot "$@" ;;
   failures) cmd_failures "$@" ;;
   watch-verified) cmd_watch_verified "$@" ;;
   resample) cmd_resample "$@" ;;
+  wait) cmd_wait "$@" ;;
   *) usage ;;
 esac
