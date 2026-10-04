@@ -52,6 +52,11 @@ printf 'Plan:\n__PLAN__ __SINCE__\n' >"$T/q2.md"
 "$FILL" "$T/q2.md" "PLAN=@$T/qp.md" >/dev/null 2>"$T/err-q2.txt" && fail "template placeholder with no key exits 1"
 grep -q '^unfilled: __SINCE__$' "$T/err-q2.txt" || fail "template placeholder with no key names __SINCE__"
 
+# adjacent placeholders are filled separately
+printf '__A____B__\n' >"$T/adj.md"
+out="$("$FILL" "$T/adj.md" 'A=1' 'B=2')" || fail "adjacent placeholders exit 0"
+[ "$out" = "12" ] || fail "adjacent placeholders content: got [$out]"
+
 # multi-line @file value containing & \ $ / passes through unchanged
 printf 'first __V__ last\n' >"$T/m.md"
 printf 'a&b\\c$d/e\nsecond & \\ line\n' >"$T/val.txt"
