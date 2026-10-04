@@ -492,4 +492,101 @@ wt="$(sed -n 's/^worktree=//p' "$TMPDIR/review-pr/job-verify")"
 [ "$(git -C "$wt" rev-parse HEAD)" = "$NEW_SHA" ] || fail "--head verify worktree head"
 "$REVIEW" collect job-verify >/dev/null 2>&1 || true
 
+# --- case: verify on a rebased PR compares only the repair patch
+reset_state
+write_record verify DONE "FIX-OK
+STATUS: DONE" 0
+git init -q -b main "$T/rebase-origin"
+git -C "$T/rebase-origin" config user.email t@t
+git -C "$T/rebase-origin" config user.name t
+echo 'base line' >"$T/rebase-origin/main.txt"
+git -C "$T/rebase-origin" add .
+git -C "$T/rebase-origin" commit -qm 'rebase fixture base'
+git -C "$T/rebase-origin" checkout -q -b pr9
+echo 'original line' >"$T/rebase-origin/pr.txt"
+git -C "$T/rebase-origin" add pr.txt
+git -C "$T/rebase-origin" commit -qm 'reviewed change'
+OLD9="$(git -C "$T/rebase-origin" rev-parse HEAD)"
+git -C "$T/rebase-origin" checkout -q main
+echo 'main moved' >"$T/rebase-origin/main.txt"
+git -C "$T/rebase-origin" commit -qam 'move main'
+git -C "$T/rebase-origin" checkout -q -b rebased-pr9
+echo 'original line' >"$T/rebase-origin/pr.txt"
+git -C "$T/rebase-origin" add pr.txt
+git -C "$T/rebase-origin" commit -qm 'replay reviewed change'
+echo 'repair line' >"$T/rebase-origin/pr.txt"
+git -C "$T/rebase-origin" commit -qam 'repair'
+NEW9="$(git -C "$T/rebase-origin" rev-parse HEAD)"
+git -C "$T/rebase-origin" update-ref refs/pull/9/head "$NEW9"
+git clone -q "$T/rebase-origin" "$T/rebase-clone"
+printf '%s\n' "$NEW9" >"$T/state/heads.txt"
+start_review 9 --repo O/N --cwd "$T/rebase-clone" --model M \
+  --verify "$T/findings.txt" --since "$OLD9" --head "$NEW9" \
+  >/dev/null 2>"$T/rebase-stderr.txt" || fail "rebased verify start exits 0"
+REPAIR_BASE="$(sed -n 's/^review-pr: repair base \([0-9a-f]\{40\}\).*/\1/p' "$T/rebase-stderr.txt")"
+[ -n "$REPAIR_BASE" ] || fail "verify logs the repair base"
+[ "$REPAIR_BASE" != "$OLD9" ] || fail "rebased verify uses a base other than the reviewed head"
+grep -q "git diff $REPAIR_BASE..HEAD" "$T/state/prompt-verify.md" || fail "rebased verify brief uses repair base"
+[ "$(git -C "$T/rebase-clone" diff --name-only "$REPAIR_BASE" "$NEW9")" = "pr.txt" ] || \
+  fail "rebased verify diff excludes changes that only exist on main"
+repair_diff="$(git -C "$T/rebase-clone" diff "$REPAIR_BASE" "$NEW9" -- pr.txt)"
+grep -q '^-original line$' <<<"$repair_diff" || fail "rebased verify diff removes reviewed line"
+grep -q '^+repair line$' <<<"$repair_diff" || fail "rebased verify diff contains the repair line"
+if grep -q 'main moved' <<<"$repair_diff"; then fail "rebased verify diff excludes main's change"; fi
+grep -q "review-pr: repair base $REPAIR_BASE" "$T/rebase-stderr.txt" || fail "stderr identifies repair base"
+"$REVIEW" collect job-verify >/dev/null 2>&1 || fail "rebased verify collect exits 0"
+
+# --- case: verify reports conflicts while excluding changes only on main
+reset_state
+write_record verify DONE "FIX-OK
+STATUS: DONE" 0
+git init -q -b main "$T/conflict-origin"
+git -C "$T/conflict-origin" config user.email t@t
+git -C "$T/conflict-origin" config user.name t
+echo 'same line' >"$T/conflict-origin/shared.txt"
+git -C "$T/conflict-origin" add .
+git -C "$T/conflict-origin" commit -qm 'conflict fixture base'
+git -C "$T/conflict-origin" checkout -q -b pr10
+echo 'reviewed branch line' >"$T/conflict-origin/shared.txt"
+git -C "$T/conflict-origin" commit -qam 'reviewed conflicting change'
+OLD_CONFLICT="$(git -C "$T/conflict-origin" rev-parse HEAD)"
+git -C "$T/conflict-origin" checkout -q main
+echo 'main line' >"$T/conflict-origin/shared.txt"
+echo 'main only' >"$T/conflict-origin/main-only.txt"
+git -C "$T/conflict-origin" add .
+git -C "$T/conflict-origin" commit -qm 'conflicting main change'
+git -C "$T/conflict-origin" checkout -q -b rebased-pr10
+echo 'resolved line' >"$T/conflict-origin/shared.txt"
+git -C "$T/conflict-origin" commit -qam 'resolve rebase conflict'
+echo 'repair line' >"$T/conflict-origin/shared.txt"
+git -C "$T/conflict-origin" commit -qam 'repair conflict resolution'
+NEW_CONFLICT="$(git -C "$T/conflict-origin" rev-parse HEAD)"
+git -C "$T/conflict-origin" update-ref refs/pull/10/head "$NEW_CONFLICT"
+git clone -q "$T/conflict-origin" "$T/conflict-clone"
+printf '%s\n' "$NEW_CONFLICT" >"$T/state/heads.txt"
+start_review 10 --repo O/N --cwd "$T/conflict-clone" --model M \
+  --verify "$T/findings.txt" --since "$OLD_CONFLICT" --head "$NEW_CONFLICT" \
+  >/dev/null 2>"$T/conflict-stderr.txt" || fail "conflicted verify start exits 0"
+CONFLICT_BASE="$(sed -n 's/^review-pr: repair base \([0-9a-f]\{40\}\).*/\1/p' "$T/conflict-stderr.txt")"
+[ -n "$CONFLICT_BASE" ] || fail "conflicted verify logs repair base"
+git -C "$T/conflict-clone" cat-file -e "$CONFLICT_BASE^{commit}" || fail "conflicted repair base is a commit"
+grep -q "$OLD_CONFLICT does not replay cleanly onto .*the repair diff includes the rebase's conflict resolution" \
+  "$T/conflict-stderr.txt" || fail "conflicted verify reports merge-tree conflict"
+conflict_files="$(git -C "$T/conflict-clone" diff --name-only "$CONFLICT_BASE" "$NEW_CONFLICT")"
+[ "$conflict_files" = "shared.txt" ] || fail "conflicted repair diff excludes main-only files: [$conflict_files]"
+"$REVIEW" collect job-verify >/dev/null 2>&1 || fail "conflicted verify collect exits 0"
+
+# --- case: missing --since fails before creating a worktree, state or job
+reset_state
+MISSING_SINCE=ffffffffffffffffffffffffffffffffffffffff
+err="$(start_review 7 --repo O/N --cwd "$T/clone" --model M \
+  --verify "$T/findings.txt" --since "$MISSING_SINCE" 2>&1 >/dev/null)" && \
+  fail "missing --since exits nonzero"
+grep -q -- "--since $MISSING_SINCE is not fetchable" <<<"$err" || fail "missing --since error names the value"
+[ "$(git -C "$T/clone" worktree list | grep -c 'wt-' || true)" = "0" ] || \
+  fail "missing --since creates no worktree"
+[ -z "$(ls "$TMPDIR/review-pr" 2>/dev/null)" ] || fail "missing --since saves no state"
+[ -z "$(ls -d "$TMPDIR"/review-pr.run.* 2>/dev/null)" ] || fail "missing --since leaves no run dir"
+[ ! -e "$T/state/runs.txt" ] || fail "missing --since launches no job"
+
 echo "review-pr: all cases passed"

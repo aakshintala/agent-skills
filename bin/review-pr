@@ -4,6 +4,7 @@
 # Usage:
 #   review-pr start <pr> --repo OWNER/NAME --cwd CLONE [--issue N] [--spec N] --model M --overbuild-model M2 [--workflow-doc PATH] [--head SHA]
 #   review-pr start <pr> --repo OWNER/NAME --cwd CLONE --model M --verify FINDINGS_FILE --since SHA [--workflow-doc PATH] [--head SHA]
+#     --since is the reviewed head; verify diffs from its repair base on current base.
 #     launches one job per review role, prints "<role> <job-id>" per job, and
 #     returns at once. Wait for the ids with the delegation tool's wait command
 #     (delegate watch), in the wait mode your harness instructions prescribe.
@@ -226,13 +227,68 @@ cmd_start() {
       echo "review-pr: expected head $head is not fetchable for PR $pr" >&2
       exit 1
     fi
-    # Patch-id from the same state the reviews check out: the merge-base diff
-    # against a freshly fetched base tip, as GitHub shows it.
     base="$(gh pr view "$pr" --repo "$repo" --json baseRefName | jq -r .baseRefName)"
     git -C "$clone" fetch origin "$base" >&2
     base_tip="$(git -C "$clone" rev-parse FETCH_HEAD)"
+    # Patch-id from the same state the reviews check out: the merge-base diff
+    # against a freshly fetched base tip, as GitHub shows it.
     patch_id="$(git -C "$clone" diff "$base_tip...$head" | git patch-id --stable | awk '{print $1}')"
     if [ -z "$patch_id" ]; then patch_id="none"; fi
+  elif [ "$mode" = "verify" ]; then
+    base="$(gh pr view "$pr" --repo "$repo" --json baseRefName | jq -r .baseRefName)"
+    if [ -z "$base" ] || [ "$base" = "null" ]; then
+      echo "review-pr: no base branch for PR $pr in $repo" >&2
+      exit 1
+    fi
+    git -C "$clone" fetch origin "$base" >&2
+    base_tip="$(git -C "$clone" rev-parse FETCH_HEAD)"
+  fi
+
+  if [ "$mode" = "verify" ]; then
+    if ! git -C "$clone" cat-file -e "$since^{commit}" 2>/dev/null; then
+      git -C "$clone" fetch origin "$since" >&2 || true
+    fi
+    if ! git -C "$clone" cat-file -e "$since^{commit}" 2>/dev/null; then
+      echo "review-pr: --since $since is not fetchable for PR $pr" >&2
+      exit 1
+    fi
+    since_full="$(git -C "$clone" rev-parse --verify "$since^{commit}")"
+    if ! old_mb="$(git -C "$clone" merge-base "$since_full" "$base_tip")"; then
+      echo "review-pr: cannot find the old merge-base for --since $since_full and $base_tip" >&2
+      exit 1
+    fi
+    if ! new_mb="$(git -C "$clone" merge-base "$sha" "$base_tip")"; then
+      echo "review-pr: cannot find the new merge-base for $sha and $base_tip" >&2
+      exit 1
+    fi
+    if [ "$old_mb" = "$new_mb" ]; then
+      repair_base="$since_full"
+    else
+      if merge_output="$(git -C "$clone" merge-tree --write-tree --no-messages \
+        --merge-base="$old_mb" "$new_mb" "$since_full")"; then
+        merge_status=0
+      else
+        merge_status=$?
+      fi
+      if [ "$merge_status" -gt 1 ]; then
+        echo "review-pr: could not replay --since $since_full onto $new_mb" >&2
+        exit 1
+      fi
+      replay_tree="${merge_output%%$'\n'*}"
+      if ! git -C "$clone" cat-file -e "$replay_tree^{tree}" 2>/dev/null; then
+        echo "review-pr: git merge-tree returned no replay tree for --since $since_full" >&2
+        exit 1
+      fi
+      repair_base="$(printf '%s\n' 'review-pr repair base' | \
+        GIT_AUTHOR_NAME=review-pr GIT_AUTHOR_EMAIL=review-pr@localhost \
+        GIT_COMMITTER_NAME=review-pr GIT_COMMITTER_EMAIL=review-pr@localhost \
+        git -C "$clone" commit-tree "$replay_tree" -p "$new_mb" -p "$since_full")"
+      if [ "$merge_status" -eq 1 ]; then
+        echo "review-pr: $since_full does not replay cleanly onto $new_mb; the repair diff includes the rebase's conflict resolution" >&2
+      fi
+    fi
+    echo "review-pr: repair base $repair_base ($since_full replayed onto $new_mb)" >&2
+    since="$repair_base"
   fi
 
   for role in $roles; do
