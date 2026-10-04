@@ -12,10 +12,10 @@ The loop for one PR. Reviews run on models from a different family than the PR's
 ### 1. Review
 
 ```
-~/.agents/bin/review-pr start <pr> --repo <owner/name> --cwd <clone> --head <pushed sha> [--issue <n> --spec <n>] --model <correctness> --overbuild-model <over-engineering> [--workflow-doc <path>]
+~/.agents/bin/review-pr start <pr> --repo <owner/name> --cwd <clone> --head <pushed sha> [--issue <n>]... [--spec <n>] --model <correctness> --overbuild-model <over-engineering> [--workflow-doc <path>]
 ```
 
-`--head` is the full SHA of the PR head you expect reviewed, usually the commit you just pushed (`git rev-parse HEAD`): `review-pr` waits for GitHub to report it and reviews exactly that commit, so a push never gets reviewed at its old head. A PR with no ticket leaves out `--issue` and `--spec` and is reviewed against its own description. It launches the correctness review (`code-review`) and the over-engineering review (`overbuild-review`) as separate jobs, prints one `<role> <job-id>` line per job, and returns at once. Wait for the job ids with the delegation tool's wait command (`delegate watch <ids>`), in the wait mode your harness instructions prescribe, then:
+`--head` is the full SHA of the PR head you expect reviewed, usually the commit you just pushed (`git rev-parse HEAD`): `review-pr` waits for GitHub to report it and reviews exactly that commit, so a push never gets reviewed at its old head. Pass `--issue` once per ticket the PR resolves. A PR with no ticket leaves out `--issue` and `--spec` and is reviewed against its own description. It launches the correctness review (`code-review`) and the over-engineering review (`overbuild-review`) as separate jobs, prints one `<role> <job-id>` line per job, and returns at once. Wait for the job ids with the delegation tool's wait command (`delegate watch <ids>`), in the wait mode your harness instructions prescribe, then:
 
 ```
 ~/.agents/bin/review-pr collect <job-id>...
@@ -33,7 +33,7 @@ Done when the fix round covers every open finding: dispatched as a gated job, or
 
 ### 3. Verify
 
-Judge the repair by its diff (`git diff <reviewed head>..<new head>`) and gate output, never the fix worker's report. Then start the scoped verify (it returns its job id at once), wait as in step 1, and collect it:
+Judge the repair by its diff (`git range-diff origin/main <reviewed head> <new head>`; after a rebase, a plain diff counts the base's own merges) and gate output, never the fix worker's report. Then start the scoped verify (it returns its job id at once), wait as in step 1, and collect it:
 
 ```
 ~/.agents/bin/review-pr start <pr> --repo <owner/name> --cwd <clone> --head <pushed sha> --model <correctness> --verify <findings file> --since <reviewed head>
