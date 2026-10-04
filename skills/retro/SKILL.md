@@ -49,7 +49,7 @@ One rule decides where each lesson lands:
 
 - A check or an environment change goes to the repo where the failure happened.
 - A change to how one project works goes to that project's workflow doc.
-- Anything else goes to agent-skills.
+- Anything else goes to switchyard.
 
 ### 6. File
 
