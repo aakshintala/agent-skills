@@ -73,9 +73,11 @@ P1 src/order.ts:88 — refund skips the ledger entry the spec requires — write
 
 Each finding is `P1|P2|P3 file:line — defect — fix`, under its axis's verdict, most severe first. P1 is wrong behaviour or a security hole, P2 a missed acceptance criterion, an unrequested edit or a hard standards breach, P3 anything smaller, baseline smells included. An axis with any P1 or P2 is `CHANGES`. A merge needs both axes `APPROVE`.
 
+When the defect is a pattern that can recur, the finding names its class and a search that finds every instance, bounded to the lines the PR adds or changes: `P2 src/order.ts:41 — catches and drops the write error (class: swallowed errors; find: rg -n 'catch' on the PR's changed hunks) — rethrow`. Code the PR didn't touch is outside the class.
+
 ## Scoped verify
 
-The input is the earlier findings and the repair diff (the commits since the reviewed head). Check each finding against the code: fixed, or still open. Run the scope check (step 4) on the repair diff: a repair that edits beyond its findings is a new finding.
+The input is the earlier findings and the repair diff (the commits since the reviewed head). Check each finding against the code: fixed, or still open. For a finding with a class, run its search on the PR head: one instance left inside its bounds keeps it open. Run the scope check (step 4) on the repair diff: a repair that edits beyond its findings is a new finding.
 
 ```
 FIX-OK
