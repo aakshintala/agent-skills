@@ -1,0 +1,33 @@
+# agent-skills
+
+Skills and helper scripts for coding agents (Claude Code, pi): planning a ticket, landing it through delegated lanes, reviewing and repairing PRs, triaging CI, and running a flywheel of tickets with the owner away.
+
+Started from [mattpocock/skills](https://github.com/mattpocock/skills) and reworked since.
+
+## Layout
+
+| Path | What it holds |
+| --- | --- |
+| `skills/` | One folder per skill: `SKILL.md`, plus brief templates in `briefs/` where the skill starts other jobs. |
+| `bin/` | Scripts the skills call: `fill-brief`, `review-pr`, `gh-ci`, `pr-closes`, `check-pack`. |
+| `test/` | Tests for the scripts. `test/run` runs every suite. |
+| `docs/agents/` | This repo's own setup for the skills: issue tracker, triage labels, workflow doc. |
+
+## Install
+
+Clone to `~/.agents` and link the skills into your agent's skills folder, for example:
+
+```bash
+git clone https://github.com/aakshintala/agent-skills ~/.agents
+for s in ~/.agents/skills/*/; do ln -s "$s" ~/.claude/skills/; done
+```
+
+The skills call scripts at `~/.agents/bin/`. Delegated work runs through [delegate](https://github.com/aakshintala/delegate).
+
+## Working on it
+
+Branch, open a PR, squash merge. `test/run` must pass. Several skills are adapted from other MIT-licensed projects; each says so in a comment at the top and carries its upstream licence beside it.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
