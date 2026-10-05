@@ -209,4 +209,22 @@ run_wait 7 --bogus; [ "$CODE" = "2" ] || fail "unknown flag exits 2 (got $CODE)"
 run_wait 7 --timeout abc; [ "$CODE" = "2" ] || fail "non-numeric timeout exits 2 (got $CODE)"
 run_wait 7 --timeout; [ "$CODE" = "2" ] || fail "missing timeout value exits 2 (got $CODE)"
 
+# --- case: no subcommand and unknown subcommand print usage, exit 2
+OUT="$("$GHCI" 2>"$T/stderr.txt")"; CODE=$?
+[ "$CODE" = "2" ] || fail "no args exits 2 (got $CODE)"
+grep -q '^usage: gh-ci' "$T/stderr.txt" || fail "no args prints usage on stderr: [$(cat "$T/stderr.txt")]"
+OUT="$("$GHCI" bogus 2>"$T/stderr.txt")"; CODE=$?
+[ "$CODE" = "2" ] || fail "unknown subcommand exits 2 (got $CODE)"
+grep -q '^usage: gh-ci' "$T/stderr.txt" || fail "unknown subcommand prints usage on stderr"
+
+# usage comes before the repo lookup: with no override and a failing gh
+mkdir -p "$T/badgh"
+printf '#!/usr/bin/env bash\nexit 1\n' >"$T/badgh/gh"
+chmod +x "$T/badgh/gh"
+for a in "" bogus; do
+  OUT="$(env -u GH_CI_REPO PATH="$T/badgh:$PATH" "$GHCI" $a 2>"$T/stderr.txt")"; CODE=$?
+  [ "$CODE" = "2" ] || fail "usage without repo lookup exits 2 for [$a] (got $CODE)"
+  grep -q '^usage: gh-ci' "$T/stderr.txt" || fail "usage without repo lookup for [$a]"
+done
+
 echo "gh-ci: all cases passed"

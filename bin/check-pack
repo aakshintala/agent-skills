@@ -5,8 +5,6 @@
 # Usage: check-pack [ROOT]   (default: the repo this script lives in)
 set -euo pipefail
 
-# Skills that live outside this pack and are always allowed.
-EXTERNAL_SKILLS="delegate"
 # Backticked /names that look like slash commands but are in-tree paths/routes.
 SLASH_DENY="tmp settings"
 
@@ -29,13 +27,6 @@ fail() {
   failures=$((failures + 1))
 }
 
-is_external() {
-  local n="$1" x
-  for x in $EXTERNAL_SKILLS; do
-    if [ "$x" = "$n" ]; then return 0; fi
-  done
-  return 1
-}
 is_denied_slash() {
   local n="$1" x
   for x in $SLASH_DENY; do
@@ -46,7 +37,6 @@ is_denied_slash() {
 
 check_skill_name() {
   local rel="$1" line="$2" name="$3"
-  if is_external "$name"; then return 0; fi
   if [ ! -f "$root/skills/$name/SKILL.md" ]; then
     fail "$rel" "$line" "missing skill \`$name\`"
   fi
