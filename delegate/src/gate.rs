@@ -1,8 +1,8 @@
 use crate::types::GateResult;
-use crate::util::{Abort, tail};
+use crate::util::{Abort, captured_command, strip_ansi, tail};
 use std::io::Read;
 use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -43,7 +43,7 @@ fn read_tail(mut r: impl Read) -> Vec<u8> {
 pub fn run_gate(command: &str, cwd: &str, opts: GateOpts<'_>) -> GateResult {
     let timeout = Duration::from_millis(opts.timeout_ms.unwrap_or(DEFAULT_GATE_TIMEOUT_MS));
     let start = Instant::now();
-    let spawned = Command::new("/bin/sh")
+    let spawned = captured_command("/bin/sh")
         .arg("-c")
         .arg(command)
         .current_dir(cwd)
@@ -112,7 +112,7 @@ pub fn run_gate(command: &str, cwd: &str, opts: GateOpts<'_>) -> GateResult {
         command: command.to_string(),
         exit_code,
         passed: exit_code == 0 && !killed,
-        output_tail: tail(&combined, KEEP),
+        output_tail: tail(&strip_ansi(&combined), KEEP),
         error: killed
             .then(|| format!("gate killed after timeout or abort signal (exitCode {exit_code})")),
     }
@@ -197,6 +197,21 @@ mod tests {
         assert_eq!(r.command, "seq 1 2000");
         assert!(r.output_tail.len() <= 2048 + 4);
         assert!(r.output_tail.contains("2000"));
+    }
+
+    #[test]
+    fn output_tail_is_ansi_stripped() {
+        let r = run_gate(
+            "printf '\\033[31mred\\033[0m'",
+            &std::env::current_dir().unwrap().to_string_lossy(),
+            GateOpts {
+                timeout_ms: None,
+                signal: None,
+            },
+        );
+        assert!(r.passed);
+        assert!(r.output_tail.contains("red"), "{r:?}");
+        assert!(!r.output_tail.contains('\x1b'), "{r:?}");
     }
 
     #[test]
