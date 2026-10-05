@@ -20,6 +20,7 @@ cat >"$BAD/skills/alpha/SKILL.md" <<'EOF'
 # Alpha
 Load the `beta` skill and the `nosuch` skill.
 Call the Skill tool with "beta".
+Load the `delegate` skill.
 Run `/beta` to start.
 See [the guide](./guide.md) and [missing](./nope.md).
 Follow `__SKILLS__/beta/SKILL.md` and `__SKILLS__/ghost/SKILL.md`.
@@ -36,6 +37,7 @@ EOF
 
 out="$("$CHECK" "$BAD" 2>"$T/baderr.txt")" && fail "bad pack exits 1"
 grep -q '^skills/alpha/SKILL.md:[0-9]*: .*nosuch' <<<"$out" || fail "bad pack flags missing skill"
+grep -q '^skills/alpha/SKILL.md:[0-9]*: .*missing skill `delegate`' <<<"$out" || fail "bad pack flags delegate when not in tree"
 grep -q '^skills/alpha/SKILL.md:[0-9]*: .*nope.md' <<<"$out" || fail "bad pack flags broken link"
 grep -q '^skills/alpha/SKILL.md:[0-9]*: .*ghost' <<<"$out" || fail "bad pack flags missing __SKILLS__ file"
 grep -q '^skills/alpha/briefs/job.md:[0-9]*: .*[Pp]laceholder.*__work__' <<<"$out" || fail "bad pack flags bad placeholder"
@@ -45,7 +47,7 @@ grep -q 'beta' <<<"$out" && fail "bad pack never flags the good skill"
 
 # --- fixture pack holding only good references passes silently
 GOOD="$T/good"
-mkdir -p "$GOOD/skills/alpha/briefs" "$GOOD/skills/beta"
+mkdir -p "$GOOD/skills/alpha/briefs" "$GOOD/skills/beta" "$GOOD/skills/delegate"
 cat >"$GOOD/skills/alpha/SKILL.md" <<'EOF'
 # Alpha
 Load the `beta` skill and the `delegate` skill.
@@ -57,6 +59,7 @@ The binary lives at `~/.agents/bin/alpha`.
 EOF
 printf '# Guide\n' >"$GOOD/skills/alpha/guide.md"
 printf '# Beta\n' >"$GOOD/skills/beta/SKILL.md"
+printf '# Delegate\n' >"$GOOD/skills/delegate/SKILL.md"
 mkdir -p "$GOOD/bin"
 printf 'x\n' >"$GOOD/bin/alpha"
 cat >"$GOOD/skills/alpha/briefs/job.md" <<'EOF'

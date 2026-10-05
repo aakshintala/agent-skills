@@ -209,4 +209,12 @@ run_wait 7 --bogus; [ "$CODE" = "2" ] || fail "unknown flag exits 2 (got $CODE)"
 run_wait 7 --timeout abc; [ "$CODE" = "2" ] || fail "non-numeric timeout exits 2 (got $CODE)"
 run_wait 7 --timeout; [ "$CODE" = "2" ] || fail "missing timeout value exits 2 (got $CODE)"
 
+# --- case: no subcommand and unknown subcommand print usage, exit 2
+OUT="$("$GHCI" 2>"$T/stderr.txt")"; CODE=$?
+[ "$CODE" = "2" ] || fail "no args exits 2 (got $CODE)"
+grep -q '^usage: gh-ci' "$T/stderr.txt" || fail "no args prints usage on stderr: [$(cat "$T/stderr.txt")]"
+OUT="$("$GHCI" bogus 2>"$T/stderr.txt")"; CODE=$?
+[ "$CODE" = "2" ] || fail "unknown subcommand exits 2 (got $CODE)"
+grep -q '^usage: gh-ci' "$T/stderr.txt" || fail "unknown subcommand prints usage on stderr"
+
 echo "gh-ci: all cases passed"
