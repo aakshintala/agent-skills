@@ -26,7 +26,7 @@ A plan is a sketch of contracts and invariants, never code: a function body in a
 ## Project constraints  pointers to the repo's standing rules (dependencies, budgets, code rules) where the workflow doc lists them; never copied
 ## Rules this ticket implements  each governing sentence from a doc, spec or ticket, quoted word for word with its file and section
 ## Rulings              each contradiction found and the default chosen, tagged core or non-blocking
-## Files                each file touched and what changes; this is the lane's fence
+## Files                each file touched and what changes, including every test that names a changed signature, type or listed value (search for them); this is the lane's fence
 ## Tasks                in order; each: behaviour, test first, gate command, done-when
 ## Interfaces           signatures, invariants, one literal example per line on the wire; no bodies
 ## Review Focus         where reviewers look: input classes and failure modes the tests may not cover
@@ -40,7 +40,7 @@ A hazard you know of is settled in the plan: a ruling (what the code does about 
 
 The rung is `standard` by default. It is `strong` when Interfaces or Review Focus involve state carried across calls, concurrency or timing, replay, or a quoted rule with several cases, and `frontier` for cross-cutting design.
 
-Estimate tests from the testing rules the workflow doc states (every case, every listed sequence), never as a fraction of the code: plans have come in at half their merged size, mostly in tests. When code plus tests passes the workflow doc's split threshold (1,800 lines where it sets none), split the ticket into parts from the start: each part a lane and PR of its own, in order, cut at a seam that leaves main green, `Part of #<n>` until the last, which is `Resolves #<n>`.
+Estimate tests from the testing rules the workflow doc states (every case, every listed sequence), never as a fraction of the code: plans have come in at half their merged size, mostly in tests. When the workflow doc's size rule calls for a split (past 1,800 lines of code plus tests only when the doc says nothing about size), split the ticket into parts from the start: each part a lane and PR of its own, in order, cut at a seam that leaves main green, `Part of #<n>` until the last, which is `Resolves #<n>`.
 
 Size each task as the smallest unit that carries its own test cycle. Tasks run in order in one lane, under one `review-loop` for the PR. A migration may break the callers it lists under Rulings instead of paying for interim compatibility.
 
