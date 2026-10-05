@@ -147,4 +147,4 @@ The user may run unblocked tickets in parallel, so expect other sessions to be e
 
 ## Next phase
 
-When the session ends, name the next phase with its input: the next frontier ticket on the map, or `/to-spec #<map>` once no decision stands between the map and its destination.
+When the session ends, call the Skill tool with "handoff", and name in the handoff the next phase with its input: the next frontier ticket on the map, or `/to-spec #<map>` once no decision stands between the map and its destination.
