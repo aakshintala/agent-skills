@@ -4,7 +4,7 @@ description: Compact the current conversation into a handoff document for anothe
 argument-hint: "What will the next session be used for?"
 ---
 
-Write a handoff document summarising the current conversation so a fresh agent can continue the work. Write one only when the user invokes this skill.
+Write a handoff document summarising the current conversation so a fresh agent can continue the work. Write one only when the user invokes this skill, or a skill you are running tells you to.
 
 Open the document with the next skill and its arguments, as its first line (for example **Next: `/to-tickets #8`**), so the next session starts in the right place. Save it under `/tmp` (for example `/tmp/<topic>-handoff.md`), not `$TMPDIR` and not the current workspace. On macOS `$TMPDIR` is a per-user `/var/folders/...` path that is awkward to hand to another session.
 
