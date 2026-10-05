@@ -119,7 +119,7 @@ Ruling something out of scope is a scoping act, not a step on the route. When a 
 
 ## Invocation
 
-Two modes. Either way, **never resolve more than one ticket per session**, with the exception of research tickets.
+Two modes.
 
 ### Chart the map
 
@@ -141,9 +141,10 @@ User invokes with a map (URL or number). A ticket is **optional**: without one, 
 3. Resolve it. **Zoom as needed**: fetch the full body of any related or closed ticket on demand; call the Skill tool for whichever skills the `## Notes` block names. If in doubt, call the Skill tool twice, for "grilling" and "domain-modeling".
 4. Record the resolution: post the answer as a **resolution comment**, **close** the issue, and **append a context pointer** to the map's Decisions-so-far. Beyond the answer a resolution carries two things: the existing code or closed ticket it reuses, or the explicit call to build fresh; and, where it asserts a limit, the probe that proves it. A closed ticket is load-bearing: every later ticket builds on it and none reopen it.
 5. Add newly-surfaced tickets (create-then-wire); graduate any fog the answer has made specifiable, clearing each graduated patch from **Not yet specified** so it lives only as its new ticket. If the answer reveals that a ticket (this one or another) sits beyond the destination, **rule it out of scope** rather than resolving it on the route. If the decision invalidates other parts of the map, update or delete those tickets.
+6. Return to step 2 for the next frontier ticket, until the user stops you or your context runs low.
 
 The user may run unblocked tickets in parallel, so expect other sessions to be editing the tracker concurrently.
 
 ## Next phase
 
-Stop after one ticket. Name the next phase with its input: the next frontier ticket on the map, or `/to-spec #<map>` once no decision stands between the map and its destination.
+When the session ends, name the next phase with its input: the next frontier ticket on the map, or `/to-spec #<map>` once no decision stands between the map and its destination.
