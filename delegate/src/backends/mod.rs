@@ -4,9 +4,10 @@ pub mod pi;
 pub mod types;
 
 use crate::types::JobSpec;
+use crate::util::captured_command;
 use std::io::Read;
 use std::os::unix::process::CommandExt;
-use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use types::{BackendResult, Event, EventFn, Spawned};
@@ -108,7 +109,7 @@ pub(crate) struct Started {
 }
 
 pub(crate) fn start_child(spec: &JobSpec) -> Result<Started, String> {
-    let spawned = Command::new(&spec.bin)
+    let spawned = captured_command(&spec.bin)
         .args(&spec.argv)
         .current_dir(&spec.cwd)
         .stdin(Stdio::null())

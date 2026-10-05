@@ -43,9 +43,9 @@ pub fn tail(s: &str, max_bytes: usize) -> String {
 }
 
 /// Removes ANSI escape sequences (CSI such as colours, OSC such as hyperlinks,
-/// and two-byte escapes). A child's output is a pipe, but an inherited
-/// FORCE_COLOR makes CLIs like cursor-agent and pi colour it anyway, and
-/// doctor's parsers and a run's stderr tail expect plain text (#78, #83).
+/// and two-byte escapes). Captured children now start without `FORCE_COLOR` or
+/// `CLICOLOR_FORCE` (`util::captured_command`), so this is the backstop for tools
+/// that force colour another way (#78, #83, #85).
 pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -79,6 +79,17 @@ pub fn strip_ansi(s: &str) -> String {
         }
     }
     out
+}
+
+/// A `Command` for a child whose output `delegate` captures: the parent's environment
+/// minus `FORCE_COLOR` and `CLICOLOR_FORCE`, so CLIs don't colour piped output (#85).
+/// Never set them to "" or "0" (many tools treat any value as force) and never set
+/// `NO_COLOR` (cursor-agent lets `FORCE_COLOR` override it). Args, cwd, stdio and the
+/// process group are the caller's to set.
+pub(crate) fn captured_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    cmd.env_remove("FORCE_COLOR").env_remove("CLICOLOR_FORCE");
+    cmd
 }
 
 pub fn clamp_wait(ms: f64) -> f64 {

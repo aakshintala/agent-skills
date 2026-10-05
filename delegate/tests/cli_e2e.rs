@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 const FAKE_AGENT: &str = r#"#!/bin/sh
 printf '%s\n' "$@" > "$(dirname "$0")/argv.txt"
+printf '%s %s\n' "${FORCE_COLOR-unset}" "${CLICOLOR_FORCE-unset}" > "$(dirname "$0")/color.env"
 rel="$(dirname "$0")/go"
 # Stays RUNNING behind a grandchild: `sleep` inherits the agent's process group, so
 # killing only the agent would leave it behind.
@@ -97,6 +98,14 @@ impl Env {
     fn argv(&self) -> Vec<String> {
         let s = std::fs::read_to_string(self.dir.join("argv.txt")).unwrap();
         s.lines().map(String::from).collect()
+    }
+
+    /// What the fake agent saw in the colour-forcing environment variables.
+    fn color_env(&self) -> String {
+        std::fs::read_to_string(self.dir.join("color.env"))
+            .unwrap()
+            .trim()
+            .to_string()
     }
 
     fn delegate(&self, args: &[&str], stdin: Option<&str>) -> Output {
@@ -439,6 +448,40 @@ fn gate_fail_downgrades_and_records_output() {
     );
     assert_eq!(done["resume"]["gate"], "echo AssertionError; exit 1");
     assert_eq!(done["resume"]["toolIdleMs"], serde_json::json!(2500));
+}
+
+/// Both colour-forcing variables must be unset in every child delegate captures: the
+/// gate (this test) and the agent backend (`agent_child_sees_force_color_unset`).
+#[test]
+fn gate_child_sees_force_color_unset() {
+    let e = Env::new("gate-color");
+    let id = e.ok(
+        &[
+            "run",
+            "--model",
+            "composer-2.5",
+            "--gate",
+            r#"printf "%s %s" "${FORCE_COLOR-unset}" "${CLICOLOR_FORCE-unset}""#,
+        ],
+        "ship it",
+        &[("FORCE_COLOR", "3"), ("CLICOLOR_FORCE", "1")],
+    );
+    let done = e.wait_terminal(&id);
+    assert_eq!(done["status"], "DONE");
+    assert_eq!(done["result"]["gateResult"]["outputTail"], "unset unset");
+}
+
+#[test]
+fn agent_child_sees_force_color_unset() {
+    let e = Env::new("agent-color");
+    let id = e.ok(
+        &["run", "--model", "composer-2.5"],
+        "plain",
+        &[("FORCE_COLOR", "3"), ("CLICOLOR_FORCE", "1")],
+    );
+    let done = e.wait_terminal(&id);
+    assert_eq!(done["status"], "DONE", "{done}");
+    assert_eq!(e.color_env(), "unset unset");
 }
 
 #[test]
