@@ -188,7 +188,7 @@ pub(crate) fn pump(
                 }
                 on(Event::Stderr);
             }
-            String::from_utf8_lossy(&kept).into_owned()
+            crate::util::strip_ansi(&String::from_utf8_lossy(&kept))
         });
 
         let mut pending: Vec<u8> = Vec::new();
@@ -232,5 +232,18 @@ mod tests {
         assert_eq!(Backend::from_name("claude"), Some(Backend::Claude));
         assert_eq!(Backend::Claude.name(), "claude");
         assert!(Backend::from_name("nope").is_none());
+    }
+
+    /// #83: an inherited FORCE_COLOR makes pi colour its stderr even into a
+    /// pipe. These bytes match `FORCE_COLOR=3 pi -p --mode json` with a bad model.
+    #[test]
+    fn pump_strips_ansi_from_stderr() {
+        let stderr: &[u8] = b"\x1b[33mWarning: No project session found\x1b[39m\n\
+            \x1b[31mError: Model \"nope/x\" not found.\x1b[39m\n";
+        let pumped = pump(&b""[..], stderr, &|_| {}, || false, |_| {});
+        assert_eq!(
+            pumped.stderr,
+            "Warning: No project session found\nError: Model \"nope/x\" not found.\n"
+        );
     }
 }

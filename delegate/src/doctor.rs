@@ -29,45 +29,6 @@ pub(crate) fn command_err(bin: &str, r: &AgentCommandResult, what: &str) -> Stri
     })
 }
 
-/// Removes ANSI escape sequences (CSI such as colours, OSC such as hyperlinks,
-/// and two-byte escapes). A probe's stdout is a pipe, but an inherited
-/// FORCE_COLOR makes CLIs like cursor-agent colour it anyway, and the
-/// parsers expect plain text (#78).
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '\x1b' {
-            out.push(c);
-            continue;
-        }
-        match chars.next() {
-            // CSI: parameter and intermediate bytes, then one final byte in @..~.
-            Some('[') => {
-                for c in chars.by_ref() {
-                    if ('@'..='~').contains(&c) {
-                        break;
-                    }
-                }
-            }
-            // OSC: ends at BEL or ST (ESC \).
-            Some(']') => {
-                while let Some(c) = chars.next() {
-                    if c == '\x07' {
-                        break;
-                    }
-                    if c == '\x1b' && chars.peek() == Some(&'\\') {
-                        chars.next();
-                        break;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
 pub fn default_run_agent_command(bin: &str, args: &[String]) -> AgentCommandResult {
     let child = match Command::new(bin)
         .args(args)
@@ -110,8 +71,8 @@ pub fn default_run_agent_command(bin: &str, args: &[String]) -> AgentCommandResu
             if stderr.len() > MAX_BUFFER {
                 stderr.truncate(MAX_BUFFER);
             }
-            let stdout = strip_ansi(&String::from_utf8_lossy(&stdout));
-            let stderr = strip_ansi(&String::from_utf8_lossy(&stderr));
+            let stdout = crate::util::strip_ansi(&String::from_utf8_lossy(&stdout));
+            let stderr = crate::util::strip_ansi(&String::from_utf8_lossy(&stderr));
             if out.status.success() {
                 AgentCommandResult {
                     ok: true,
@@ -235,15 +196,5 @@ mod tests {
             parse_about(&r.stdout).0.as_deref(),
             Some("alice@example.com")
         );
-    }
-
-    #[test]
-    fn strip_ansi_handles_csi_osc_and_plain_text() {
-        assert_eq!(strip_ansi("Fast\u{200b} plain"), "Fast\u{200b} plain");
-        assert_eq!(strip_ansi("\x1b[1m\x1b[36mA\x1b[39m\x1b[22m"), "A");
-        assert_eq!(strip_ansi("\x1b[2K\rB"), "\rB");
-        assert_eq!(strip_ansi("\x1b]8;;http://x\x07link\x1b]8;;\x1b\\"), "link");
-        assert_eq!(strip_ansi("\x1b7C\x1b8"), "C");
-        assert_eq!(strip_ansi("cut\x1b["), "cut");
     }
 }

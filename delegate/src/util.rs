@@ -42,6 +42,45 @@ pub fn tail(s: &str, max_bytes: usize) -> String {
     String::from_utf8_lossy(slice).into_owned()
 }
 
+/// Removes ANSI escape sequences (CSI such as colours, OSC such as hyperlinks,
+/// and two-byte escapes). A child's output is a pipe, but an inherited
+/// FORCE_COLOR makes CLIs like cursor-agent and pi colour it anyway, and
+/// doctor's parsers and a run's stderr tail expect plain text (#78, #83).
+pub fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            // CSI: parameter and intermediate bytes, then one final byte in @..~.
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // OSC: ends at BEL or ST (ESC \).
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 pub fn clamp_wait(ms: f64) -> f64 {
     ms.clamp(1000.0, 600_000.0)
 }
@@ -137,6 +176,16 @@ pub fn normalize_path(path: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_ansi_handles_csi_osc_and_plain_text() {
+        assert_eq!(strip_ansi("Fast\u{200b} plain"), "Fast\u{200b} plain");
+        assert_eq!(strip_ansi("\x1b[1m\x1b[36mA\x1b[39m\x1b[22m"), "A");
+        assert_eq!(strip_ansi("\x1b[2K\rB"), "\rB");
+        assert_eq!(strip_ansi("\x1b]8;;http://x\x07link\x1b]8;;\x1b\\"), "link");
+        assert_eq!(strip_ansi("\x1b7C\x1b8"), "C");
+        assert_eq!(strip_ansi("cut\x1b["), "cut");
+    }
 
     #[test]
     fn tail_keeps_short_strings() {
