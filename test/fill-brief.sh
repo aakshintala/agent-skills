@@ -72,7 +72,8 @@ out="$("$FILL" "$T/r.md" 'A=Z')" || fail "repeat fill exits 0"
 # bad usage exits 2
 "$FILL" >/dev/null 2>&1; [ "$?" = "2" ] || fail "no args exits 2"
 usage_out="$("$FILL" 2>&1 >/dev/null)" || true
-case "$usage_out" in *"--out must come first"*) ;; *) fail "usage mentions --out must come first" ;; esac
+case "$usage_out" in *"must come first"*) fail "usage no longer says --out must come first" ;; esac
+case "$usage_out" in *"--out may come anywhere"*) ;; *) fail "usage says --out may come anywhere" ;; esac
 "$FILL" "$T/t.md" 'NOEQUALS'>/dev/null 2>&1; [ "$?" = "2" ] || fail "key without = exits 2"
 "$FILL" "$T/does-not-exist.md" 'A=1' >/dev/null 2>&1; [ "$?" = "2" ] || fail "missing template exits 2"
 
@@ -83,6 +84,46 @@ printf 'a __A__ b\n' >"$T/o.md"
 [ "$(cat "$T/line.txt")" = "Read $T/brief.md and follow it." ] || fail "--out prints launch line"
 "$FILL" "$T/o.md" 'A=1' >"$T/std.txt" || fail "stdout mode exits 0"
 cmp -s "$T/brief.md" "$T/std.txt" || fail "--out file matches stdout mode"
+
+# --out at any position: after the template, between assignments, last
+printf 'a __A__ b __B__\n' >"$T/p.md"
+"$FILL" "$T/p.md" 'A=1' 'B=2' >"$T/p-std.txt" || fail "position baseline exits 0"
+for pos in after-template between last; do
+  rm -f "$T/pos.md"
+  case "$pos" in
+    after-template) set -- "$T/p.md" --out "$T/pos.md" 'A=1' 'B=2' ;;
+    between) set -- "$T/p.md" 'A=1' --out "$T/pos.md" 'B=2' ;;
+    last) set -- "$T/p.md" 'A=1' 'B=2' --out "$T/pos.md" ;;
+  esac
+  "$FILL" "$@" >"$T/pos-line.txt" || fail "--out $pos exits 0"
+  [ "$(cat "$T/pos-line.txt")" = "Read $T/pos.md and follow it." ] || fail "--out $pos prints launch line"
+  cmp -s "$T/pos.md" "$T/p-std.txt" || fail "--out $pos file matches stdout mode"
+done
+
+# placeholder-free template, --out, no assignments (bash 3.2 empty-array hazard)
+printf 'plain\n' >"$T/plain.md"
+for pos in first last; do
+  rm -f "$T/plain-out.md"
+  if [ "$pos" = first ]; then set -- --out "$T/plain-out.md" "$T/plain.md"; else set -- "$T/plain.md" --out "$T/plain-out.md"; fi
+  "$FILL" "$@" >/dev/null 2>"$T/err-plain.txt" || fail "--out $pos without assignments exits 0"
+  [ "$(cat "$T/plain-out.md")" = "plain" ] || fail "--out $pos without assignments content"
+done
+
+# --out twice, or with no path, exits 2 with nothing on stdout
+stdout="$("$FILL" --out "$T/a.md" "$T/p.md" --out "$T/b.md" 'A=1' 'B=2' 2>/dev/null)"; [ "$?" = "2" ] || fail "--out twice exits 2"
+[ -z "$stdout" ] || fail "--out twice prints nothing on stdout"
+stdout="$("$FILL" "$T/p.md" 'A=1' 'B=2' --out 2>/dev/null)"; [ "$?" = "2" ] || fail "trailing --out exits 2"
+[ -z "$stdout" ] || fail "trailing --out prints nothing on stdout"
+"$FILL" --out >/dev/null 2>&1; [ "$?" = "2" ] || fail "lone --out exits 2"
+"$FILL" "$T/p.md" --out >/dev/null 2>&1; [ "$?" = "2" ] || fail "template then --out exits 2"
+
+# the path checks apply wherever --out appears
+stdout="$("$FILL" "$T/p.md" --out rel/brief.md 'A=1' 'B=2' 2>/dev/null)"; [ "$?" = "2" ] || fail "relative --out after template exits 2"
+[ -z "$stdout" ] || fail "relative --out after template prints nothing on stdout"
+
+# --out is an option only as a whole argument: X=--out is a KEY=VALUE
+printf '__X__\n' >"$T/x.md"
+[ "$("$FILL" "$T/x.md" 'X=--out')" = "--out" ] || fail "X=--out is a KEY=VALUE"
 
 # --out with a relative path exits 2, nothing on stdout
 stdout="$("$FILL" --out rel/brief.md "$T/o.md" 'A=1' 2>"$T/err-rel.txt")"; [ "$?" = "2" ] || fail "relative --out exits 2"
