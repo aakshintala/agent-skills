@@ -104,14 +104,28 @@ if [ "$nkeys" -gt 0 ]; then
   done
 fi
 
-out="$orig"
-i=0
-while [ "$i" -lt "$nkeys" ]; do
-  ph="__${keys[$i]}__"
-  v="${vals[$i]}"
-  out="${out//"$ph"/$v}"
-  i=$((i + 1))
+# One pass over the template: take the earliest placeholder left, copy the text
+# before it, then its value. Substituted text is never scanned again.
+out=""
+rest="$orig"
+while :; do
+  best=-1
+  best_len=${#rest}
+  i=0
+  while [ "$i" -lt "$nkeys" ]; do
+    pre="${rest%%"__${keys[$i]}__"*}"
+    if [ "$pre" != "$rest" ] && [ ${#pre} -lt "$best_len" ]; then
+      best=$i
+      best_len=${#pre}
+    fi
+    i=$((i + 1))
+  done
+  [ "$best" -ge 0 ] || break
+  ph="__${keys[$best]}__"
+  out="$out${rest:0:best_len}${vals[$best]}"
+  rest="${rest:best_len+${#ph}}"
 done
+out="$out$rest"
 
 # Scan the template minus the given keys, not the output: substituted values are data.
 rest="$orig"
