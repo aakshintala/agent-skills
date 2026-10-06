@@ -15,6 +15,12 @@ You are the orchestrator for one ticket. The **main orchestrator** is the sessio
 - **Fix by churn.** Make a trivial change (a one-line deletion, a rename, a PR-body or label fix) inline, then run the gate yourself and state its output. Send a change that may start a run-and-fix loop (new behaviour, a fix whose cause isn't confirmed, an edit across several files) to a gated job.
 - **One worktree per job**, named for its branch, deleted on merge.
 
+## Fast path
+
+Take it when the root cause is **confirmed**: a red test, or a `diagnosing-bugs` result, names the faulty code, and the fix stays in that one file plus its test. A small diff whose cause is a guess takes the full path. The cause decides, not the size.
+
+Run step 1, skip steps 2–3, then build in a worktree cut from `origin/main`. The fence is the file and its test, and it stands in for the plan's Files in the gate. Use an existing confirming test, or add one that goes red before the fix. Make the fix inline when **Fix by churn** allows, otherwise as a gated job whose brief names the cause, the fence and the gate, and has the job push, open a draft PR with the ticket's `Resolves` line, and report its URL and head SHA. Inline, do those three yourself. Then run steps 5–9 as written. Leave the fast path for step 2 when the fix spreads past the fence or the test won't go red.
+
 ### 1. Check setup
 
 Read `docs/agents/` and the workflow doc it names; the workflow doc wins where it speaks. With no `docs/agents/`, stop and report "repo not set up".
