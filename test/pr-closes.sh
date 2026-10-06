@@ -27,7 +27,7 @@ pr_json() {
 
 # check <json>: runs --check, leaves stdout in $out and the exit code in $rc.
 check() {
-  out="$(printf '%s' "$1" | "$PRC" --check 2>/dev/null)"
+  out="$(printf '%s' "$1" | bash "$PRC" --check 2>/dev/null)"
   rc=$?
 }
 
@@ -91,12 +91,12 @@ check "$(pr_json 'Thing' 'Resolves #1' 5555555 'closes #8' '')"
 [ "$rc" = "1" ] || fail "headline closes #8 exits 1 (got $rc)"
 
 # input that is not PR JSON exits 2
-printf '{}' | "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "{} exits 2"
-printf '' | "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "empty stdin exits 2"
-printf '{"title":"t","body":"b"}' | "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "missing commits exits 2"
-printf '{"title":"t","commits":[]}' | "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "missing body exits 2"
-printf '{"title":"t","body":"b","commits":[{"oid":"a"}]}' | "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "commit without message exits 2"
-printf '{"title":"t","body":"b","commits":[{"oid":"a","messageHeadline":false,"messageBody":""}]}' | "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "non-string message exits 2"
+printf '{}' | bash "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "{} exits 2"
+printf '' | bash "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "empty stdin exits 2"
+printf '{"title":"t","body":"b"}' | bash "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "missing commits exits 2"
+printf '{"title":"t","commits":[]}' | bash "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "missing body exits 2"
+printf '{"title":"t","body":"b","commits":[{"oid":"a"}]}' | bash "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "commit without message exits 2"
+printf '{"title":"t","body":"b","commits":[{"oid":"a","messageHeadline":false,"messageBody":""}]}' | bash "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "non-string message exits 2"
 
 # any whitespace between keyword and reference counts (vertical tab, newline).
 check "$(pr_json 'Thing' $'Resolves #1\nFixes\v#5')"
@@ -109,14 +109,14 @@ check "$(pr_json 'Thing' $'Resolves #1\nthis closes\n#6')"
 (
   gh() ( exit 1 )
   export -f gh
-  "$PRC" 12 >/dev/null 2>&1; [ "$?" = "2" ] || fail "repo discovery failure exits 2"
-  "$PRC" 12 --repo o/r >/dev/null 2>&1; [ "$?" = "2" ] || fail "PR read failure exits 2"
+  bash "$PRC" 12 >/dev/null 2>&1; [ "$?" = "2" ] || fail "repo discovery failure exits 2"
+  bash "$PRC" 12 --repo o/r >/dev/null 2>&1; [ "$?" = "2" ] || fail "PR read failure exits 2"
 ) || exit 1
 
 # bad usage exits 2
-"$PRC" >/dev/null 2>&1; [ "$?" = "2" ] || fail "no args exits 2"
-"$PRC" 12 --bogus >/dev/null 2>&1; [ "$?" = "2" ] || fail "unknown flag exits 2"
-"$PRC" 12 --repo >/dev/null 2>&1; [ "$?" = "2" ] || fail "--repo without value exits 2"
-printf 'not json' | "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "bad JSON exits 2"
+bash "$PRC" >/dev/null 2>&1; [ "$?" = "2" ] || fail "no args exits 2"
+bash "$PRC" 12 --bogus >/dev/null 2>&1; [ "$?" = "2" ] || fail "unknown flag exits 2"
+bash "$PRC" 12 --repo >/dev/null 2>&1; [ "$?" = "2" ] || fail "--repo without value exits 2"
+printf 'not json' | bash "$PRC" --check >/dev/null 2>&1; [ "$?" = "2" ] || fail "bad JSON exits 2"
 
 echo "pr-closes: all cases passed"

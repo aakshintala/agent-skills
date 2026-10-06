@@ -120,7 +120,7 @@ run() {
       command git "$@"
     )
     export -f git
-    "$SHIP" "$@" 2>"$S/stderr.txt"
+    bash "$SHIP" "$@" 2>"$S/stderr.txt"
   )"; CODE=$?
   ERR="$(cat "$S/stderr.txt")"
 }
