@@ -190,6 +190,14 @@ cmd_start() {
   if [ -n "$head" ]; then
     printf '%s' "$head" | grep -Eq '^[0-9a-f]{40}$' || usage
   fi
+  # An issue number would otherwise wait out the --head loop below.
+  if ! pr_err="$(gh pr view "$pr" --repo "$repo" --json number 2>&1 >/dev/null)"; then
+    case "$pr_err" in
+      *"Could not resolve to a PullRequest"*)
+        echo "review-pr: #$pr is not a pull request in $repo (an issue number?)" >&2
+        exit 2;;
+    esac
+  fi
 
   if [ "$mode" = "review" ]; then
     roles="review overbuild"

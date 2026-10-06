@@ -52,6 +52,13 @@ gh() (
   shift
   case "$1" in
     view)
+      if [ "${5:-}" = "--json" ] && [ "${6:-}" = "number" ]; then
+        if [ -e "$T/state/not-pr" ]; then
+          echo "GraphQL: Could not resolve to a PullRequest with the number of $2. (repository.pullRequest)" >&2
+          exit 1
+        fi
+        printf '{"number":%s}\n' "$2"; exit 0
+      fi
       h="$FAKE_SHA"
       if [ -f "$T/state/heads.txt" ]; then
         h="$(head -1 "$T/state/heads.txt")"
@@ -127,7 +134,7 @@ write_record() {
 
 reset_state() {
   rm -f "$T/state/runs.txt" "$T/state/watch.txt" "$T/state/comment.md" "$T/state/comment-pr.txt"
-  rm -f "$T/state"/fail-* "$T/state/heads.txt" "$T/state/sleeps.txt"
+  rm -f "$T/state"/fail-* "$T/state/not-pr" "$T/state/heads.txt" "$T/state/sleeps.txt"
   rm -f "$T/state"/prompt-*.md "$TMPDIR"/delegate-jobs/*.json "$TMPDIR"/review-pr/* 2>/dev/null || true
 }
 
@@ -506,6 +513,17 @@ grep -q "$NEW_SHA" <<<"$err" || fail "--head timeout names the expected head"
 [ -z "$(ls "$TMPDIR/review-pr" 2>/dev/null)" ] || fail "--head timeout saves no state"
 [ ! -e "$T/state/comment.md" ] || fail "--head timeout posts nothing"
 [ "$(wc -l <"$T/state/sleeps.txt")" -eq 30 ] || fail "--head timeout polls 30 times"
+
+# --- case: an issue number, not a PR: exit 2 at once, nothing created
+reset_state
+touch "$T/state/not-pr"
+err="$(start_review 9 --repo O/N --cwd "$T/clone" --model M --overbuild-model M2 \
+  --head "$NEW_SHA" 2>&1 >/dev/null)"
+[ $? -eq 2 ] || fail "not-a-PR exits 2"
+[ "$err" = "review-pr: #9 is not a pull request in O/N (an issue number?)" ] || fail "not-a-PR message: $err"
+[ ! -e "$T/state/sleeps.txt" ] || fail "not-a-PR does not wait"
+[ ! -e "$T/state/runs.txt" ] || fail "not-a-PR starts no job"
+[ "$(git -C "$T/clone" worktree list | grep -c 'wt-')" = "0" ] || fail "not-a-PR makes no worktree"
 
 # --- case: --head already matching: no wait
 reset_state
