@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for bin/gh-ci wait, using stand-in gh and sleep executables
+# Tests for bin/gh-ci wait, using stand-in gh and sleep functions
 # (no network). Fake gh serves successive heads and check responses
 # from state files (last line sticky) and logs its args.
 set -uo pipefail
@@ -15,7 +15,7 @@ fail() {
 T="$(mktemp -d "${TMPDIR:-/tmp}/test-gh-ci.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 
-mkdir -p "$T/fakebin" "$T/state"
+mkdir -p "$T/state"
 export GH_CI_REPO="O/N"
 export GH_CI_INTERVAL=7
 
@@ -24,44 +24,40 @@ B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 # --- fake gh: pr view prints "<sha> <state>"; heads, merge states (default
 # --- CLEAN) and checks advance one line per call, last line sticky.
-cat >"$T/fakebin/gh" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-echo "gh \$*" >>"$T/state/gh-args.txt"
-[ "\$1" = "pr" ] || { echo "fake gh: only pr supported" >&2; exit 2; }
-shift
-advance() {
-  local f="\$1"
-  head -1 "\$f"
-  if [ "\$(wc -l <"\$f")" -gt 1 ]; then
-    tail -n +2 "\$f" >"\$f.tmp"; mv "\$f.tmp" "\$f"
-  fi
-}
-case "\$1" in
-  view)
-    if [ -e "$T/state/view-fail" ]; then exit 3; fi
-    h="\$(advance "$T/state/heads.txt")"
-    m=CLEAN
-    if [ -e "$T/state/merge-state.txt" ]; then m="\$(advance "$T/state/merge-state.txt")"; fi
-    printf '%s %s\n' "\$h" "\$m";;
-  checks)
-    resp="\$(advance "$T/state/checks.txt")"
-    printf '%s\n' "\$resp"
-    case "\$resp" in
-      *'"bucket":"cancel"'*|*'"bucket": "cancel"'*) exit 1;;
-      *'"bucket":"fail"'*|*'"bucket": "fail"'*) exit 1;;
-      *'"bucket":"pending"'*|*'"bucket": "pending"'*) exit 8;;
-    esac
-    exit 0;;
-  *) echo "fake gh: unknown \$1" >&2; exit 2;;
-esac
-EOF
-cat >"$T/fakebin/sleep" <<EOF
-#!/usr/bin/env bash
-echo "\$*" >>"$T/state/sleeps.txt"
-EOF
-chmod +x "$T/fakebin/gh" "$T/fakebin/sleep"
-export PATH="$T/fakebin:$PATH"
+gh() (
+  set -euo pipefail
+  echo "gh $*" >>"$T/state/gh-args.txt"
+  [ "$1" = "pr" ] || { echo "fake gh: only pr supported" >&2; exit 2; }
+  shift
+  advance() {
+    local f="$1"
+    head -1 "$f"
+    if [ "$(wc -l <"$f")" -gt 1 ]; then
+      tail -n +2 "$f" >"$f.tmp"; mv "$f.tmp" "$f"
+    fi
+  }
+  case "$1" in
+    view)
+      if [ -e "$T/state/view-fail" ]; then exit 3; fi
+      h="$(advance "$T/state/heads.txt")"
+      m=CLEAN
+      if [ -e "$T/state/merge-state.txt" ]; then m="$(advance "$T/state/merge-state.txt")"; fi
+      printf '%s %s\n' "$h" "$m";;
+    checks)
+      resp="$(advance "$T/state/checks.txt")"
+      printf '%s\n' "$resp"
+      case "$resp" in
+        *'"bucket":"cancel"'*|*'"bucket": "cancel"'*) exit 1;;
+        *'"bucket":"fail"'*|*'"bucket": "fail"'*) exit 1;;
+        *'"bucket":"pending"'*|*'"bucket": "pending"'*) exit 8;;
+      esac
+      exit 0;;
+    *) echo "fake gh: unknown $1" >&2; exit 2;;
+  esac
+)
+sleep() ( echo "$*" >>"$T/state/sleeps.txt" )
+export T
+export -f gh sleep
 
 reset_state() {
   rm -f "$T/state/sleeps.txt" "$T/state/gh-args.txt" "$T/state/merge-state.txt" "$T/state/view-fail"
@@ -288,13 +284,14 @@ OUT="$("$GHCI" bogus 2>"$T/stderr.txt")"; CODE=$?
 grep -q '^usage: gh-ci' "$T/stderr.txt" || fail "unknown subcommand prints usage on stderr"
 
 # usage comes before the repo lookup: with no override and a failing gh
-mkdir -p "$T/badgh"
-printf '#!/usr/bin/env bash\nexit 1\n' >"$T/badgh/gh"
-chmod +x "$T/badgh/gh"
-for a in "" bogus; do
-  OUT="$(env -u GH_CI_REPO PATH="$T/badgh:$PATH" "$GHCI" $a 2>"$T/stderr.txt")"; CODE=$?
-  [ "$CODE" = "2" ] || fail "usage without repo lookup exits 2 for [$a] (got $CODE)"
-  grep -q '^usage: gh-ci' "$T/stderr.txt" || fail "usage without repo lookup for [$a]"
-done
+(
+  gh() ( exit 1 )
+  export -f gh
+  for a in "" bogus; do
+    OUT="$(env -u GH_CI_REPO "$GHCI" $a 2>"$T/stderr.txt")"; CODE=$?
+    [ "$CODE" = "2" ] || fail "usage without repo lookup exits 2 for [$a] (got $CODE)"
+    grep -q '^usage: gh-ci' "$T/stderr.txt" || fail "usage without repo lookup for [$a]"
+  done
+) || exit 1
 
 echo "gh-ci: all cases passed"
