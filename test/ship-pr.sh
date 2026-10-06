@@ -181,8 +181,9 @@ expect 1 "failing gate"; untouched "failing gate"
 grep -q gate-line-2 <<<"$OUT" || fail "gate tail on stdout: [$OUT]"
 no_merge "failing gate"
 setup; advance_main other.txt o
-ship --gate 'exit 3'; expect 1 "failing gate after rebase"
-[ "$(origin_head)" = "$O0" ] || fail "no push before the gate"
+ship --gate 'exit 3'; expect 1 "failing gate after main moved"; untouched "failing gate after main moved"
+setup; advance_main other.txt o
+ship --gate 'test ! -e other.txt'; expect 0 "gate runs on the pre-rebase head"
 setup; ship --gate 'git commit -q --allow-empty -m gate'
 expect 1 "gate that commits"; [ "$(origin_head)" = "$O0" ] || fail "gate commit never pushed"; no_merge "gate commit"
 setup; ship --gate 'echo x >>feature.txt'; expect 1 "gate that dirties"; no_merge "gate dirty"
@@ -260,8 +261,11 @@ checks_hook 'sed -i.bak 3s/c/z/ "$C/file.txt"; rm "$C/file.txt.bak"; git -C "$C"
 ship; expect 4 "main moves during CI with a clean rebase that changes the patch"; no_merge "patch-id on retry"
 
 setup; checks_hook 'echo n >"$C/newfile.txt"; git -C "$C" add .; git -C "$C" commit -qm m; git -C "$C" push -q origin main'
-ship --gate 'test ! -e newfile.txt'; expect 1 "gate fails on the retry cycle only"; no_merge "gate on retry"
-grep -q 'gate failed' <<<"$ERR" || fail "retry gate message: [$ERR]"
+ship --gate 'test ! -e newfile.txt && echo x >>"$ST/gates"'; expect 0 "gate runs once, not again after a rebase"
+[ "$(wc -l <"$ST/gates")" -eq 1 ] || fail "gate ran exactly once"
+[ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 2 ] || fail "2 CI waits"
+mh="$(grep -o 'match-head-commit [0-9a-f]*' "$ST/gh.log" | awk '{print $2}')"
+git --git-dir="$ORIGIN" merge-base --is-ancestor main "$mh" || fail "merge pinned to a head descending from the moved main"
 
 # ===== exit 5: stray closing keywords
 setup; echo 'Resolves #97. also fixes #9' >"$ST/body"
