@@ -95,6 +95,9 @@ killed it: rerun, with a larger `--tool-idle-ms` if it stalled inside a tool). `
 - `result.changeSet`: git delta for the cwd (`newCommits`, `filesChanged`, `diffstat`,
   `uncommittedFiles`).
 - `result.concerns`: warnings from the CLI, e.g. commits landed but the tree is still dirty.
+- `result.retries`: present when delegate resumed the session after a transient provider error
+  (a 5xx, or one 401), at most twice; usage, cost and duration add up across attempts. An
+  `ERROR` after retries means the provider stayed down; resume later rather than rerun.
 
 - **Resume chain:** follow `supersededBy` to the newest record; the old one stays as it was.
 - **Stuck job:** `watch` rewrites a record whose supervisor pid is dead to `ERROR` ("supervisor
