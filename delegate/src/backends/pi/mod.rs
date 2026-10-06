@@ -278,6 +278,7 @@ fn finish(
         // No assistant turn in the transcript at all: an error with no text.
         None => (NO_RESULT.to_string(), Some(true)),
     };
+    let status = provider_status(is_error, &text);
     BackendResult {
         text,
         session_id,
@@ -293,7 +294,26 @@ fn finish(
         clean_exit,
         stderr: stderr.to_string(),
         permission_denials: Vec::new(),
+        provider_status: status,
     }
+}
+
+/// The status in pi's `<provider> API error (<ddd>): <body>` message. Only the prefix
+/// counts: a status in the body, four digits or another shape gives None.
+fn provider_status(is_error: Option<bool>, text: &str) -> Option<u16> {
+    if is_error != Some(true) {
+        return None;
+    }
+    let (provider, rest) = text.split_once(' ')?;
+    let rest = rest.strip_prefix("API error (")?;
+    let (digits, after) = (rest.get(..3)?, rest.get(3..)?);
+    if provider.is_empty()
+        || !after.starts_with("):")
+        || !digits.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 #[cfg(test)]
@@ -436,6 +456,63 @@ mod tests {
         assert_eq!(res.session_id.as_deref(), Some("sid-1"));
     }
 
+    fn error_stream(message: &str) -> String {
+        let msg = serde_json::to_string(message).unwrap();
+        format!(
+            concat!(
+                "{{\"type\":\"session\",\"id\":\"sid-1\"}}\n",
+                "{{\"type\":\"agent_end\",\"messages\":[{{\"role\":\"assistant\",",
+                "\"content\":[],\"stopReason\":\"error\",\"errorMessage\":{}}}],",
+                "\"willRetry\":false}}\n",
+            ),
+            msg
+        )
+    }
+
+    #[test]
+    fn provider_status_reads_only_the_message_prefix() {
+        let status = |m: &str| parse_stdout(&error_stream(m), true, "").provider_status;
+        assert_eq!(status("opencode-go API error (503): upstream"), Some(503));
+        assert_eq!(status("opencode-go API error (401): bad key"), Some(401));
+        assert_eq!(status("opencode-go API error (429): slow down"), Some(429));
+        assert_eq!(
+            status("Codex error: The usage limit has been reached"),
+            None
+        );
+        assert_eq!(status("Codex error: API error (503): x"), None);
+        assert_eq!(status("opencode-go API error (5030): x"), None);
+        assert_eq!(status("opencode-go API error (50): x"), None);
+        assert_eq!(status("opencode-go API error 503: x"), None);
+        assert_eq!(status("opencode-go API error (503) x"), None);
+        assert_eq!(status("opencode-go API error (abc): x"), None);
+        assert_eq!(status("x: {\"status\":503}"), None);
+        assert_eq!(status("opencode-go API error (é5): x"), None);
+        assert_eq!(status(""), None);
+    }
+
+    #[test]
+    fn provider_status_is_none_without_an_error_stop() {
+        let ok = error_stream("opencode-go API error (503): x").replace("\"error\"", "\"stop\"");
+        assert_eq!(parse_stdout(&ok, true, "").provider_status, None);
+    }
+
+    /// No recorded run ends on a 429 (pi retried and recovered), so the recorded
+    /// `errorMessage` is replayed as the final message of a synthesized stream.
+    #[test]
+    fn a_recorded_429_message_reports_its_status() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/recorded/pi/lane-16-pi.stdout");
+        let stdout = std::fs::read_to_string(path).unwrap();
+        let message = stdout
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter_map(|v| v["message"]["errorMessage"].as_str().map(str::to_string))
+            .find(|m| m.starts_with("opencode-go API error (429)"))
+            .expect("recorded 429 message");
+        let res = parse_stdout(&error_stream(&message), true, "");
+        assert_eq!(res.provider_status, Some(429));
+    }
+
     #[test]
     fn spawn_failure_is_an_error_result() {
         let spec = crate::job::tests::spec_of(|s| s.bin = "/nonexistent/pi".into());
@@ -496,6 +573,7 @@ mod tests {
             assert_eq!(res.clean_exit, clean, "{stem}");
             assert_eq!(res.stderr, stderr, "{stem}");
             assert_eq!(res.duration_ms, None, "{stem}");
+            assert_eq!(res.provider_status, None, "{stem}");
             // The exit code never decides success: error-bad-model exits 0.
             if stem == "cancelled" {
                 assert_eq!(res.is_error, Some(true), "{stem}");
@@ -530,6 +608,7 @@ mod tests {
                         clean_exit: true,
                         stderr,
                         permission_denials: Vec::new(),
+                        provider_status: None,
                     },
                     "{stem}"
                 ),

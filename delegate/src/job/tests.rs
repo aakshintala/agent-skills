@@ -82,7 +82,12 @@ impl FakeHandle {
 #[derive(Default)]
 pub(crate) struct FakeBackend {
     handles: Mutex<Vec<Arc<FakeHandle>>>,
+    /// The argv of each spawn, in order.
+    pub argvs: Mutex<Vec<Vec<String>>>,
     pub auto: Mutex<Option<BackendResult>>,
+    /// One result per spawn, in order; each finishes its attempt at once. A spawn past
+    /// the end of the script falls back to `auto`, then to a manual handle.
+    pub script: Mutex<std::collections::VecDeque<BackendResult>>,
 }
 
 impl FakeBackend {
@@ -98,14 +103,21 @@ impl FakeBackend {
 }
 
 impl Runner for FakeBackend {
+    fn resume_argv(&self, _model: &str, session: &str, prompt: &str) -> Vec<String> {
+        vec!["resume".into(), session.into(), prompt.into()]
+    }
+
     fn run(&self, spec: &JobSpec) -> Spawned {
+        self.argvs.lock().unwrap().push(spec.argv.clone());
         let session_id = spec
             .argv
             .windows(2)
             .find(|w| w[0] == "--session-id")
             .map(|w| w[1].clone());
         let (tx, rx) = mpsc::channel();
-        if let Some(r) = &*self.auto.lock().unwrap() {
+        if let Some(r) = self.script.lock().unwrap().pop_front() {
+            tx.send(Msg::Finish(r)).unwrap();
+        } else if let Some(r) = &*self.auto.lock().unwrap() {
             tx.send(Msg::Finish(r.clone())).unwrap();
         }
         let killed = Arc::new(Mutex::new(Vec::new()));
@@ -154,6 +166,7 @@ pub(crate) fn fake_finalize(res: &BackendResult, ctx: &FinalizeCtx) -> RunOutput
         change_set: None,
         concerns: None,
         permission_denials: res.permission_denials.clone(),
+        retries: Vec::new(),
     }
 }
 
@@ -538,4 +551,277 @@ fn wait_returns_when_the_job_completes() {
         h.finish(done_ok());
     });
     assert_eq!(s.reg.wait(&id, Some(10_000.0)), "DONE");
+}
+
+fn retry_setup(delays: &[u64], script: Vec<BackendResult>) -> Setup {
+    let delays = delays.to_vec();
+    let s = setup_with(move |d| d.retry_delays_ms = delays);
+    s.fake.script.lock().unwrap().extend(script);
+    s
+}
+
+fn failed(status: Option<u16>) -> BackendResult {
+    BackendResult {
+        text: match status {
+            Some(s) => format!("opencode-go API error ({s}): upstream"),
+            None => "some other error".into(),
+        },
+        session_id: Some("sid-1".into()),
+        is_error: Some(true),
+        provider_status: status,
+        ..Default::default()
+    }
+}
+
+fn with_usage(mut r: BackendResult, input: f64) -> BackendResult {
+    r.usage = Some(Usage {
+        input_tokens: input,
+        ..Default::default()
+    });
+    r.cost_usd = Some(input / 4.0);
+    r
+}
+
+fn terminal(reg: &JobHandle, id: &str) -> RunOutput {
+    match reg.poll(id) {
+        PollResult::Terminal { result, .. } => result,
+        other => panic!("expected terminal poll, got {other:?}"),
+    }
+}
+
+fn wait_stage(reg: &JobHandle, want: Stage) {
+    for _ in 0..500 {
+        if reg.lock().job.as_ref().is_some_and(|(_, j)| j.stage == want) {
+            return;
+        }
+        sleep(Duration::from_millis(2));
+    }
+    panic!("job never reached {want:?}");
+}
+
+fn argvs(s: &Setup) -> Vec<Vec<String>> {
+    s.fake.argvs.lock().unwrap().clone()
+}
+
+#[test]
+fn a_503_resumes_the_session_and_the_record_lists_the_retry() {
+    let s = retry_setup(
+        &[0, 0],
+        vec![with_usage(failed(Some(503)), 10.0), with_usage(done_ok(), 5.0)],
+    );
+    let id = s.reg.dispatch(spec_of(|_| {}));
+    assert_eq!(settle(&s.reg, &id), "DONE");
+    let argvs = argvs(&s);
+    assert_eq!(argvs.len(), 2);
+    assert_eq!(
+        argvs[1],
+        ["resume", "sid-1", continue_prompt(503).as_str()]
+    );
+    let out = terminal(&s.reg, &id);
+    assert_eq!(
+        out.retries,
+        [Retry {
+            attempt: 1,
+            provider_status: 503,
+            error: "opencode-go API error (503): upstream".into(),
+            delay_ms: 0,
+            session_id: "sid-1".into(),
+        }]
+    );
+    assert_eq!(out.usage.unwrap().input_tokens, 15.0);
+    assert_eq!(out.cost_usd, Some(3.75));
+}
+
+#[test]
+fn retries_stop_at_the_length_of_the_delay_list() {
+    let s = retry_setup(&[0, 0], vec![failed(Some(503)); 3]);
+    let id = s.reg.dispatch(spec_of(|_| {}));
+    assert_eq!(settle(&s.reg, &id), "ERROR");
+    assert_eq!(argvs(&s).len(), 3);
+    assert_eq!(terminal(&s.reg, &id).retries.len(), 2);
+}
+
+#[test]
+fn a_401_is_retried_once() {
+    let s = retry_setup(&[0, 0], vec![failed(Some(401)); 2]);
+    let id = s.reg.dispatch(spec_of(|_| {}));
+    assert_eq!(settle(&s.reg, &id), "ERROR");
+    assert_eq!(argvs(&s).len(), 2);
+    assert_eq!(terminal(&s.reg, &id).retries.len(), 1);
+}
+
+#[test]
+fn a_401_then_a_503_then_done_records_two_retries() {
+    let s = retry_setup(
+        &[0, 0],
+        vec![failed(Some(401)), failed(Some(503)), done_ok()],
+    );
+    let id = s.reg.dispatch(spec_of(|_| {}));
+    assert_eq!(settle(&s.reg, &id), "DONE");
+    assert_eq!(argvs(&s).len(), 3);
+    let statuses: Vec<_> = terminal(&s.reg, &id)
+        .retries
+        .iter()
+        .map(|r| (r.attempt, r.provider_status))
+        .collect();
+    assert_eq!(statuses, [(1, 401), (2, 503)]);
+}
+
+#[test]
+fn errors_that_are_not_transient_are_not_retried() {
+    let mut ok_with_status = done_ok();
+    ok_with_status.provider_status = Some(503);
+    let mut no_session = failed(Some(503));
+    no_session.session_id = None;
+    let mut empty_session = failed(Some(503));
+    empty_session.session_id = Some(String::new());
+    for (name, res) in [
+        ("429", failed(Some(429))),
+        ("no status", failed(None)),
+        ("done with a status", ok_with_status),
+        ("no session id", no_session),
+        ("empty session id", empty_session),
+    ] {
+        let s = retry_setup(&[0, 0], vec![res]);
+        let id = s.reg.dispatch(spec_of(|_| {}));
+        settle(&s.reg, &id);
+        assert_eq!(argvs(&s).len(), 1, "{name}");
+        assert!(terminal(&s.reg, &id).retries.is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn a_session_id_from_progress_serves_when_the_result_has_none() {
+    let mut no_session = failed(Some(503));
+    no_session.session_id = None;
+    let s = retry_setup(&[0], vec![no_session, done_ok()]);
+    let id = s.reg.dispatch(spec_of(|spec| {
+        spec.argv = vec!["--session-id".into(), "launch-sid".into()];
+    }));
+    assert_eq!(settle(&s.reg, &id), "DONE");
+    assert_eq!(argvs(&s)[1][1], "launch-sid");
+}
+
+#[test]
+fn cancel_during_the_backoff_returns_at_once_and_spawns_nothing() {
+    let s = retry_setup(&[60_000], vec![failed(Some(503))]);
+    let id = s.reg.dispatch(spec_of(|_| {}));
+    wait_stage(&s.reg, Stage::Retrying);
+    let t = Instant::now();
+    assert_eq!(s.reg.cancel(&id), "CANCELLED");
+    assert!(t.elapsed() < Duration::from_secs(1));
+    assert_eq!(argvs(&s).len(), 1);
+}
+
+#[test]
+fn cancel_after_the_respawn_kills_the_new_child() {
+    let s = retry_setup(&[0], vec![failed(Some(503))]);
+    let id = s.reg.dispatch(spec_of(|_| {}));
+    let second = s.fake.handle(1);
+    wait_stage(&s.reg, Stage::Running);
+    assert_eq!(s.reg.cancel(&id), "CANCELLED");
+    assert_eq!(second.killed(), ["SIGTERM"]);
+    assert_eq!(terminal(&s.reg, &id).retries.len(), 1);
+}
+
+#[test]
+fn a_stalled_attempt_is_not_retried() {
+    let s = setup_with(|d| {
+        d.idle_ms = Some(50.0);
+        d.retry_delays_ms = vec![0, 0];
+    });
+    let id = s.reg.dispatch(spec_of(|_| {}));
+    assert_eq!(settle(&s.reg, &id), "STALLED");
+    assert_eq!(argvs(&s).len(), 1);
+    assert!(terminal(&s.reg, &id).retries.is_empty());
+}
+
+#[test]
+fn the_backoff_is_not_idle_time() {
+    let s = setup_with(|d| {
+        d.idle_ms = Some(50.0);
+        d.retry_delays_ms = vec![300];
+    });
+    s.fake
+        .script
+        .lock()
+        .unwrap()
+        .extend([failed(Some(503)), done_ok()]);
+    let id = s.reg.dispatch(spec_of(|_| {}));
+    for _ in 0..500 {
+        if s.reg.poll(&id).status_label() != "RUNNING" {
+            break;
+        }
+        sleep(Duration::from_millis(2));
+    }
+    assert_eq!(s.reg.poll(&id), "DONE");
+    assert_eq!(argvs(&s).len(), 2);
+}
+
+#[test]
+fn a_resumed_attempt_does_not_inherit_the_failed_attempts_tool_window() {
+    let s = setup_with(|d| {
+        d.idle_ms = Some(50.0);
+        d.tool_idle_ms = Some(10_000.0);
+        d.retry_delays_ms = vec![0];
+    });
+    let id = s.reg.dispatch(spec_of(|_| {}));
+    let first = s.fake.handle(0);
+    first.progress("shell", 1.0, None, &[], Some("running_tool"));
+    first.finish(failed(Some(503)));
+    assert_eq!(settle(&s.reg, &id), "STALLED");
+    assert_eq!(s.fake.handle(1).killed(), ["SIGTERM"]);
+}
+
+#[test]
+fn a_denial_in_a_failed_attempt_reaches_finalize() {
+    let seen: Arc<Mutex<Option<BackendResult>>> = Arc::default();
+    let sink = Arc::clone(&seen);
+    let s = setup_with(move |d| {
+        d.retry_delays_ms = vec![0];
+        d.finalize = Arc::new(move |res, ctx| {
+            *sink.lock().unwrap() = Some(res.clone());
+            fake_finalize(res, ctx)
+        });
+    });
+    let mut denied = failed(Some(503));
+    denied.permission_denials = vec![serde_json::json!({"tool_name": "Bash"})];
+    s.fake.script.lock().unwrap().extend([denied, done_ok()]);
+    let id = s.reg.dispatch(spec_of(|_| {}));
+    assert_eq!(settle(&s.reg, &id), "DONE");
+    let merged = seen.lock().unwrap().clone().unwrap();
+    assert_eq!(merged.permission_denials.len(), 1);
+    assert_eq!(terminal(&s.reg, &id).permission_denials.len(), 1);
+}
+
+#[test]
+fn transient_status_is_a_5xx_or_a_first_401_on_an_error() {
+    let st = |status, had_401| transient_status(&failed(status), had_401);
+    assert_eq!(st(Some(503), false), Some(503));
+    assert_eq!(st(Some(599), true), Some(599));
+    assert_eq!(st(Some(401), false), Some(401));
+    assert_eq!(st(Some(401), true), None);
+    assert_eq!(st(Some(429), false), None);
+    assert_eq!(st(Some(404), false), None);
+    assert_eq!(st(Some(600), false), None);
+    assert_eq!(st(None, false), None);
+    let mut ok = failed(Some(503));
+    ok.is_error = Some(false);
+    assert_eq!(transient_status(&ok, false), None);
+}
+
+#[test]
+fn merge_attempt_sums_what_was_reported_and_takes_the_rest_from_the_last() {
+    let mut prev = with_usage(failed(Some(503)), 10.0);
+    prev.duration_ms = Some(100.0);
+    prev.permission_denials = vec![serde_json::json!(1)];
+    let mut next = done_ok();
+    next.permission_denials = vec![serde_json::json!(2)];
+    let merged = merge_attempt(&prev, next);
+    assert_eq!(merged.usage.unwrap().input_tokens, 10.0);
+    assert_eq!(merged.cost_usd, Some(2.5));
+    assert_eq!(merged.duration_ms, Some(100.0));
+    assert_eq!(merged.permission_denials.len(), 2);
+    assert_eq!(merged.text, "ok\nSTATUS: DONE");
+    assert_eq!(merged.provider_status, None);
 }

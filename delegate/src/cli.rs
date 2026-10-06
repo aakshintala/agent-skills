@@ -582,6 +582,10 @@ fn supervise(args: &[String]) -> i32 {
     {
         rd.idle_ms = Some(ms);
     }
+    // `DELEGATE_RETRY_DELAYS_MS`: test-only override of the retry backoff, comma-separated.
+    if let Ok(v) = std::env::var("DELEGATE_RETRY_DELAYS_MS") {
+        rd.retry_delays_ms = v.split(',').filter_map(|d| d.trim().parse().ok()).collect();
+    }
     rd.status_writer = Arc::new(CliRecordWriter {
         job_id: id.clone(),
         model: model.clone(),

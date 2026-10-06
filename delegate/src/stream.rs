@@ -25,6 +25,9 @@ pub(crate) struct RawCursorJson {
     pub cost_usd: Option<f64>,
     #[serde(default)]
     pub permission_denials: Vec<Value>,
+    /// Claude's HTTP status for an API error; null on success, absent on cursor.
+    #[serde(default, deserialize_with = "crate::util::lenient")]
+    pub api_error_status: Option<u16>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

@@ -1,11 +1,12 @@
 //! Single-job supervisor core: spawn via the backend, idle watchdog, heartbeat records,
 //! gate + change-set finalize, and cancel.
 
-use crate::backends::types::{BackendResult, Event, ProgressSnapshotRaw, Runner};
+use crate::backends::types::{BackendResult, Event, ProgressSnapshotRaw, Runner, Spawned};
 use crate::finalize::{finalize_run, finalize_stall};
 use crate::status_record::StatusRecordWriter;
 use crate::types::{
-    FinalizeCtx, JobSpec, JobStatus, PollResult, ProgressSnapshot, RunOutput, RunStatus,
+    FinalizeCtx, JobSpec, JobStatus, PollResult, ProgressSnapshot, Retry, RunOutput, RunStatus,
+    Usage,
 };
 use crate::util::{clamp_wait, random_uuid};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,6 +15,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_WAIT_TIMEOUT: f64 = 120_000.0;
 const HEARTBEAT_MS: u64 = 30_000;
+/// Backoff before each retry of a transient provider error; its length caps the retries.
+const RETRY_DELAYS_MS: [u64; 2] = [10_000, 30_000];
 
 pub type FinalizeFn = Arc<dyn Fn(&BackendResult, &FinalizeCtx) -> RunOutput + Send + Sync>;
 
@@ -25,6 +28,7 @@ pub struct JobDeps {
     pub finalize_stall: FinalizeFn,
     pub status_writer: Arc<dyn StatusRecordWriter>,
     pub heartbeat_ms: u64,
+    pub retry_delays_ms: Vec<u64>,
 }
 
 impl JobDeps {
@@ -37,6 +41,7 @@ impl JobDeps {
             finalize_stall: Arc::new(finalize_stall),
             status_writer: Arc::new(crate::status_record::file_status_record_writer()),
             heartbeat_ms: HEARTBEAT_MS,
+            retry_delays_ms: RETRY_DELAYS_MS.to_vec(),
         }
     }
 }
@@ -44,6 +49,8 @@ impl JobDeps {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Stage {
     Running,
+    /// Between a failed attempt and its resume. The watchdog skips idle checks here.
+    Retrying,
     Finalizing,
     Terminal,
 }
@@ -69,6 +76,59 @@ pub struct JobHandle {
     st: Mutex<Inner>,
     cv: Condvar,
     deps: JobDeps,
+}
+
+/// The provider status of a failed attempt worth resuming past: a 5xx, or a 401 that
+/// has not been retried yet. 429 is excluded: pi retries it itself and a quota limit
+/// does not clear in seconds.
+fn transient_status(res: &BackendResult, had_401: bool) -> Option<u16> {
+    let status = res.provider_status?;
+    let transient = (500..=599).contains(&status) || (status == 401 && !had_401);
+    (res.is_error == Some(true) && transient).then_some(status)
+}
+
+fn sum_opt(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a + b),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Fold a retry's result into the job's: usage, cost and duration add up, denials
+/// accumulate, everything else is the last attempt's.
+fn merge_attempt(prev: &BackendResult, next: BackendResult) -> BackendResult {
+    let usage = match (&prev.usage, next.usage) {
+        (Some(a), Some(b)) => Some(Usage {
+            input_tokens: a.input_tokens + b.input_tokens,
+            output_tokens: a.output_tokens + b.output_tokens,
+            cache_read_tokens: a.cache_read_tokens + b.cache_read_tokens,
+            cache_write_tokens: a.cache_write_tokens + b.cache_write_tokens,
+        }),
+        (a, b) => b.or_else(|| a.clone()),
+    };
+    let mut permission_denials = prev.permission_denials.clone();
+    permission_denials.extend(next.permission_denials);
+    BackendResult {
+        usage,
+        cost_usd: sum_opt(prev.cost_usd, next.cost_usd),
+        duration_ms: sum_opt(prev.duration_ms, next.duration_ms),
+        permission_denials,
+        ..next
+    }
+}
+
+/// The prompt a retry resumes the session with. The original prompt is never rerun.
+fn continue_prompt(status: u16) -> String {
+    format!(
+        "Your previous turn stopped on a transient provider error (HTTP {status}). \
+         Continue the task from where you stopped. Check the working tree and git log \
+         before redoing any step; do not repeat edits or commits already made.\n\n---\n\n{}",
+        crate::prompt::status_block()
+    )
+}
+
+fn non_empty(s: Option<&String>) -> Option<&String> {
+    s.filter(|s| !s.is_empty())
 }
 
 fn ms(v: f64) -> Duration {
@@ -198,12 +258,84 @@ impl JobHandle {
         let (me, id) = (Arc::clone(self), job_id.clone());
         std::thread::spawn(move || {
             let res = drive(&|e| me.on_event(&id, e));
-            me.finalize_job(&id, res);
+            me.finish_attempts(&id, res);
         });
         let (me, id) = (Arc::clone(self), job_id.clone());
         std::thread::spawn(move || me.watchdog(&id));
 
         job_id
+    }
+
+    /// Resume the session past a transient provider error until the attempt ends on
+    /// anything else, the retries run out, or the job is cancelled or stalled. Then
+    /// finalize once, on the merged result.
+    fn finish_attempts(&self, job_id: &str, mut res: BackendResult) {
+        let mut retries: Vec<Retry> = Vec::new();
+        let mut had_401 = false;
+        while let Some(status) = transient_status(&res, had_401)
+            && let Some(&delay_ms) = self.deps.retry_delays_ms.get(retries.len())
+            && let Some((spawned, session_id)) = self.respawn(job_id, &res, status, delay_ms)
+        {
+            had_401 |= status == 401;
+            retries.push(Retry {
+                attempt: retries.len() as u32 + 1,
+                provider_status: status,
+                error: res.text.chars().take(300).collect(),
+                delay_ms,
+                session_id,
+            });
+            let next = (spawned.drive)(&|e| self.on_event(job_id, e));
+            res = merge_attempt(&res, next);
+        }
+        self.finalize_job(job_id, res, retries);
+    }
+
+    /// Back off for `delay_ms`, then spawn a resume of the failed attempt's session.
+    /// None when no retry starts: cancelled or stalled (the backoff wakes at once), the
+    /// job is gone, or there is no session to resume. The termination check, the spawn
+    /// and the kill-handle swap share one critical section, so a cancel lands either
+    /// before it (no spawn) or after it (kills the new child).
+    fn respawn(
+        &self,
+        job_id: &str,
+        res: &BackendResult,
+        status: u16,
+        delay_ms: u64,
+    ) -> Option<(Spawned, String)> {
+        let deadline = Instant::now() + Duration::from_millis(delay_ms);
+        let mut st = self.lock();
+        loop {
+            let (id, job) = st.job.as_mut()?;
+            if id != job_id || job.termination.is_some() {
+                return None;
+            }
+            let session = non_empty(res.session_id.as_ref())
+                .or_else(|| non_empty(job.progress.session_id.as_ref()))?
+                .clone();
+            let now = Instant::now();
+            if now < deadline {
+                job.stage = Stage::Retrying;
+                st = self
+                    .cv
+                    .wait_timeout(st, deadline - now)
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0;
+                continue;
+            }
+            let mut spec = (*job.spec).clone();
+            spec.argv =
+                self.deps
+                    .backend
+                    .resume_argv(&spec.model, &session, &continue_prompt(status));
+            let mut spawned = self.deps.backend.run(&spec);
+            job.kill = Arc::from(std::mem::replace(&mut spawned.kill, Box::new(|| {})));
+            job.stage = Stage::Running;
+            job.last_event = Instant::now();
+            job.progress.phase = None;
+            job.progress.session_id = Some(session.clone());
+            self.cv.notify_all();
+            return Some((spawned, session));
+        }
     }
 
     fn on_event(&self, job_id: &str, e: Event) {
@@ -277,7 +409,7 @@ impl JobHandle {
         }
     }
 
-    fn finalize_job(&self, job_id: &str, res: BackendResult) {
+    fn finalize_job(&self, job_id: &str, res: BackendResult, retries: Vec<Retry>) {
         let (spec, termination, abort) = {
             let mut st = self.lock();
             let Some((id, job)) = st.job.as_mut() else {
@@ -331,9 +463,11 @@ impl JobHandle {
                 change_set: None,
                 concerns: None,
                 permission_denials: Vec::new(),
+                retries: Vec::new(),
             });
         let mut st = self.lock();
         let mut out = out;
+        out.retries = retries;
         if let Some(term) = termination
             && let Some((_, job)) = st.job.as_ref()
         {
@@ -403,6 +537,8 @@ impl JobHandle {
         job.termination = Some(JobStatus::Cancelled);
         job.finalize_abort.store(true, Ordering::SeqCst);
         (job.kill)();
+        // Wakes a retry backoff, which re-checks `termination`.
+        self.cv.notify_all();
         while st
             .job
             .as_ref()

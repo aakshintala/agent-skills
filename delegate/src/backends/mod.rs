@@ -93,6 +93,10 @@ impl types::Runner for Backend {
     fn run(&self, spec: &JobSpec) -> Spawned {
         self.spawn(spec)
     }
+
+    fn resume_argv(&self, model: &str, session: &str, prompt: &str) -> Vec<String> {
+        self.argv(model, Some(session), prompt)
+    }
 }
 
 /// Only a 64 KB tail of stderr is ever reported; pump keeps a bounded window of it.

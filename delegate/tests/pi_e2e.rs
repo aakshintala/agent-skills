@@ -32,6 +32,13 @@ for a in "$@"; do
   if [ "$prev" = "--session-id" ]; then sid="$a"; fi
   prev="$a"
 done
+# A fail-once file is the first call's stream; the call consumes it.
+fail="$(dirname "$0")/fail-once"
+if [ -e "$fail" ]; then
+  sed "s/a86b4f04-f9fe-4fe2-88f2-9c07c39dda68/$sid/g" "$fail"
+  rm "$fail"
+  exit 0
+fi
 sed "s/afcd8926-430b-4d9a-a552-d7c6d1b900ba/$sid/g" "$DELEGATE_TEST_PI_FIXTURE"
 "#;
 
@@ -77,6 +84,7 @@ impl Env {
             .env("PI_BIN", self.dir.join("pi.sh"))
             .env("DELEGATE_TEST_PI_FIXTURE", self.fixture())
             .env("DELEGATE_HEARTBEAT_MS", "100")
+            .env("DELEGATE_RETRY_DELAYS_MS", "0")
             // Isolate from the developer machine's real host profile.
             .env(
                 "DELEGATE_HOST_PROFILE",
@@ -225,4 +233,51 @@ fn pi_cancel_kills_the_agent() {
     let final_rec: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(final_rec["status"], "CANCELLED");
     assert_eq!(e.record(&id)["status"], "CANCELLED");
+}
+
+#[test]
+fn pi_503_is_resumed_on_the_same_session_and_recorded() {
+    let e = Env::new("retry");
+    // The contract bad-model stream, with its error rewritten to a provider 503.
+    let stream = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/contract/pi/error-bad-model.stdout"),
+    )
+    .unwrap()
+    .replace(
+        "Codex error: The 'no-such-model' model is not supported when using Codex with a ChatGPT account.",
+        "opencode-go API error (503): upstream",
+    );
+    assert!(stream.contains("opencode-go API error (503): upstream"));
+    std::fs::write(e.dir.join("fail-once"), stream).unwrap();
+
+    let id = e.run_write("first brief");
+    let done = e.wait_terminal(&id);
+    assert_eq!(done["status"], "DONE");
+    let retries = done["result"]["retries"].as_array().unwrap();
+    assert_eq!(retries.len(), 1, "{done}");
+    assert_eq!(retries[0]["attempt"], 1);
+    assert_eq!(retries[0]["providerStatus"], 503);
+    assert_eq!(retries[0]["error"], "opencode-go API error (503): upstream");
+
+    let argv = e.argv();
+    let ids: Vec<&String> = argv
+        .windows(2)
+        .filter(|w| w[0] == "--session-id")
+        .map(|w| &w[1])
+        .collect();
+    assert_eq!(ids.len(), 2, "{argv:?}");
+    assert_eq!(ids[0], ids[1]);
+    assert_eq!(retries[0]["sessionId"], ids[0].as_str());
+    assert!(
+        argv.iter().any(|a| a
+            .starts_with("Your previous turn stopped on a transient provider error (HTTP 503).")),
+        "{argv:?}"
+    );
+    // The original brief ran once; the retry resumed instead of rerunning it.
+    assert_eq!(
+        argv.iter().filter(|a| a.contains("first brief")).count(),
+        1,
+        "{argv:?}"
+    );
 }
