@@ -163,11 +163,12 @@ common="$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir)"
 cd "$common"
 git --git-dir="$common" worktree remove "$worktree" >&2 || say "cleanup: worktree remove failed for $worktree"
 git --git-dir="$common" branch -D "$branch" >&2 || say "cleanup: branch -D $branch failed"
+# A missing remote ref counts as done, whatever the push error says: GitHub's
+# auto-delete on merge makes the push fail with "cannot lock ref".
 if ! del_out="$(git --git-dir="$common" push origin --delete "$branch" 2>&1)"; then
-  case "$del_out" in
-    *"remote ref does not exist"*) ;;
-    *) say "cleanup: push origin --delete $branch failed: $del_out" ;;
-  esac
+  ls_rc=0
+  git --git-dir="$common" ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1 || ls_rc=$?
+  [ "$ls_rc" -eq 2 ] || say "cleanup: push origin --delete $branch failed: $del_out"
 fi
 
 # Step 9
