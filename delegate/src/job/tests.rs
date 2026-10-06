@@ -82,6 +82,8 @@ impl FakeHandle {
 #[derive(Default)]
 pub(crate) struct FakeBackend {
     handles: Mutex<Vec<Arc<FakeHandle>>>,
+    /// The argv of each spawn, in order.
+    pub argvs: Mutex<Vec<Vec<String>>>,
     pub auto: Mutex<Option<BackendResult>>,
 }
 
@@ -98,7 +100,12 @@ impl FakeBackend {
 }
 
 impl Runner for FakeBackend {
+    fn resume_argv(&self, _model: &str, session: &str, prompt: &str) -> Vec<String> {
+        vec!["resume".into(), session.into(), prompt.into()]
+    }
+
     fn run(&self, spec: &JobSpec) -> Spawned {
+        self.argvs.lock().unwrap().push(spec.argv.clone());
         let session_id = spec
             .argv
             .windows(2)
@@ -154,6 +161,7 @@ pub(crate) fn fake_finalize(res: &BackendResult, ctx: &FinalizeCtx) -> RunOutput
         change_set: None,
         concerns: None,
         permission_denials: res.permission_denials.clone(),
+        retries: Vec::new(),
     }
 }
 

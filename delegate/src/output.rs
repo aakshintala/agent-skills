@@ -56,6 +56,7 @@ pub fn to_run_output(
         change_set: None,
         concerns: None,
         permission_denials: res.permission_denials.clone(),
+        retries: Vec::new(),
     }
 }
 
@@ -63,6 +64,29 @@ pub fn to_run_output(
 mod tests {
     use super::*;
     use crate::backends::types::BackendResult;
+    use crate::types::Retry;
+
+    #[test]
+    fn retries_serialize_camel_case_and_an_empty_list_is_omitted() {
+        let res = BackendResult {
+            text: "ok".into(),
+            ..Default::default()
+        };
+        let mut out = to_run_output(&res, "m", "pi", None, true);
+        assert!(serde_json::to_value(&out).unwrap().get("retries").is_none());
+        out.retries.push(Retry {
+            attempt: 1,
+            provider_status: 503,
+            error: "opencode-go API error (503): {\"error\":\"upstream unavailable\"}".into(),
+            delay_ms: 10000,
+            session_id: "a86b4f04-f9fe-4fe2-88f2-9c07c39dda68".into(),
+        });
+        let want: serde_json::Value = serde_json::from_str(
+            r#"[{"attempt":1,"providerStatus":503,"error":"opencode-go API error (503): {\"error\":\"upstream unavailable\"}","delayMs":10000,"sessionId":"a86b4f04-f9fe-4fe2-88f2-9c07c39dda68"}]"#,
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_value(&out).unwrap()["retries"], want);
+    }
 
     #[test]
     fn explicit_trailing_status_wins() {

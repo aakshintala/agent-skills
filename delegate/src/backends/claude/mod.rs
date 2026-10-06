@@ -155,6 +155,8 @@ mod tests {
             assert_eq!(res.clean_exit, clean, "{stem}");
             assert_eq!(res.stderr, stderr, "{stem}");
             assert!(res.permission_denials.is_empty(), "{stem}");
+            let want_status = (stem == "error-bad-model").then_some(404);
+            assert_eq!(res.provider_status, want_status, "{stem}");
 
             if stem == "cancelled" {
                 assert_eq!(res.is_error, Some(true), "{stem}");
@@ -233,6 +235,7 @@ mod tests {
                             clean_exit: true,
                             stderr: String::new(),
                             permission_denials: Vec::new(),
+                            provider_status: None,
                         }
                     );
                     let mut ctx = default_finalize_ctx("/repo", "claude-sonnet-5-5", "claude");

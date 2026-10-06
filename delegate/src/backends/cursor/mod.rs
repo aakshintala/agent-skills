@@ -207,6 +207,7 @@ fn finish(
             clean_exit,
             stderr: stderr.to_string(),
             permission_denials: raw.permission_denials,
+            provider_status: raw.api_error_status,
         };
     }
     // A non-clean exit with no stdout is the bad-model case: the text is the stderr we kept.
@@ -451,6 +452,7 @@ mod tests {
             assert_eq!(res.clean_exit, clean, "{stem}");
             assert_eq!(res.stderr, stderr, "{stem}");
             assert_eq!(res.cost_usd, None, "{stem}");
+            assert_eq!(res.provider_status, None, "{stem}");
             if !clean && stdout.is_empty() {
                 assert_eq!(res.is_error, Some(true), "{stem}");
                 assert_eq!(res.text, stderr, "{stem}");
@@ -484,6 +486,7 @@ mod tests {
                         clean_exit: true,
                         stderr: String::new(),
                         permission_denials: Vec::new(),
+                        provider_status: None,
                     }
                 ),
                 "tool-calls-fix" => {

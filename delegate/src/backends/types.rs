@@ -14,6 +14,8 @@ pub struct BackendResult {
     pub stderr: String,
     /// Claude result `permission_denials`, kept whole. Empty for cursor.
     pub permission_denials: Vec<serde_json::Value>,
+    /// HTTP status the provider reported with an error, when the backend exposes one.
+    pub provider_status: Option<u16>,
 }
 
 /// Snapshot of live progress fields carried by each `Event::Progress`.
@@ -50,4 +52,6 @@ pub struct Spawned {
 /// Job runner's test seam. `Backend` delegates to `spawn`; job tests use a fake.
 pub trait Runner: Send + Sync {
     fn run(&self, spec: &JobSpec) -> Spawned;
+    /// Argv that resumes `session` with `prompt`, for a retry. Never the original prompt.
+    fn resume_argv(&self, model: &str, session: &str, prompt: &str) -> Vec<String>;
 }

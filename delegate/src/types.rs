@@ -122,6 +122,21 @@ pub struct RunOutput {
     /// Claude `permission_denials` objects, kept whole. Empty stays off the record.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub permission_denials: Vec<serde_json::Value>,
+    /// Each transient provider error the supervisor retried past. Empty stays off the record.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retries: Vec<Retry>,
+}
+
+/// One failed attempt the supervisor resumed past. `attempt` is 1-based.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Retry {
+    pub attempt: u32,
+    pub provider_status: u16,
+    /// The failed attempt's text, first 300 chars.
+    pub error: String,
+    pub delay_ms: u64,
+    pub session_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
