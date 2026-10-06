@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+# agent-cost [days]: token and cache cost of recent agents, by kind.
+#
+# Reads Claude Code transcripts (*.jsonl) under $AGENT_COST_ROOT (default
+# ~/.claude/projects). A transcript is selected whole when its mtime is within
+# the last `days` days (default 3, a positive number, fractions ok). Kind:
+#   sub:<agentType>  files under a /subagents/ dir; type from <name>.meta.json (sub:? if missing)
+#   bg:<agentSetting> other files whose records carry an agentSetting (first one wins)
+# Other files (main interactive sessions) are skipped. Assistant usage is deduped
+# per file by message id (last record wins; a record with no id counts once).
+# One line per kind, sorted by cost descending.
+#
+# Cost is in base-input-token equivalents: input 1, 5m cache write 1.25,
+# 1h cache write 2, cache read 0.1, output 5.
+#   n          agents (transcripts) of this kind
+#   cost       total cost, millions
+#   per        cost per agent, millions
+#   turns/agent  assistant messages with usage, per agent
+#   cw5, cw1   5m and 1h cache-write tokens, millions
+#   cr         cache-read tokens, millions
+#   out        output tokens, millions
+#   bigwrites  messages after the first that wrote >20000 cache tokens (cold
+#              rewrites); in parentheses their written tokens, millions
+#   polls      Bash calls that look like waiting (sleep, until, gh-ci wait, delegate watch, ...)
+#   bigres     tool results over 20000 characters
+import collections, glob, json, os, re, sys, time
+from datetime import datetime
+
+POLL = re.compile(r'\bsleep \d|until |while .*sleep|tail -[fn]? ?\d* .*\.output|gh-ci wait|delegate watch')
+
+
+def ts(s):
+    return datetime.fromisoformat(s.replace('Z', '+00:00')).timestamp()
+
+
+def parse(f):
+    """Return (agentSetting, {msg key: (time, usage)}, polls, bigres) for one file."""
+    agent, msgs, polls, bigres = None, {}, 0, 0
+    with open(f, errors='replace') as fh:
+        for n, line in enumerate(fh):
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(e, dict):
+                continue
+            agent = agent or e.get('agentSetting') or None
+            m = e.get('message')
+            if not isinstance(m, dict):
+                continue
+            content = m.get('content')
+            content = content if isinstance(content, list) else []
+            if e.get('type') == 'assistant':
+                u = m.get('usage')
+                if isinstance(u, dict) and e.get('timestamp'):
+                    try:
+                        msgs[m.get('id') or ('line', n)] = (ts(e['timestamp']), u)
+                    except ValueError:
+                        pass
+                for c in content:
+                    if isinstance(c, dict) and c.get('type') == 'tool_use' and c.get('name') == 'Bash':
+                        if POLL.search(json.dumps(c.get('input', ''))):
+                            polls += 1
+            elif e.get('type') == 'user':
+                for c in content:
+                    if isinstance(c, dict) and c.get('type') == 'tool_result':
+                        if len(json.dumps(c.get('content'))) > 20000:
+                            bigres += 1
+    return agent, msgs, polls, bigres
+
+
+def main(argv):
+    try:
+        if len(argv) > 1:
+            raise ValueError
+        days = float(argv[0]) if argv else 3.0
+        if not days > 0:
+            raise ValueError
+    except ValueError:
+        print('usage: agent-cost [days]  (days: positive number, default 3)', file=sys.stderr)
+        return 2
+    root = os.environ.get('AGENT_COST_ROOT') or os.path.expanduser('~/.claude/projects')
+    now = time.time()
+    kinds = collections.defaultdict(collections.Counter)
+    for f in sorted(glob.glob(root + '/**/*.jsonl', recursive=True)):
+        try:
+            if now - os.path.getmtime(f) >= days * 86400:
+                continue
+            agent, msgs, polls, bigres = parse(f)
+        except OSError:
+            continue
+        if '/subagents/' in f:
+            try:
+                with open(f[:-6] + '.meta.json') as fh:
+                    kind = 'sub:' + (json.load(fh).get('agentType') or '?')
+            except (OSError, ValueError, AttributeError):
+                kind = 'sub:?'
+        elif agent:
+            kind = 'bg:' + agent
+        else:
+            continue
+        if not msgs:
+            continue
+        k = kinds[kind]
+        k['n'] += 1
+        k['polls'] += polls
+        k['bigres'] += bigres
+        for i, (_, u) in enumerate(sorted(msgs.values(), key=lambda x: x[0])):
+            cw = u.get('cache_creation_input_tokens') or 0
+            w1 = (u.get('cache_creation') or {}).get('ephemeral_1h_input_tokens') or 0
+            k['cw5'] += cw - w1
+            k['cw1'] += w1
+            k['cr'] += u.get('cache_read_input_tokens') or 0
+            k['out'] += u.get('output_tokens') or 0
+            k['inp'] += u.get('input_tokens') or 0
+            k['turns'] += 1
+            if i and cw > 20000:
+                k['miss5'] += 1
+                k['missw'] += cw
+    for name, v in kinds.items():
+        v['cost'] = v['inp'] + 1.25 * v['cw5'] + 2 * v['cw1'] + 0.1 * v['cr'] + 5 * v['out']
+    for k, v in sorted(kinds.items(), key=lambda x: (-x[1]['cost'], x[0])):
+        n, cost, turns, cw5, cw1, cr, out = (v[x] for x in ('n', 'cost', 'turns', 'cw5', 'cw1', 'cr', 'out'))
+        miss5, missw, polls, bigres = v['miss5'], v['missw'], v['polls'], v['bigres']
+        print(f"{k:24} n={n:3} cost={cost/1e6:7.1f}M  per={cost/n/1e6:5.2f}M turns/agent={turns/n:5.0f} cw5={cw5/1e6:.1f}M cw1={cw1/1e6:.1f}M cr={cr/1e6:.0f}M out={out/1e6:.2f}M bigwrites={miss5} ({missw/1e6:.1f}M) polls={polls} bigres={bigres}")
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
