@@ -14,6 +14,7 @@ __FINDINGS__
 - Keep every test's timeouts, waits, retry counts and numeric tolerances as they are. A fix that needs a looser one stops and reports the cause it would hide.
 - When the same check fails twice after your fixes, stop: report the assumption your fixes share, and start no third patch.
 - Refer to issues as `see #N` or `#N's case` in commit messages; a closing keyword (close, fix, resolve and their forms) before an issue number closes that issue on merge.
+- Commit your work before any command that discards changes (`git reset --hard`, `git checkout -- <path>`, `git restore`, a rebase). Make a scratch commit, such as one kept as evidence, on a throwaway branch (`git switch -c scratch/<name>`), then switch back to the lane branch and delete the scratch one.
 - Before pushing, the gate passes: `__GATE__`. Commit and push.
 
 ## Report
