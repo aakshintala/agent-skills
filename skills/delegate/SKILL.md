@@ -96,8 +96,9 @@ killed it: rerun, with a larger `--tool-idle-ms` if it stalled inside a tool). `
   `uncommittedFiles`).
 - `result.concerns`: warnings from the CLI, e.g. commits landed but the tree is still dirty.
 - `result.retries`: present when delegate resumed the session after a transient provider error
-  (a 5xx, or one 401), at most twice; usage, cost and duration add up across attempts. An
-  `ERROR` after retries means the provider stayed down; resume later rather than rerun.
+  (a 5xx, or one 401), at most twice: one entry per failed attempt, and usage, cost and
+  duration add up across attempts. It is history, not the final cause: read the final error
+  before deciding to resume.
 
 - **Resume chain:** follow `supersededBy` to the newest record; the old one stays as it was.
 - **Stuck job:** `watch` rewrites a record whose supervisor pid is dead to `ERROR` ("supervisor
