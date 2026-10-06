@@ -10,7 +10,7 @@
 #        wait for MERGED; remove the worktree and the local and remote branch.
 #        Prints `merged <squash sha>` on success. Progress goes to stderr.
 #        Exit 0 merged, 1 gate/CI/push/merge failure, 2 bad usage or a failed
-#        precondition, 3 rebase conflict (aborted), 4 patch-id mismatch (needs a new
+#        precondition, 3 rebase conflict (aborted) or a conflict `gh-ci wait` found after the push, 4 patch-id mismatch (needs a new
 #        verdict), 5 pr-closes found stray closing keywords, 124 CI wait timeout.
 #        SHIP_PR_INTERVAL: seconds between MERGED polls (default 5, at most 12 polls).
 set -euo pipefail
@@ -101,7 +101,11 @@ rc=0
 ci_out="$(GH_CI_REPO="$repo" "$here/gh-ci" wait "$pr" --timeout "$timeout" 2>&1)" || rc=$?
 if [ "$rc" -ne 0 ]; then
   printf '%s\n' "$ci_out"
-  case "$rc" in 124) exit 124 ;; *) exit 1 ;; esac
+  case "$rc" in
+    124) exit 124 ;;
+    3) die 3 "PR conflicts with origin/main after the push; rebase again, then rerun" ;;
+    *) exit 1 ;;
+  esac
 fi
 grep -q "^head: ${pin:0:8} " <<<"$ci_out" || { printf '%s\n' "$ci_out"; die 1 "CI passed on a head other than ${pin:0:8}"; }
 

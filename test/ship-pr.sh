@@ -40,9 +40,9 @@ case "$sub" in
       h="$(cat "$ST/lasthead")"
     fi
     state="$(rd state OPEN)"
-    json="$(jq -nc --arg h "$h" --arg s "$state" --arg d "$(rd draft false)" --arg b "$(rd body 'Resolves #97')" \
+    json="$(jq -nc --arg h "$h" --arg s "$state" --arg d "$(rd draft false)" --arg ms "$(rd merge-state CLEAN)" --arg b "$(rd body 'Resolves #97')" \
       --argjson c "$(rd commits '[]')" --arg m "$MERGE_SHA" \
-      '{state:$s, headRefName:"feature", headRefOid:$h, isDraft:($d=="true"), mergeStateStatus:"CLEAN",
+      '{state:$s, headRefName:"feature", headRefOid:$h, isDraft:($d=="true"), mergeStateStatus:$ms,
         title:"t", body:$b, commits:$c, mergeCommit:(if $s=="MERGED" then {oid:$m} else null end)}')"
     jq=""
     while [ $# -gt 0 ]; do [ "$1" = "--jq" ] && jq="$2"; shift; done
@@ -179,6 +179,11 @@ ship; expect 1 "failing CI"; untouched "failing CI, no rebase, no push"
 grep -q '^failing: ci$' <<<"$OUT" || fail "failing line printed: [$OUT]"
 no_merge "failing CI"
 [ -d "$WT" ] || fail "worktree kept after failing CI"
+
+setup; echo DIRTY >"$ST/merge-state"
+ship; expect 3 "conflict after the push"; no_merge "conflict after the push"
+grep -q "PR conflicts with origin/main after the push; rebase again, then rerun" <<<"$ERR" || fail "conflict message: [$ERR]"
+[ -d "$WT" ] || fail "worktree kept after a conflict"
 
 setup; echo '[{"bucket":"pending","name":"ci"}]' >"$ST/checks"
 ship --timeout 0; expect 124 "CI timeout"; no_merge "CI timeout"
