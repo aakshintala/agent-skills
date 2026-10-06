@@ -106,11 +106,12 @@ check "$(pr_json 'Thing' $'Resolves #1\nthis closes\n#6')"
 [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = "1" ] || fail "multi-line match prints one line: [$out]"
 
 # gh failing (repo discovery or PR read) exits 2, not 1
-T="$(mktemp -d "${TMPDIR:-/tmp}/test-pr-closes.XXXXXX")"
-trap 'rm -rf "$T"' EXIT
-printf '#!/bin/sh\nexit 1\n' >"$T/gh"; chmod +x "$T/gh"
-PATH="$T:$PATH" "$PRC" 12 >/dev/null 2>&1; [ "$?" = "2" ] || fail "repo discovery failure exits 2"
-PATH="$T:$PATH" "$PRC" 12 --repo o/r >/dev/null 2>&1; [ "$?" = "2" ] || fail "PR read failure exits 2"
+(
+  gh() ( exit 1 )
+  export -f gh
+  "$PRC" 12 >/dev/null 2>&1; [ "$?" = "2" ] || fail "repo discovery failure exits 2"
+  "$PRC" 12 --repo o/r >/dev/null 2>&1; [ "$?" = "2" ] || fail "PR read failure exits 2"
+) || exit 1
 
 # bad usage exits 2
 "$PRC" >/dev/null 2>&1; [ "$?" = "2" ] || fail "no args exits 2"

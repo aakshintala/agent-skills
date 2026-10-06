@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for bin/review-pr start/collect, using stand-in delegate/gh
-# executables and a throwaway git repo as CLONE (no network, no models).
+# functions and a throwaway git repo as CLONE (no network, no models).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -15,7 +15,7 @@ T="$(mktemp -d "${TMPDIR:-/tmp}/test-review-pr.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 
 export TMPDIR="$T/tmp"
-mkdir -p "$TMPDIR" "$T/fakebin" "$T/canned" "$T/state"
+mkdir -p "$TMPDIR" "$T/canned" "$T/state"
 
 # --- throwaway repos: ORIGIN carries refs/pull/7/head, CLONE is cloned from it
 git init -q -b main "$T/origin"
@@ -46,78 +46,75 @@ EXPECTED_PID="$(git patch-id --stable <"$T/diff.txt" | awk '{print $1}')"
 [ -n "$EXPECTED_PID" ] || fail "fixture patch-id computable"
 
 # --- fake gh
-cat >"$T/fakebin/gh" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-[ "\$1" = "pr" ] || { echo "fake gh: only pr supported" >&2; exit 2; }
-shift
-case "\$1" in
-  view)
-    h="$FAKE_SHA"
-    if [ -f "$T/state/heads.txt" ]; then
-      h="\$(head -1 "$T/state/heads.txt")"
-      if [ "\$(wc -l <"$T/state/heads.txt")" -gt 1 ]; then
-        tail -n +2 "$T/state/heads.txt" >"$T/state/heads.tmp"; mv "$T/state/heads.tmp" "$T/state/heads.txt"
+gh() (
+  set -euo pipefail
+  [ "$1" = "pr" ] || { echo "fake gh: only pr supported" >&2; exit 2; }
+  shift
+  case "$1" in
+    view)
+      h="$FAKE_SHA"
+      if [ -f "$T/state/heads.txt" ]; then
+        h="$(head -1 "$T/state/heads.txt")"
+        if [ "$(wc -l <"$T/state/heads.txt")" -gt 1 ]; then
+          tail -n +2 "$T/state/heads.txt" >"$T/state/heads.tmp"; mv "$T/state/heads.tmp" "$T/state/heads.txt"
+        fi
       fi
-    fi
-    printf '{"headRefOid":"%s","baseRefName":"main"}\n' "\$h";;
-  diff) cat "$T/diff.txt";;
-  checks) cat "$T/checks.txt";;
-  comment)
-    if [ -e "$T/state/fail-comment" ]; then echo "fake gh: comment failed" >&2; exit 1; fi
-    pr="\$2"; shift 2
-    body=""
-    while [ \$# -gt 0 ]; do case "\$1" in
-      --repo) shift 2;;
-      --body-file) body="\$2"; shift 2;;
-      *) shift;;
-    esac; done
-    printf '%s' "\$pr" >"$T/state/comment-pr.txt"
-    cp "\$body" "$T/state/comment.md"
-    echo "https://example.invalid/x/pull/\$pr"
-    ;;
-  *) echo "fake gh: unknown \$1" >&2; exit 2;;
-esac
-EOF
+      printf '{"headRefOid":"%s","baseRefName":"main"}\n' "$h";;
+    diff) cat "$T/diff.txt";;
+    checks) cat "$T/checks.txt";;
+    comment)
+      if [ -e "$T/state/fail-comment" ]; then echo "fake gh: comment failed" >&2; exit 1; fi
+      pr="$2"; shift 2
+      body=""
+      while [ $# -gt 0 ]; do case "$1" in
+        --repo) shift 2;;
+        --body-file) body="$2"; shift 2;;
+        *) shift;;
+      esac; done
+      printf '%s' "$pr" >"$T/state/comment-pr.txt"
+      cp "$body" "$T/state/comment.md"
+      echo "https://example.invalid/x/pull/$pr"
+      ;;
+    *) echo "fake gh: unknown $1" >&2; exit 2;;
+  esac
+)
 
 # --- fake delegate: run files the canned record keyed by worktree role
-cat >"$T/fakebin/delegate" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-cmd="\${1:?}"; shift
-case "\$cmd" in
-  run)
-    model=""; cwd=""; prompt=""
-    while [ \$# -gt 0 ]; do case "\$1" in
-      --model) model="\$2"; shift 2;;
-      --cwd) cwd="\$2"; shift 2;;
-      --prompt-file) prompt="\$2"; shift 2;;
-      *) shift;;
-    esac; done
-    role="\${cwd##*-}"
-    if [ -e "$T/state/fail-\$role" ]; then echo "fake delegate: run failed for \$role" >&2; exit 1; fi
-    printf '%s %s\n' "\$role" "\$model" >>"$T/state/runs.txt"
-    cp "\$prompt" "$T/state/prompt-\$role.md"
-    id="job-\$role"
-    mkdir -p "\${TMPDIR:-/tmp}/delegate-jobs"
-    cp "$T/canned/\$role.json" "\${TMPDIR:-/tmp}/delegate-jobs/\$id.json"
-    printf '%s\n' "\$id"
-    ;;
-  watch)
-    printf 'watch %s\n' "\$*" >>"$T/state/watch.txt"
-    while [ \$# -gt 0 ]; do case "\$1" in --timeout) shift 2;; *) break;; esac; done
-    for id in "\$@"; do cat "\${TMPDIR:-/tmp}/delegate-jobs/\$id.json"; done
-    ;;
-  *) echo "fake delegate: unknown \$cmd" >&2; exit 2;;
-esac
-EOF
+delegate() (
+  set -euo pipefail
+  cmd="${1:?}"; shift
+  case "$cmd" in
+    run)
+      model=""; cwd=""; prompt=""
+      while [ $# -gt 0 ]; do case "$1" in
+        --model) model="$2"; shift 2;;
+        --cwd) cwd="$2"; shift 2;;
+        --prompt-file) prompt="$2"; shift 2;;
+        *) shift;;
+      esac; done
+      role="${cwd##*-}"
+      if [ -e "$T/state/fail-$role" ]; then echo "fake delegate: run failed for $role" >&2; exit 1; fi
+      printf '%s %s\n' "$role" "$model" >>"$T/state/runs.txt"
+      cp "$prompt" "$T/state/prompt-$role.md"
+      id="job-$role"
+      mkdir -p "${TMPDIR:-/tmp}/delegate-jobs"
+      cp "$T/canned/$role.json" "${TMPDIR:-/tmp}/delegate-jobs/$id.json"
+      printf '%s\n' "$id"
+      ;;
+    watch)
+      printf 'watch %s\n' "$*" >>"$T/state/watch.txt"
+      while [ $# -gt 0 ]; do case "$1" in --timeout) shift 2;; *) break;; esac; done
+      for id in "$@"; do cat "${TMPDIR:-/tmp}/delegate-jobs/$id.json"; done
+      ;;
+    *) echo "fake delegate: unknown $cmd" >&2; exit 2;;
+  esac
+)
 # --- fake sleep: log the call, return at once
-cat >"$T/fakebin/sleep" <<EOF
-#!/usr/bin/env bash
-echo "\$*" >>"$T/state/sleeps.txt"
-EOF
-chmod +x "$T/fakebin/gh" "$T/fakebin/delegate" "$T/fakebin/sleep"
-export PATH="$T/fakebin:$PATH"
+sleep() (
+  echo "$*" >>"$T/state/sleeps.txt"
+)
+export T FAKE_SHA
+export -f gh delegate sleep
 
 write_record() {
   # write_record ROLE STATUS TEXT [GATE_EXIT]: GATE_EXIT absent means gateResult null.

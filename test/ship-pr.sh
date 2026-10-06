@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for bin/ship-pr: real git on throwaway repos (a bare origin, a clone
-# and a linked worktree), a stand-in gh and sleep (no network). The real
+# and a linked worktree), a stand-in gh and sleep (functions, no network). The real
 # gh-ci and pr-closes run against the stand-in gh.
 set -uo pipefail
 
@@ -22,62 +22,49 @@ MERGE_SHA="1f2e3d4c5b6a79881726354433221100ffeeddcc"
 
 # --- fake gh. Reads $ST (state dir) and $ORIGIN. The PR head is origin's
 # --- feature branch, so a push is visible to gh-ci. --jq runs through jq.
-mkdir -p "$T/fakebin"
-cat >"$T/fakebin/gh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-echo "gh $*" >>"$ST/gh.log"
-[ "$1" = "pr" ] || { echo "fake gh: only pr supported" >&2; exit 2; }
-shift
-sub="$1"; shift
-rd() { [ -e "$ST/$1" ] && cat "$ST/$1" || echo "$2"; }
-case "$sub" in
-  view)
-    [ ! -e "$ST/view-fail" ] || exit 1
-    case " $* " in *" --json body "*) [ ! -e "$ST/body-fail" ] || exit 1;; esac
-    if h="$(git --git-dir="$ORIGIN" rev-parse refs/heads/feature 2>/dev/null)"; then
-      echo "$h" >"$ST/lasthead"
-    else
-      h="$(cat "$ST/lasthead")"
-    fi
-    state="$(rd state OPEN)"
-    json="$(jq -nc --arg h "$h" --arg s "$state" --arg d "$(rd draft false)" --arg ms "$(rd merge-state CLEAN)" --arg b "$(rd body 'Resolves #97')" \
-      --argjson bn "$([ -e "$ST/body-null" ] && echo true || echo false)" --argjson c "$(rd commits '[]')" --arg m "$MERGE_SHA" \
-      '{state:$s, headRefName:"feature", headRefOid:$h, isDraft:($d=="true"), mergeStateStatus:$ms,
-        title:"t", body:(if $bn then null else $b end), commits:$c, mergeCommit:(if $s=="MERGED" then {oid:$m} else null end)}')"
-    jq=""
-    while [ $# -gt 0 ]; do [ "$1" = "--jq" ] && jq="$2"; shift; done
-    if [ -n "$jq" ]; then jq -r "$jq" <<<"$json"; else echo "$json"; fi;;
-  checks)
-    if [ -e "$ST/checks-hook" ]; then bash "$ST/checks-hook"; rm -f "$ST/checks-hook"; fi
-    if [ -e "$ST/checks-each" ]; then bash "$ST/checks-each"; fi
-    resp="$(cat "$ST/checks")"
-    printf '%s\n' "$resp"
-    case "$resp" in
-      *'"bucket":"fail"'*) exit 1;;
-      *'"bucket":"pending"'*) exit 8;;
-    esac;;
-  ready) echo false >"$ST/draft";;
-  merge)
-    [ ! -e "$ST/merge-fail" ] || exit 1
-    [ -e "$ST/no-merge" ] || echo MERGED >"$ST/state"
-    [ ! -e "$ST/merge-deletes-branch" ] || git --git-dir="$ORIGIN" update-ref -d refs/heads/feature;;
-  *) echo "fake gh: unknown $sub" >&2; exit 2;;
-esac
-EOF
-printf '#!/usr/bin/env bash\necho "$*" >>"$ST/sleeps.txt"\n' >"$T/fakebin/sleep"
-# --- git wrapper: with $ST/delete-fails, `push origin --delete` fails the way
-# --- GitHub's does after it auto-deletes the branch on merge.
-cat >"$T/fakebin/git" <<EOF
-#!/usr/bin/env bash
-if [ -e "\$ST/delete-fails" ] && [[ " \$* " == *" push origin --delete "* ]]; then
-  echo "error: cannot lock ref 'refs/remotes/origin/feature': unable to resolve reference" >&2
-  exit 1
-fi
-exec "$(command -v git)" "\$@"
-EOF
-chmod +x "$T/fakebin/gh" "$T/fakebin/sleep" "$T/fakebin/git"
-export PATH="$T/fakebin:$PATH"
+gh() (
+  set -euo pipefail
+  echo "gh $*" >>"$ST/gh.log"
+  [ "$1" = "pr" ] || { echo "fake gh: only pr supported" >&2; exit 2; }
+  shift
+  sub="$1"; shift
+  rd() { [ -e "$ST/$1" ] && cat "$ST/$1" || echo "$2"; }
+  case "$sub" in
+    view)
+      [ ! -e "$ST/view-fail" ] || exit 1
+      case " $* " in *" --json body "*) [ ! -e "$ST/body-fail" ] || exit 1;; esac
+      if h="$(git --git-dir="$ORIGIN" rev-parse refs/heads/feature 2>/dev/null)"; then
+        echo "$h" >"$ST/lasthead"
+      else
+        h="$(cat "$ST/lasthead")"
+      fi
+      state="$(rd state OPEN)"
+      json="$(jq -nc --arg h "$h" --arg s "$state" --arg d "$(rd draft false)" --arg ms "$(rd merge-state CLEAN)" --arg b "$(rd body 'Resolves #97')" \
+        --argjson bn "$([ -e "$ST/body-null" ] && echo true || echo false)" --argjson c "$(rd commits '[]')" --arg m "$MERGE_SHA" \
+        '{state:$s, headRefName:"feature", headRefOid:$h, isDraft:($d=="true"), mergeStateStatus:$ms,
+          title:"t", body:(if $bn then null else $b end), commits:$c, mergeCommit:(if $s=="MERGED" then {oid:$m} else null end)}')"
+      jq=""
+      while [ $# -gt 0 ]; do [ "$1" = "--jq" ] && jq="$2"; shift; done
+      if [ -n "$jq" ]; then jq -r "$jq" <<<"$json"; else echo "$json"; fi;;
+    checks)
+      if [ -e "$ST/checks-hook" ]; then bash "$ST/checks-hook"; rm -f "$ST/checks-hook"; fi
+      if [ -e "$ST/checks-each" ]; then bash "$ST/checks-each"; fi
+      resp="$(cat "$ST/checks")"
+      printf '%s\n' "$resp"
+      case "$resp" in
+        *'"bucket":"fail"'*) exit 1;;
+        *'"bucket":"pending"'*) exit 8;;
+      esac;;
+    ready) echo false >"$ST/draft";;
+    merge)
+      [ ! -e "$ST/merge-fail" ] || exit 1
+      [ -e "$ST/no-merge" ] || echo MERGED >"$ST/state"
+      [ ! -e "$ST/merge-deletes-branch" ] || git --git-dir="$ORIGIN" update-ref -d refs/heads/feature;;
+    *) echo "fake gh: unknown $sub" >&2; exit 2;;
+  esac
+)
+sleep() ( echo "$*" >>"$ST/sleeps.txt" )
+export -f gh sleep
 
 # --- fixture: main with file.txt, feature (one commit) pushed and checked out in $WT.
 setup() {
@@ -120,7 +107,21 @@ BUMP_MAIN='git --git-dir="$ORIGIN" update-ref refs/heads/main "$(git --git-dir="
 OUT=""; ERR=""; CODE=0
 run() {
   O0="$(origin_head)"; W0="$(git -C "$WT" rev-parse HEAD 2>/dev/null)"
-  OUT="$("$SHIP" "$@" 2>"$S/stderr.txt")"; CODE=$?
+  # git wrapper: with $ST/delete-fails, `push origin --delete` fails the way
+  # GitHub's does after it auto-deletes the branch on merge. Defined and
+  # exported only for the command under test, so the suite's own git calls
+  # never see it.
+  OUT="$(
+    git() (
+      if [ -e "$ST/delete-fails" ] && [[ " $* " == *" push origin --delete "* ]]; then
+        echo "error: cannot lock ref 'refs/remotes/origin/feature': unable to resolve reference" >&2
+        exit 1
+      fi
+      command git "$@"
+    )
+    export -f git
+    "$SHIP" "$@" 2>"$S/stderr.txt"
+  )"; CODE=$?
   ERR="$(cat "$S/stderr.txt")"
 }
 ship() { run 7 --repo O/N --reviewed "$HEAD0" --worktree "$WT" "$@"; }
