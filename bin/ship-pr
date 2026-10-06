@@ -129,7 +129,7 @@ while :; do
   fi
   say "waiting for CI"
   rc=0
-  ci_out="$(GH_CI_REPO="$repo" "$here/gh-ci" wait "$pr" --timeout "$timeout" 2>&1)" || rc=$?
+  ci_out="$(GH_CI_REPO="$repo" bash "$here/gh-ci" wait "$pr" --timeout "$timeout" 2>&1)" || rc=$?
   if [ "$rc" -ne 0 ]; then
     printf '%s\n' "$ci_out"
     case "$rc" in
@@ -150,7 +150,7 @@ done
 
 # Step 6: no stray closing keywords. Commit-message-only matches are the caller's call.
 rc=0
-closes_out="$("$here/pr-closes" "$pr" --repo "$repo" 2>/dev/null)" || rc=$?
+closes_out="$(bash "$here/pr-closes" "$pr" --repo "$repo" 2>/dev/null)" || rc=$?
 case "$rc" in
   0) ;;
   1) printf '%s\n' "$closes_out"; exit 5 ;;

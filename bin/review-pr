@@ -335,15 +335,15 @@ cmd_start() {
     brief="$run_dir/brief-$role.md"
     case "$role" in
       review)
-        "$fill_brief" "$brief_src" "PR=$pr" "REPO=$repo" "ISSUE=$issue" \
+        bash "$fill_brief" "$brief_src" "PR=$pr" "REPO=$repo" "ISSUE=$issue" \
           "SPEC=$specn" "SKILLS=$skills_dir" "WORKFLOW_DOC=$wdoc" >"$brief"
         ;;
       overbuild)
-        "$fill_brief" "$brief_src" "PR=$pr" "REPO=$repo" \
+        bash "$fill_brief" "$brief_src" "PR=$pr" "REPO=$repo" \
           "SKILLS=$skills_dir" >"$brief"
         ;;
       verify)
-        "$fill_brief" "$brief_src" "PR=$pr" "REPO=$repo" "SKILLS=$skills_dir" \
+        bash "$fill_brief" "$brief_src" "PR=$pr" "REPO=$repo" "SKILLS=$skills_dir" \
           "SINCE=$since" "FINDINGS=@$verify" >"$brief"
         ;;
     esac

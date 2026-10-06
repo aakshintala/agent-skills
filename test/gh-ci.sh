@@ -71,7 +71,7 @@ set_checks() { printf '%s\n' "$@" >"$T/state/checks.txt"; }
 
 OUT=""; CODE=0
 run_wait() {
-  OUT="$("$GHCI" wait "$@" 2>"$T/stderr.txt")"; CODE=$?
+  OUT="$(bash "$GHCI" wait "$@" 2>"$T/stderr.txt")"; CODE=$?
 }
 
 # --- case: pending then green, with a passing name containing
@@ -250,11 +250,11 @@ run_wait 7 --timeout 0
 # snapshot and watch-verified exit 3 at once
 reset_state
 set_heads "$A"; set_checks "$PASS"; set_merge DIRTY
-OUT="$("$GHCI" snapshot 7 2>"$T/stderr.txt")"; CODE=$?
+OUT="$(bash "$GHCI" snapshot 7 2>"$T/stderr.txt")"; CODE=$?
 [ "$CODE" = "3" ] || fail "snapshot conflict exits 3 (got $CODE): [$OUT]"
 grep -qF "$CONFLICT_MSG" "$T/stderr.txt" || fail "snapshot conflict message: [$(cat "$T/stderr.txt")]"
 [ ! -e "$T/state/sleeps.txt" ] || fail "snapshot conflict never sleeps"
-OUT="$("$GHCI" watch-verified 99 --pr 7 2>"$T/stderr.txt")"; CODE=$?
+OUT="$(bash "$GHCI" watch-verified 99 --pr 7 2>"$T/stderr.txt")"; CODE=$?
 [ "$CODE" = "3" ] || fail "watch-verified conflict exits 3 (got $CODE): [$OUT]"
 
 # --- case: unreadable head never exits 0
@@ -262,7 +262,7 @@ reset_state
 set_heads "$A"
 set_checks '[{"bucket":"pass","name":"ci"}]'
 touch "$T/state/view-fail"
-OUT="$("$GHCI" wait 7 2>"$T/stderr.txt")"; CODE=$?
+OUT="$(bash "$GHCI" wait 7 2>"$T/stderr.txt")"; CODE=$?
 [ "$CODE" != "0" ] || fail "unreadable head exits non-zero (got $CODE): [$OUT]"
 grep -qi "could not read the head" "$T/stderr.txt" || fail "unreadable head message: [$(cat "$T/stderr.txt")]"
 [ ! -e "$T/state/sleeps.txt" ] || fail "unreadable head never sleeps"
@@ -276,10 +276,10 @@ run_wait 7 --timeout abc; [ "$CODE" = "2" ] || fail "non-numeric timeout exits 2
 run_wait 7 --timeout; [ "$CODE" = "2" ] || fail "missing timeout value exits 2 (got $CODE)"
 
 # --- case: no subcommand and unknown subcommand print usage, exit 2
-OUT="$("$GHCI" 2>"$T/stderr.txt")"; CODE=$?
+OUT="$(bash "$GHCI" 2>"$T/stderr.txt")"; CODE=$?
 [ "$CODE" = "2" ] || fail "no args exits 2 (got $CODE)"
 grep -q '^usage: gh-ci' "$T/stderr.txt" || fail "no args prints usage on stderr: [$(cat "$T/stderr.txt")]"
-OUT="$("$GHCI" bogus 2>"$T/stderr.txt")"; CODE=$?
+OUT="$(bash "$GHCI" bogus 2>"$T/stderr.txt")"; CODE=$?
 [ "$CODE" = "2" ] || fail "unknown subcommand exits 2 (got $CODE)"
 grep -q '^usage: gh-ci' "$T/stderr.txt" || fail "unknown subcommand prints usage on stderr"
 
@@ -288,7 +288,7 @@ grep -q '^usage: gh-ci' "$T/stderr.txt" || fail "unknown subcommand prints usage
   gh() ( exit 1 )
   export -f gh
   for a in "" bogus; do
-    OUT="$(env -u GH_CI_REPO "$GHCI" $a 2>"$T/stderr.txt")"; CODE=$?
+    OUT="$(env -u GH_CI_REPO bash "$GHCI" $a 2>"$T/stderr.txt")"; CODE=$?
     [ "$CODE" = "2" ] || fail "usage without repo lookup exits 2 for [$a] (got $CODE)"
     grep -q '^usage: gh-ci' "$T/stderr.txt" || fail "usage without repo lookup for [$a]"
   done

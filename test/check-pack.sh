@@ -35,7 +35,7 @@ Do __WORK__ on __work__ now.
 Template uses {{thing}} too.
 EOF
 
-out="$("$CHECK" "$BAD" 2>"$T/baderr.txt")" && fail "bad pack exits 1"
+out="$(bash "$CHECK" "$BAD" 2>"$T/baderr.txt")" && fail "bad pack exits 1"
 grep -q '^skills/alpha/SKILL.md:[0-9]*: .*nosuch' <<<"$out" || fail "bad pack flags missing skill"
 grep -q '^skills/alpha/SKILL.md:[0-9]*: .*missing skill `delegate`' <<<"$out" || fail "bad pack flags delegate when not in tree"
 grep -q '^skills/alpha/SKILL.md:[0-9]*: .*nope.md' <<<"$out" || fail "bad pack flags broken link"
@@ -65,11 +65,11 @@ printf 'x\n' >"$GOOD/bin/alpha"
 cat >"$GOOD/skills/alpha/briefs/job.md" <<'EOF'
 Do __WORK__ on __OTHER_WORK2__ now.
 EOF
-out="$("$CHECK" "$GOOD" 2>"$T/gooderr.txt")" || fail "good pack exits 0"
+out="$(bash "$CHECK" "$GOOD" 2>"$T/gooderr.txt")" || fail "good pack exits 0"
 [ -z "$out" ] || fail "good pack prints nothing: [$out]"
 [ -s "$T/gooderr.txt" ] && fail "good pack is silent on stderr"
 
 # --- bad usage exits 2
-"$CHECK" "$T/does-not-exist" >/dev/null 2>&1; [ "$?" = "2" ] || fail "missing ROOT exits 2"
+bash "$CHECK" "$T/does-not-exist" >/dev/null 2>&1; [ "$?" = "2" ] || fail "missing ROOT exits 2"
 
 echo "check-pack: all cases passed"
