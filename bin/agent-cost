@@ -35,7 +35,7 @@ def ts(s):
 
 def parse(f):
     """Return (agentSetting, {msg key: (time, usage)}, polls, bigres) for one file."""
-    agent, msgs, polls, bigres = None, {}, 0, 0
+    agent, msgs, polls, bigres = None, {}, set(), 0
     with open(f, errors='replace') as fh:
         for n, line in enumerate(fh):
             try:
@@ -57,16 +57,16 @@ def parse(f):
                         msgs[m.get('id') or ('line', n)] = (ts(e['timestamp']), u)
                     except ValueError:
                         pass
-                for c in content:
+                for j, c in enumerate(content):
                     if isinstance(c, dict) and c.get('type') == 'tool_use' and c.get('name') == 'Bash':
                         if POLL.search(json.dumps(c.get('input', ''))):
-                            polls += 1
+                            polls.add(c.get('id') or ('line', n, j))  # streamed repeats share an id
             elif e.get('type') == 'user':
                 for c in content:
                     if isinstance(c, dict) and c.get('type') == 'tool_result':
                         if len(json.dumps(c.get('content'))) > 20000:
                             bigres += 1
-    return agent, msgs, polls, bigres
+    return agent, msgs, len(polls), bigres
 
 
 def main(argv):
@@ -117,7 +117,7 @@ def main(argv):
             if i and cw > 20000:
                 k['miss5'] += 1
                 k['missw'] += cw
-    for name, v in kinds.items():
+    for v in kinds.values():
         v['cost'] = v['inp'] + 1.25 * v['cw5'] + 2 * v['cw1'] + 0.1 * v['cr'] + 5 * v['out']
     for k, v in sorted(kinds.items(), key=lambda x: (-x[1]['cost'], x[0])):
         n, cost, turns, cw5, cw1, cr, out = (v[x] for x in ('n', 'cost', 'turns', 'cw5', 'cw1', 'cr', 'out'))

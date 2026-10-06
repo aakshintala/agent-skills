@@ -20,7 +20,7 @@ printf '{"agentType":"claude-worker"}\n' >"$T/p1/s1/subagents/agent-a.meta.json"
 # Subagent. Message m1 is streamed twice: the first chunk is a stub, the last wins.
 #   m1 (final): input 1000, cache write 400000 (1h 100000 -> w5 300000, w1 100000), read 2000000, out 100000
 #   m2 (+10min): cache write 600000 (1h 200000 -> w5 400000, w1 200000): a bigwrite;
-#                carries a poll (delegate watch) tool_use
+#                carries a poll (delegate watch) tool_use, streamed twice (one poll)
 #   two messages without an id (+11, +12 min): read 500000, out 10000 each: two turns, not one
 #   one tool_result over 20000 chars: bigres; one malformed line: skipped
 # Totals: inp 1000, w5 700000, w1 300000, cr 4000000, out 170000, turns 4
@@ -30,7 +30,8 @@ cat >"$SUB" <<'FIXTURE'
 {"type":"assistant","timestamp":"2026-01-01T00:00:00Z","message":{"id":"m1","usage":{"input_tokens":1000,"cache_creation_input_tokens":400000,"cache_creation":{"ephemeral_1h_input_tokens":100000},"cache_read_input_tokens":2000000,"output_tokens":100000}}}
 {"type":"user","message":{"content":[{"type":"tool_result","content":"BIGRESULT"}]}}
 this line is not json {"type":
-{"type":"assistant","timestamp":"2026-01-01T00:10:00Z","message":{"id":"m2","content":[{"type":"tool_use","name":"Bash","input":{"command":"delegate watch x"}}],"usage":{"cache_creation_input_tokens":600000,"cache_creation":{"ephemeral_1h_input_tokens":200000},"cache_read_input_tokens":1000000,"output_tokens":50000}}}
+{"type":"assistant","timestamp":"2026-01-01T00:10:00Z","message":{"id":"m2","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"delegate watch x"}}],"usage":{"cache_creation_input_tokens":600000,"cache_creation":{"ephemeral_1h_input_tokens":200000},"cache_read_input_tokens":1000000,"output_tokens":50000}}}
+{"type":"assistant","timestamp":"2026-01-01T00:10:00Z","message":{"id":"m2","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"delegate watch x"}}],"usage":{"cache_creation_input_tokens":600000,"cache_creation":{"ephemeral_1h_input_tokens":200000},"cache_read_input_tokens":1000000,"output_tokens":50000}}}
 {"type":"assistant","timestamp":"2026-01-01T00:11:00Z","message":{"usage":{"cache_read_input_tokens":500000,"output_tokens":10000}}}
 {"type":"assistant","timestamp":"2026-01-01T00:12:00Z","message":{"usage":{"cache_read_input_tokens":500000,"output_tokens":10000}}}
 FIXTURE
