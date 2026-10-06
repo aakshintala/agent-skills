@@ -2,9 +2,10 @@
 # ship-pr: run a reviewed PR's merge tail in one command.
 # Usage: ship-pr <pr> --repo OWNER/NAME --reviewed <sha> --worktree <path> [--gate '<cmd>'] [--timeout <s>] [--body-has <prefix>]...
 #        Run it after review-loop has a verdict on <sha>. In order: check the PR is
-#        open and its head branch is checked out clean in --worktree; rebase onto
+#        open and its head branch is checked out clean in --worktree; run --gate in
+#        the worktree on that head, once, before any rebase or push; rebase onto
 #        origin/main if it moved; compare the PR diff's `git patch-id --stable` with
-#        <sha>'s; run --gate in the worktree; push a rebased branch with
+#        <sha>'s; push a rebased branch with
 #        --force-with-lease and `gh-ci wait` (--timeout, default 1800); run
 #        pr-closes; mark a draft ready and squash-merge pinned to the checked head;
 #        wait for MERGED; remove the worktree and the local and remote branch.
@@ -16,8 +17,9 @@
 #        precondition, 3 rebase conflict (aborted) or a conflict `gh-ci wait` found after the push, 4 patch-id mismatch (needs a new
 #        verdict), 5 PR text needs a fix (missing --body-has lines, or stray closing keywords from pr-closes), 124 CI wait timeout.
 #        When origin/main moves during the CI wait, ship-pr goes back to the rebase
-#        (gate, push and CI wait again), at most 3 times; the 4th move exits 1.
-#        --timeout bounds each CI wait, so a run can take up to 4 gates and 4 CI waits.
+#        (rebase, patch-id check, push and CI wait again; no gate), at most 3 times;
+#        the 4th move exits 1.
+#        --timeout bounds each CI wait, so a run can take one gate and up to 4 CI waits.
 #        SHIP_PR_INTERVAL: seconds between MERGED polls (default 5, at most 12 polls).
 set -euo pipefail
 
@@ -88,11 +90,23 @@ patch_id() {
   echo "${id:-none}"
 }
 
-# Steps 2-5 repeat when origin/main moves during the CI wait, at most 3 times.
+# Step 2: the gate runs once, on the PR head, before any rebase or push. It checks
+# code; it never changes what was reviewed. CI covers the rebased head.
+if [ -n "$gate" ]; then
+  say "running gate"
+  if ! gate_out="$(cd "$worktree" && bash -c "$gate" </dev/null 2>&1)"; then
+    printf '%s\n' "$gate_out" | tail -n 20
+    die 1 "gate failed"
+  fi
+  [ "$(git -C "$worktree" rev-parse HEAD)" = "$head0" ] && [ -z "$(git -C "$worktree" status --porcelain)" ] \
+    || die 1 "the gate changed the worktree; commit nothing from a gate"
+fi
+
+# Steps 3-5 repeat when origin/main moves during the CI wait, at most 3 times.
 # lease is the branch SHA last known on the remote: head0, then each pushed pin.
 lease="$head0" retries=0
 while :; do
-  # Step 2: rebase onto origin/main when it moved.
+  # Step 3: rebase onto origin/main when it moved.
   if ! git -C "$worktree" merge-base --is-ancestor origin/main HEAD; then
     say "rebasing $branch onto origin/main"
     if ! git -C "$worktree" rebase origin/main >&2; then
@@ -102,20 +116,9 @@ while :; do
   fi
   pin="$(git -C "$worktree" rev-parse HEAD)"
 
-  # Step 3: the patch under review is the patch about to merge (review-loop's Identity rule).
+  # Step 4: the patch under review is the patch about to merge (review-loop's Identity rule).
   [ "$(patch_id "$reviewed")" = "$(patch_id "$pin")" ] \
     || die 4 "patch-id of the PR differs from --reviewed $reviewed; the change needs a new verdict"
-
-  # Step 4: the gate checks code; it never changes what was reviewed.
-  if [ -n "$gate" ]; then
-    say "running gate"
-    if ! gate_out="$(cd "$worktree" && bash -c "$gate" </dev/null 2>&1)"; then
-      printf '%s\n' "$gate_out" | tail -n 20
-      die 1 "gate failed"
-    fi
-    [ "$(git -C "$worktree" rev-parse HEAD)" = "$pin" ] && [ -z "$(git -C "$worktree" status --porcelain)" ] \
-      || die 1 "the gate changed the worktree; commit nothing from a gate"
-  fi
 
   # Step 5: push a rebased branch, then wait for CI on exactly that head.
   if [ "$pin" != "$lease" ]; then
