@@ -19,7 +19,7 @@ You are the orchestrator for one ticket. The **main orchestrator** is the sessio
 
 Take it when the root cause is **confirmed**: a red test, or a `diagnosing-bugs` result, names the faulty code, and the fix stays in that one file plus its test. A small diff whose cause is a guess takes the full path. The cause decides, not the size.
 
-Run step 1, skip steps 2–3, then build in a worktree cut from `origin/main`. The fence is the file and its test. First write the test so it goes red, then the fix: inline when **Fix by churn** allows, otherwise as a gated job whose brief names the cause, the fence and the gate. Then run steps 5–9 as written. Leave the fast path for step 2 when the fix spreads past the fence or the test won't go red.
+Run step 1, skip steps 2–3, then build in a worktree cut from `origin/main`. The fence is the file and its test, and it stands in for the plan's Files in the gate. Use an existing confirming test, or add one that goes red before the fix. Make the fix inline when **Fix by churn** allows, otherwise as a gated job whose brief names the cause, the fence and the gate, and has the job push, open a draft PR with the ticket's `Resolves` line, and report its URL and head SHA. Inline, do those three yourself. Then run steps 5–9 as written. Leave the fast path for step 2 when the fix spreads past the fence or the test won't go red.
 
 ### 1. Check setup
 
