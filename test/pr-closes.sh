@@ -109,8 +109,10 @@ check "$(pr_json 'Thing' $'Resolves #1\nthis closes\n#6')"
 (
   gh() ( exit 1 )
   export -f gh
-  bash "$PRC" 12 >/dev/null 2>&1; [ "$?" = "2" ] || fail "repo discovery failure exits 2"
-  bash "$PRC" 12 --repo o/r >/dev/null 2>&1; [ "$?" = "2" ] || fail "PR read failure exits 2"
+  err="$(bash "$PRC" 12 2>&1 >/dev/null)"; [ "$?" = "2" ] || fail "repo discovery failure exits 2"
+  grep -q 'cannot find the repo' <<<"$err" || fail "repo discovery failure names it: [$err]"
+  err="$(bash "$PRC" 12 --repo o/r 2>&1 >/dev/null)"; [ "$?" = "2" ] || fail "PR read failure exits 2"
+  grep -q 'cannot read PR 12 in o/r' <<<"$err" || fail "PR read failure names it: [$err]"
 ) || exit 1
 
 # bad usage exits 2
