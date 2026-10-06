@@ -34,6 +34,7 @@ rd() { [ -e "$ST/$1" ] && cat "$ST/$1" || echo "$2"; }
 case "$sub" in
   view)
     [ ! -e "$ST/view-fail" ] || exit 1
+    case " $* " in *" --json body "*) [ ! -e "$ST/body-fail" ] || exit 1;; esac
     if h="$(git --git-dir="$ORIGIN" rev-parse refs/heads/feature 2>/dev/null)"; then
       echo "$h" >"$ST/lasthead"
     else
@@ -41,9 +42,9 @@ case "$sub" in
     fi
     state="$(rd state OPEN)"
     json="$(jq -nc --arg h "$h" --arg s "$state" --arg d "$(rd draft false)" --arg ms "$(rd merge-state CLEAN)" --arg b "$(rd body 'Resolves #97')" \
-      --argjson c "$(rd commits '[]')" --arg m "$MERGE_SHA" \
+      --argjson bn "$([ -e "$ST/body-null" ] && echo true || echo false)" --argjson c "$(rd commits '[]')" --arg m "$MERGE_SHA" \
       '{state:$s, headRefName:"feature", headRefOid:$h, isDraft:($d=="true"), mergeStateStatus:$ms,
-        title:"t", body:$b, commits:$c, mergeCommit:(if $s=="MERGED" then {oid:$m} else null end)}')"
+        title:"t", body:(if $bn then null else $b end), commits:$c, mergeCommit:(if $s=="MERGED" then {oid:$m} else null end)}')"
     jq=""
     while [ $# -gt 0 ]; do [ "$1" = "--jq" ] && jq="$2"; shift; done
     if [ -n "$jq" ]; then jq -r "$jq" <<<"$json"; else echo "$json"; fi;;
@@ -214,6 +215,62 @@ setup; echo 'Resolves #97. also fixes #9' >"$ST/body"
 ship; expect 5 "stray closing keyword"; no_merge "pr-closes"
 grep -q '^#9 body: fixes #9$' <<<"$OUT" || fail "stray line printed: [$OUT]"
 [ -d "$WT" ] || fail "worktree kept on exit 5"
+
+# ===== --body-has: required PR body lines, checked before any rebase, push or CI call
+setup
+for args in "--body-has" "--body-has ''" ; do
+  # shellcheck disable=SC2086
+  eval "ship $args"; expect 2 "usage [$args]"; untouched "usage [$args]"
+  grep -q '^usage: ship-pr' <<<"$ERR" || fail "usage text for [$args]: [$ERR]"
+done
+ship --body-has "$(printf 'a\nb')"; expect 2 "newline prefix"; untouched "newline prefix"
+grep -q '^usage: ship-pr' <<<"$ERR" || fail "usage text for newline prefix: [$ERR]"
+[ ! -e "$ST/gh.log" ] || fail "bad --body-has makes no gh call"
+
+printf 'Resolves #97\nDoc friction: none\n' >"$ST/body"
+ship --body-has 'Resolves #' --body-has 'Doc friction:'; expect 0 "body has every line"
+
+# nothing_ran <name>: exit 5 left origin and worktree alone, made no CI call, kept the worktree.
+nothing_ran() {
+  expect 5 "$1"; untouched "$1"; no_merge "$1"
+  ! grep -q '^gh pr checks' "$ST/gh.log" || fail "$1: no CI call"
+  [ -d "$WT" ] || fail "$1: worktree kept"
+}
+setup; advance_main other.txt o; printf 'Resolves #97\n' >"$ST/body"
+ship --body-has 'Resolves #' --body-has 'Doc friction:'; nothing_ran "one line missing"
+[ "$OUT" = "missing body line: Doc friction:" ] || fail "one missing line printed: [$OUT]"
+grep -q 'PR body lacks required lines; edit the PR body, then rerun' <<<"$ERR" || fail "miss message: [$ERR]"
+
+setup; printf 'x\n' >"$ST/body"
+ship --body-has 'Resolves #' --body-has 'Doc friction:'; nothing_ran "two lines missing"
+[ "$OUT" = "missing body line: Resolves #
+missing body line: Doc friction:" ] || fail "both missing lines printed: [$OUT]"
+
+for b in '  Doc friction: x' 'doc friction: x' 'see Doc friction: x'; do
+  setup; printf '%s\n' "$b" >"$ST/body"
+  ship --body-has 'Doc friction:'; nothing_ran "no match for [$b]"
+done
+setup; printf 'Resolves #97\nab\n' >"$ST/body"
+ship --body-has 'Resolves #[0-9]*' --body-has 'a.b' --body-has '*'; nothing_ran "glob and regex are literal"
+[ "$(wc -l <<<"$OUT")" -eq 3 ] || fail "all three literal prefixes missing: [$OUT]"
+setup; printf 'Resolves #[0-9]*: x\na.b\n* item\n' >"$ST/body"
+ship --body-has 'Resolves #[0-9]*' --body-has 'a.b' --body-has '*'; expect 0 "literal glob and regex prefixes match"
+
+setup; printf 'Resolves #97\r\nDoc friction: none\r\n' >"$ST/body"
+ship --body-has 'Resolves #97' --body-has 'Doc friction: none'; expect 0 "CRLF body"
+setup; printf 'Resolves #97\nDoc friction: none' >"$ST/body"
+ship --body-has 'Doc friction: none'; expect 0 "no trailing newline"
+
+setup; touch "$ST/body-fail"
+ship --body-has 'Resolves #'; expect 2 "body read failure"; untouched "body read failure"
+grep -q 'cannot read PR 7 body' <<<"$ERR" || fail "body read message: [$ERR]"
+setup; touch "$ST/body-null"
+ship --body-has null; nothing_ran "null body"
+setup; : >"$ST/body"
+ship --body-has x; nothing_ran "empty body"
+
+setup; ship; expect 0 "no --body-has"
+! grep -q -- '--json body' "$ST/gh.log" || fail "no --body-has: no body read before pr-closes"
 
 # ===== merge and cleanup
 setup; echo true >"$ST/draft"
