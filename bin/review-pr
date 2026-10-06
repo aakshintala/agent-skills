@@ -380,11 +380,11 @@ cmd_collect() {
       wt="$(state_get "$sf" worktree 2>/dev/null || true)"
       wclone="$(state_get "$sf" clone 2>/dev/null || true)"
       [ -n "$wt" ] || continue
+      # Remove through the worktree itself, so its registration goes even
+      # when the clone start ran in is gone.
+      git -C "$wt" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
       if [ -n "$wclone" ]; then
-        git -C "$wclone" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
         git -C "$wclone" worktree prune >/dev/null 2>&1 || true
-      else
-        rm -rf "$wt"
       fi
     done
     for sf in ${state_rm[@]+"${state_rm[@]}"}; do
