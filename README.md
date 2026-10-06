@@ -33,7 +33,10 @@ Delegated work runs through the `delegate` CLI in `delegate/`, a Rust binary tha
 
 ## Working on it
 
-Branch, open a PR, squash merge. CI (`ci`) runs `test/run` and delegate's format, lint and tests, and must pass on a head up to date with `main`. Several skills are adapted from other MIT-licensed projects; each says so in a comment at the top and carries its upstream licence beside it.
+Branch, open a PR, squash merge. CI (`ci`) runs `test/run` and delegate's format, lint and tests, and must pass on a head up to date with `main`.
+
+- **Gate:** `test/run && bin/check-pack`, plus `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` in `delegate/` when it changes. `test/run` takes 2–3 minutes: run it in the foreground with a 600 s timeout, never in a background shell that a 120 s tool cap ends.
+- **Merge:** squash, once a reviewer from a family other than the author's has approved the head's patch-id, CI is green and `pr-closes` prints OK. Use `bin/ship-pr`. Several skills are adapted from other MIT-licensed projects; each says so in a comment at the top and carries its upstream licence beside it.
 
 ## Licence
 
