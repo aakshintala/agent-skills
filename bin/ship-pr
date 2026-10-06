@@ -15,6 +15,9 @@
 #        Exit 0 merged, 1 gate/CI/push/merge failure, 2 bad usage or a failed
 #        precondition, 3 rebase conflict (aborted) or a conflict `gh-ci wait` found after the push, 4 patch-id mismatch (needs a new
 #        verdict), 5 PR text needs a fix (missing --body-has lines, or stray closing keywords from pr-closes), 124 CI wait timeout.
+#        When origin/main moves during the CI wait, ship-pr goes back to the rebase
+#        (gate, push and CI wait again), at most 3 times; the 4th move exits 1.
+#        --timeout bounds each CI wait, so a run can take up to 4 gates and 4 CI waits.
 #        SHIP_PR_INTERVAL: seconds between MERGED polls (default 5, at most 12 polls).
 set -euo pipefail
 
@@ -79,59 +82,68 @@ if [ "${#body_has[@]}" -gt 0 ]; then
   [ "$missing" = 0 ] || die 5 "PR body lacks required lines; edit the PR body, then rerun"
 fi
 
-# Step 2: rebase onto origin/main when it moved.
-if ! git -C "$worktree" merge-base --is-ancestor origin/main HEAD; then
-  say "rebasing $branch onto origin/main"
-  if ! git -C "$worktree" rebase origin/main >&2; then
-    git -C "$worktree" rebase --abort >&2 || true
-    die 3 "rebase onto origin/main conflicts; resolve it, then rerun"
-  fi
-fi
-pin="$(git -C "$worktree" rev-parse HEAD)"
-
-# Step 3: the patch under review is the patch about to merge (review-loop's Identity rule).
 patch_id() {
   local id
   id="$(git -C "$worktree" diff "origin/main...$1" | git patch-id --stable | awk '{print $1}')"
   echo "${id:-none}"
 }
-[ "$(patch_id "$reviewed")" = "$(patch_id "$pin")" ] \
-  || die 4 "patch-id of the PR differs from --reviewed $reviewed; the change needs a new verdict"
 
-# Step 4: the gate checks code; it never changes what was reviewed.
-if [ -n "$gate" ]; then
-  say "running gate"
-  if ! gate_out="$(cd "$worktree" && bash -c "$gate" </dev/null 2>&1)"; then
-    printf '%s\n' "$gate_out" | tail -n 20
-    die 1 "gate failed"
+# Steps 2-5 repeat when origin/main moves during the CI wait, at most 3 times.
+# lease is the branch SHA last known on the remote: head0, then each pushed pin.
+lease="$head0" retries=0
+while :; do
+  # Step 2: rebase onto origin/main when it moved.
+  if ! git -C "$worktree" merge-base --is-ancestor origin/main HEAD; then
+    say "rebasing $branch onto origin/main"
+    if ! git -C "$worktree" rebase origin/main >&2; then
+      git -C "$worktree" rebase --abort >&2 || true
+      die 3 "rebase onto origin/main conflicts; resolve it, then rerun"
+    fi
   fi
-  [ "$(git -C "$worktree" rev-parse HEAD)" = "$pin" ] && [ -z "$(git -C "$worktree" status --porcelain)" ] \
-    || die 1 "the gate changed the worktree; commit nothing from a gate"
-fi
+  pin="$(git -C "$worktree" rev-parse HEAD)"
 
-# Step 5: push a rebased branch, then wait for CI on exactly that head.
-if [ "$pin" != "$head0" ]; then
-  say "pushing rebased $branch"
-  git -C "$worktree" push -q --force-with-lease="$branch:$head0" origin "HEAD:refs/heads/$branch" >&2 \
-    || die 1 "push of rebased $branch failed"
-fi
-say "waiting for CI"
-rc=0
-ci_out="$(GH_CI_REPO="$repo" "$here/gh-ci" wait "$pr" --timeout "$timeout" 2>&1)" || rc=$?
-if [ "$rc" -ne 0 ]; then
-  printf '%s\n' "$ci_out"
-  case "$rc" in
-    124) exit 124 ;;
-    3) die 3 "PR conflicts with origin/main after the push; rebase again, then rerun" ;;
-    *) exit 1 ;;
-  esac
-fi
-grep -q "^head: ${pin:0:8} " <<<"$ci_out" || { printf '%s\n' "$ci_out"; die 1 "CI passed on a head other than ${pin:0:8}"; }
+  # Step 3: the patch under review is the patch about to merge (review-loop's Identity rule).
+  [ "$(patch_id "$reviewed")" = "$(patch_id "$pin")" ] \
+    || die 4 "patch-id of the PR differs from --reviewed $reviewed; the change needs a new verdict"
 
-# Up to date at merge: CI "must pass on a head up to date with main".
-git -C "$worktree" fetch -q origin +refs/heads/main:refs/remotes/origin/main >&2 || die 1 "git fetch origin main failed"
-git -C "$worktree" merge-base --is-ancestor origin/main "$pin" \
-  || die 1 "origin/main moved during CI; rerun ship-pr"
+  # Step 4: the gate checks code; it never changes what was reviewed.
+  if [ -n "$gate" ]; then
+    say "running gate"
+    if ! gate_out="$(cd "$worktree" && bash -c "$gate" </dev/null 2>&1)"; then
+      printf '%s\n' "$gate_out" | tail -n 20
+      die 1 "gate failed"
+    fi
+    [ "$(git -C "$worktree" rev-parse HEAD)" = "$pin" ] && [ -z "$(git -C "$worktree" status --porcelain)" ] \
+      || die 1 "the gate changed the worktree; commit nothing from a gate"
+  fi
+
+  # Step 5: push a rebased branch, then wait for CI on exactly that head.
+  if [ "$pin" != "$lease" ]; then
+    say "pushing rebased $branch"
+    git -C "$worktree" push -q --force-with-lease="$branch:$lease" origin "HEAD:refs/heads/$branch" >&2 \
+      || die 1 "push of rebased $branch failed"
+    lease="$pin"
+  fi
+  say "waiting for CI"
+  rc=0
+  ci_out="$(GH_CI_REPO="$repo" "$here/gh-ci" wait "$pr" --timeout "$timeout" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "$ci_out"
+    case "$rc" in
+      124) exit 124 ;;
+      3) die 3 "PR conflicts with origin/main after the push; rebase again, then rerun" ;;
+      *) exit 1 ;;
+    esac
+  fi
+  grep -q "^head: ${pin:0:8} " <<<"$ci_out" || { printf '%s\n' "$ci_out"; die 1 "CI passed on a head other than ${pin:0:8}"; }
+
+  # Up to date at merge: CI "must pass on a head up to date with main".
+  git -C "$worktree" fetch -q origin +refs/heads/main:refs/remotes/origin/main >&2 || die 1 "git fetch origin main failed"
+  git -C "$worktree" merge-base --is-ancestor origin/main "$pin" && break
+  [ "$retries" -lt 3 ] || die 1 "origin/main moved during CI after 3 retries; rerun ship-pr"
+  retries=$((retries + 1))
+  say "origin/main moved during CI; rebasing again (retry $retries of 3)"
+done
 
 # Step 6: no stray closing keywords. Commit-message-only matches are the caller's call.
 rc=0

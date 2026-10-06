@@ -50,6 +50,7 @@ case "$sub" in
     if [ -n "$jq" ]; then jq -r "$jq" <<<"$json"; else echo "$json"; fi;;
   checks)
     if [ -e "$ST/checks-hook" ]; then bash "$ST/checks-hook"; rm -f "$ST/checks-hook"; fi
+    if [ -e "$ST/checks-each" ]; then bash "$ST/checks-each"; fi
     resp="$(cat "$ST/checks")"
     printf '%s\n' "$resp"
     case "$resp" in
@@ -81,8 +82,8 @@ export PATH="$T/fakebin:$PATH"
 # --- fixture: main with file.txt, feature (one commit) pushed and checked out in $WT.
 setup() {
   S="$T/case"; rm -rf "$S"; mkdir -p "$S/st"
-  export ST="$S/st" ORIGIN="$S/origin.git" MERGE_SHA
   WT="$S/wt"; C="$S/clone"
+  export ST="$S/st" ORIGIN="$S/origin.git" MERGE_SHA C
   git init -q --bare -b main "$ORIGIN"
   git init -q -b main "$C"
   git -C "$C" remote add origin "$ORIGIN"
@@ -111,6 +112,10 @@ advance_main() {
 }
 # checks_hook <shell>: runs once, inside the first `gh pr checks`.
 checks_hook() { printf '%s\n' "$1" >"$ST/checks-hook"; }
+# checks_each <shell>: runs inside every `gh pr checks`.
+checks_each() { printf '%s\n' "$1" >"$ST/checks-each"; }
+# BUMP_MAIN: an empty commit on origin's main, without a checkout.
+BUMP_MAIN='git --git-dir="$ORIGIN" update-ref refs/heads/main "$(git --git-dir="$ORIGIN" commit-tree "refs/heads/main^{tree}" -p refs/heads/main -m b)"'
 
 OUT=""; ERR=""; CODE=0
 run() {
@@ -215,10 +220,48 @@ setup; checks_hook 'git --git-dir="$ORIGIN" update-ref refs/heads/feature "$(git
 ship; expect 1 "CI passes on a moved head"; no_merge "moved head"
 grep -q 'other than' <<<"$ERR" || fail "moved head message: [$ERR]"
 
-setup; checks_hook 'git --git-dir="$ORIGIN" update-ref refs/heads/main "$(git --git-dir="$ORIGIN" commit-tree "refs/heads/main^{tree}" -p refs/heads/main -m b)"'
-ship; expect 1 "origin/main moved during CI"; no_merge "main moved"
-grep -q 'origin/main moved during CI; rerun ship-pr' <<<"$ERR" || fail "main moved message: [$ERR]"
-[ -d "$WT" ] || fail "worktree kept when main moved"
+# main moving during the CI wait sends ship-pr back to the rebase, at most 3 times
+setup; checks_hook "$BUMP_MAIN"
+ship; expect 0 "main moves once during CI"
+grep -q 'origin/main moved during CI; rebasing again (retry 1 of 3)' <<<"$ERR" || fail "retry message: [$ERR]"
+PIN="$(sed -n 's/.*--match-head-commit //p' "$ST/gh.log")"
+[ -n "$PIN" ] && git --git-dir="$ORIGIN" merge-base --is-ancestor refs/heads/main "$PIN" \
+  || fail "merge pinned to a head that descends from the moved main: [$PIN]"
+[ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 2 ] || fail "two CI waits"
+
+# the second push leases against the first pushed head, not the PR head read at the start
+setup; advance_main other.txt o; checks_hook "$BUMP_MAIN"
+ship; expect 0 "initial rebase, then main moves during CI"
+grep -q 'retry 1 of 3' <<<"$ERR" || fail "retry after an initial rebase: [$ERR]"
+
+setup; checks_each "$BUMP_MAIN"
+ship; expect 1 "main moves on every CI wait"; no_merge "main moves every wait"
+grep -q 'origin/main moved during CI after 3 retries; rerun ship-pr' <<<"$ERR" || fail "exhaustion message: [$ERR]"
+for k in 1 2 3; do grep -q "retry $k of 3" <<<"$ERR" || fail "retry $k line: [$ERR]"; done
+! grep -q 'retry 4' <<<"$ERR" || fail "no fourth retry: [$ERR]"
+[ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 4 ] || fail "exactly 4 CI waits"
+[ -d "$WT" ] || fail "worktree kept when main keeps moving"
+
+setup
+echo changed >"$WT/file.txt"; git -C "$WT" commit -qam "touch file"; git -C "$WT" push -q origin feature
+HEAD0="$(git -C "$WT" rev-parse HEAD)"
+checks_hook 'echo conflicting >"$C/file.txt"; git -C "$C" commit -qam m; git -C "$C" push -q origin main'
+ship; expect 3 "main moves during CI with a conflicting change"; no_merge "conflict on retry"
+for d in rebase-merge rebase-apply; do
+  [ ! -e "$(git -C "$WT" rev-parse --git-path $d)" ] || fail "retry conflict leaves no $d"
+done
+[ -z "$(git -C "$WT" status --porcelain)" ] || fail "retry conflict leaves a clean tree"
+
+setup
+sed -i.bak 1s/a/x/ "$WT/file.txt"; rm "$WT/file.txt.bak"
+git -C "$WT" commit -qam "edit line 1"; git -C "$WT" push -q origin feature
+HEAD0="$(git -C "$WT" rev-parse HEAD)"
+checks_hook 'sed -i.bak 3s/c/z/ "$C/file.txt"; rm "$C/file.txt.bak"; git -C "$C" commit -qam m; git -C "$C" push -q origin main'
+ship; expect 4 "main moves during CI with a clean rebase that changes the patch"; no_merge "patch-id on retry"
+
+setup; checks_hook 'echo n >"$C/newfile.txt"; git -C "$C" add .; git -C "$C" commit -qm m; git -C "$C" push -q origin main'
+ship --gate 'test ! -e newfile.txt'; expect 1 "gate fails on the retry cycle only"; no_merge "gate on retry"
+grep -q 'gate failed' <<<"$ERR" || fail "retry gate message: [$ERR]"
 
 # ===== exit 5: stray closing keywords
 setup; echo 'Resolves #97. also fixes #9' >"$ST/body"
