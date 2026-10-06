@@ -228,7 +228,13 @@ fn supervisor_rss_kb(pid: i32) -> u64 {
 }
 
 /// Budgets are ~3x macOS medians; GitHub's Linux runners need 4x more headroom (#31).
+/// Wall-clock budgets fail on a loaded machine, so they are asserted only when
+/// `DELEGATE_WALL_BUDGETS` is set: CI sets it; set it locally on a quiet machine (#118).
 fn assert_wall_ms(cmd: &str, ms: u128, budget: u128) {
+    if std::env::var_os("DELEGATE_WALL_BUDGETS").is_none() {
+        eprintln!("{cmd} took {ms}ms, budget {budget}ms (not asserted; set DELEGATE_WALL_BUDGETS)");
+        return;
+    }
     let budget = if std::env::var_os("CI").is_some() {
         budget * 4
     } else {

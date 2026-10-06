@@ -188,7 +188,10 @@ fn pi_run_stays_running_until_released() {
     let e = Env::new("slow");
     let id = e.run_write("SLOW do it");
     until("RUNNING", || e.record(&id)["status"] == "RUNNING");
-    until("argv", || e.dir.join("argv.txt").exists());
+    // The fake pi writes argv one line at a time; `---` ends the block.
+    until("argv", || {
+        std::fs::read_to_string(e.dir.join("argv.txt")).is_ok_and(|s| s.lines().any(|l| l == "---"))
+    });
     let argv = e.argv();
     let sid = argv.windows(2).find(|w| w[0] == "--session-id").unwrap()[1].clone();
     assert_eq!(e.record(&id)["resume"]["sessionId"], sid.as_str());
