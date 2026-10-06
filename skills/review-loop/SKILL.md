@@ -21,7 +21,7 @@ The loop for one PR. Reviews run on models from a different family than the PR's
 ~/.agents/bin/review-pr collect <job-id>...
 ```
 
-It posts both reviews on the PR with the patch-id, and prints only the verdicts, findings, CI state, and any job that didn't finish. An `UNFINISHED` line means that review didn't run: start again, and read nothing in its absence as approval. A `BAD-VERDICT` line names a reviewer line outside the shared vocabulary: treat it as no verdict and start again.
+Pass every job id that `start` printed, in one call: a full `collect` removes the run's worktrees, and a run you never collect in full leaks them into the clone. It posts both reviews on the PR with the patch-id, and prints only the verdicts, findings, CI state, and any job that didn't finish. An `UNFINISHED` line means that review didn't run: start again only after this full collect, and read nothing in its absence as approval. A `BAD-VERDICT` line names a reviewer line outside the shared vocabulary: treat it as no verdict and start again.
 
 Done when both reviews have verdict lines for the current patch-id.
 
