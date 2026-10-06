@@ -153,7 +153,9 @@ STATUS: DONE" 0
 start_out="$(start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
   --model M --overbuild-model M2 2>"$T/stderr.txt")" || fail "start exits 0"
 [ "$start_out" = "review job-review
-overbuild job-overbuild" ] || fail "start prints one role id line per job: [$start_out]"
+overbuild job-overbuild
+watch: delegate watch job-review job-overbuild
+collect: review-pr collect job-review job-overbuild" ] || fail "start prints a role id line per job, then watch and collect with the ids: [$start_out]"
 [ ! -e "$T/state/comment.md" ] || fail "start posts no comment"
 [ -f "$TMPDIR/review-pr/job-review" ] || fail "start saves state findable by job id"
 [ -f "$TMPDIR/review-pr/job-overbuild" ] || fail "start saves state for every job"
@@ -303,7 +305,9 @@ FIX-OK all repaired
 STATUS: DONE" 0
 start_out="$(start_review 7 --repo O/N --cwd "$T/clone" --model M \
   --verify "$T/findings.txt" --since "$FAKE_SHA" 2>"$T/stderr4.txt")" || fail "verify start exits 0"
-[ "$start_out" = "verify job-verify" ] || fail "verify start prints its job id: [$start_out]"
+[ "$start_out" = "verify job-verify
+watch: delegate watch job-verify
+collect: review-pr collect job-verify" ] || fail "verify start prints its job id, then watch and collect: [$start_out]"
 out="$("$REVIEW" collect job-verify 2>/dev/null)" || fail "verify collect exits 0"
 grep -q "^FIX-OK all repaired$" <<<"$out" || fail "verify carries FIX-OK line"
 grep -q "^CI $SHORT pending$" <<<"$out" || fail "verify pending CI line"
