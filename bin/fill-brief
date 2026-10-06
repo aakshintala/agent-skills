@@ -89,12 +89,7 @@ while [ "$i" -lt "$nkeys" ]; do
       vals[$i]="${vv%x}"
       ;;
   esac
-  i=$((i + 1))
-done
-
-# PARENT is the parent's session name: an empty one is a failure, never a fallback.
-i=0
-while [ "$i" -lt "$nkeys" ]; do
+  # PARENT is the parent's session name: an empty one is a failure, never a fallback.
   if [ "${keys[$i]}" = "PARENT" ] && [ -z "${vals[$i]}" ]; then
     add_error "empty value: PARENT"
   fi
