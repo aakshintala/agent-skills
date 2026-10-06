@@ -10,7 +10,7 @@ Started from [mattpocock/skills](https://github.com/mattpocock/skills) and rewor
 | --- | --- |
 | `skills/` | One folder per skill: `SKILL.md`, plus brief templates in `briefs/` where the skill starts other jobs. |
 | `delegate/` | The `delegate` CLI (Rust): runs a brief on another model and reports a job record. |
-| `bin/` | Scripts the skills call: `fill-brief`, `review-pr`, `gh-ci`, `pr-closes`, `check-pack`. |
+| `bin/` | Scripts the skills call: `fill-brief`, `review-pr`, `gh-ci`, `pr-closes`, `ship-pr`, `check-pack`. |
 | `test/` | Tests for the scripts. `test/run` runs every suite. |
 | `docs/agents/` | This repo's own setup for the skills: issue tracker, triage labels, workflow doc. |
 

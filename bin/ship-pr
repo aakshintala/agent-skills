@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# ship-pr: run a reviewed PR's merge tail in one command.
+# Usage: ship-pr <pr> --repo OWNER/NAME --reviewed <sha> --worktree <path> [--gate '<cmd>'] [--timeout <s>]
+#        Run it after review-loop has a verdict on <sha>. In order: check the PR is
+#        open and its head branch is checked out clean in --worktree; rebase onto
+#        origin/main if it moved; compare the PR diff's `git patch-id --stable` with
+#        <sha>'s; run --gate in the worktree; push a rebased branch with
+#        --force-with-lease and `gh-ci wait` (--timeout, default 1800); run
+#        pr-closes; mark a draft ready and squash-merge pinned to the checked head;
+#        wait for MERGED; remove the worktree and the local and remote branch.
+#        Prints `merged <squash sha>` on success. Progress goes to stderr.
+#        Exit 0 merged, 1 gate/CI/push/merge failure, 2 bad usage or a failed
+#        precondition, 3 rebase conflict (aborted), 4 patch-id mismatch (needs a new
+#        verdict), 5 pr-closes found stray closing keywords, 124 CI wait timeout.
+#        SHIP_PR_INTERVAL: seconds between MERGED polls (default 5, at most 12 polls).
+set -euo pipefail
+
+usage() {
+  echo "usage: ship-pr <pr> --repo OWNER/NAME --reviewed <sha> --worktree <path> [--gate '<cmd>'] [--timeout <s>]" >&2
+  exit 2
+}
+say() { echo "ship-pr: $*" >&2; }
+die() { local code="$1"; shift; say "$*"; exit "$code"; }
+
+[ $# -ge 1 ] || usage
+pr="$1"; shift
+case "$pr" in ''|*[!0-9]*) usage ;; esac
+repo="" reviewed="" worktree="" gate="" timeout=1800
+while [ $# -gt 0 ]; do
+  [ $# -ge 2 ] || usage
+  case "$1" in
+    --repo) repo="$2" ;;
+    --reviewed) reviewed="$2" ;;
+    --worktree) worktree="$2" ;;
+    --gate) gate="$2" ;;
+    --timeout) timeout="$2" ;;
+    *) usage ;;
+  esac
+  shift 2
+done
+[ -n "$repo" ] && [ -n "$reviewed" ] && [ -n "$worktree" ] || usage
+case "$timeout" in ''|*[!0-9]*) usage ;; esac
+
+here="$(cd "$(dirname "$0")" && pwd)"
+
+# Step 1: the PR is open, its branch is checked out clean at the PR head.
+info="$(gh pr view "$pr" --repo "$repo" --json state,headRefName,headRefOid,isDraft \
+  --jq '[.state, .headRefName, .headRefOid, .isDraft] | @tsv')" \
+  || die 2 "cannot read PR $pr in $repo"
+IFS=$'\t' read -r state branch head0 draft <<<"$info"
+[ "$state" = "OPEN" ] || die 2 "PR $pr is $state, not OPEN"
+worktree="$(cd "$worktree" 2>/dev/null && pwd -P)" || die 2 "no such worktree: $worktree"
+git -C "$worktree" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die 2 "$worktree is not a git checkout"
+[ "$(git -C "$worktree" symbolic-ref --short -q HEAD || true)" = "$branch" ] \
+  || die 2 "$worktree does not have $branch checked out"
+[ -z "$(git -C "$worktree" status --porcelain)" ] || die 2 "$worktree has uncommitted changes"
+git -C "$worktree" fetch -q origin >&2 || die 1 "git fetch origin failed"
+[ "$(git -C "$worktree" rev-parse HEAD)" = "$head0" ] \
+  || die 2 "$worktree HEAD is not the PR head $head0; pull or push first"
+git -C "$worktree" rev-parse --verify -q "$reviewed^{commit}" >/dev/null \
+  || die 2 "--reviewed $reviewed is not a commit in $worktree"
+
+# Step 2: rebase onto origin/main when it moved.
+if ! git -C "$worktree" merge-base --is-ancestor origin/main HEAD; then
+  say "rebasing $branch onto origin/main"
+  if ! git -C "$worktree" rebase origin/main >&2; then
+    git -C "$worktree" rebase --abort >&2 || true
+    die 3 "rebase onto origin/main conflicts; resolve it, then rerun"
+  fi
+fi
+pin="$(git -C "$worktree" rev-parse HEAD)"
+
+# Step 3: the patch under review is the patch about to merge (review-loop's Identity rule).
+patch_id() {
+  local id
+  id="$(git -C "$worktree" diff "origin/main...$1" | git patch-id --stable | awk '{print $1}')"
+  echo "${id:-none}"
+}
+[ "$(patch_id "$reviewed")" = "$(patch_id "$pin")" ] \
+  || die 4 "patch-id of the PR differs from --reviewed $reviewed; the change needs a new verdict"
+
+# Step 4: the gate checks code; it never changes what was reviewed.
+if [ -n "$gate" ]; then
+  say "running gate"
+  if ! gate_out="$(cd "$worktree" && bash -c "$gate" </dev/null 2>&1)"; then
+    printf '%s\n' "$gate_out" | tail -n 20
+    die 1 "gate failed"
+  fi
+  [ "$(git -C "$worktree" rev-parse HEAD)" = "$pin" ] && [ -z "$(git -C "$worktree" status --porcelain)" ] \
+    || die 1 "the gate changed the worktree; commit nothing from a gate"
+fi
+
+# Step 5: push a rebased branch, then wait for CI on exactly that head.
+if [ "$pin" != "$head0" ]; then
+  say "pushing rebased $branch"
+  git -C "$worktree" push -q --force-with-lease="$branch:$head0" origin "HEAD:refs/heads/$branch" >&2 \
+    || die 1 "push of rebased $branch failed"
+fi
+say "waiting for CI"
+rc=0
+ci_out="$(GH_CI_REPO="$repo" "$here/gh-ci" wait "$pr" --timeout "$timeout" 2>&1)" || rc=$?
+if [ "$rc" -ne 0 ]; then
+  printf '%s\n' "$ci_out"
+  case "$rc" in 124) exit 124 ;; *) exit 1 ;; esac
+fi
+grep -q "^head: ${pin:0:8} " <<<"$ci_out" || { printf '%s\n' "$ci_out"; die 1 "CI passed on a head other than ${pin:0:8}"; }
+
+# Up to date at merge: CI "must pass on a head up to date with main".
+git -C "$worktree" fetch -q origin +refs/heads/main:refs/remotes/origin/main >&2 || die 1 "git fetch origin main failed"
+git -C "$worktree" merge-base --is-ancestor origin/main "$pin" \
+  || die 1 "origin/main moved during CI; rerun ship-pr"
+
+# Step 6: no stray closing keywords. Commit-message-only matches are the caller's call.
+rc=0
+closes_out="$("$here/pr-closes" "$pr" --repo "$repo" 2>/dev/null)" || rc=$?
+case "$rc" in
+  0) ;;
+  1) printf '%s\n' "$closes_out"; exit 5 ;;
+  *) die 1 "pr-closes failed (exit $rc)" ;;
+esac
+
+# Step 7: merge pinned to the checked head, then wait for GitHub to say MERGED.
+if [ "$draft" = "true" ]; then
+  say "marking PR $pr ready"
+  gh pr ready "$pr" --repo "$repo" >&2 || die 1 "gh pr ready failed"
+fi
+say "merging PR $pr at ${pin:0:8}"
+gh pr merge "$pr" --repo "$repo" --squash --match-head-commit "$pin" >&2 || die 1 "gh pr merge failed"
+merged="" sha=""
+for i in $(seq 1 12); do
+  IFS=$'\t' read -r state sha < <(gh pr view "$pr" --repo "$repo" --json state,mergeCommit \
+    --jq '[.state, (.mergeCommit.oid // "-")] | @tsv' 2>/dev/null || true) || true
+  if [ "${state:-}" = "MERGED" ]; then merged=1; break; fi
+  [ "$i" -lt 12 ] && sleep "${SHIP_PR_INTERVAL:-5}"
+done
+[ -n "$merged" ] || die 1 "PR $pr is not MERGED after 12 polls; worktree left in place"
+
+# Step 8: clean up from the common git dir, never from inside the worktree being removed.
+common="$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir)"
+cd "$common"
+git --git-dir="$common" worktree remove "$worktree" >&2 || say "cleanup: worktree remove failed for $worktree"
+git --git-dir="$common" branch -D "$branch" >&2 || say "cleanup: branch -D $branch failed"
+if ! del_out="$(git --git-dir="$common" push origin --delete "$branch" 2>&1)"; then
+  case "$del_out" in
+    *"remote ref does not exist"*) ;;
+    *) say "cleanup: push origin --delete $branch failed: $del_out" ;;
+  esac
+fi
+
+# Step 9
+echo "merged $sha"
