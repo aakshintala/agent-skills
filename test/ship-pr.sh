@@ -65,7 +65,17 @@ case "$sub" in
 esac
 EOF
 printf '#!/usr/bin/env bash\necho "$*" >>"$ST/sleeps.txt"\n' >"$T/fakebin/sleep"
-chmod +x "$T/fakebin/gh" "$T/fakebin/sleep"
+# --- git wrapper: with $ST/delete-fails, `push origin --delete` fails the way
+# --- GitHub's does after it auto-deletes the branch on merge.
+cat >"$T/fakebin/git" <<EOF
+#!/usr/bin/env bash
+if [ -e "\$ST/delete-fails" ] && [[ " \$* " == *" push origin --delete "* ]]; then
+  echo "error: cannot lock ref 'refs/remotes/origin/feature': unable to resolve reference" >&2
+  exit 1
+fi
+exec "$(command -v git)" "\$@"
+EOF
+chmod +x "$T/fakebin/gh" "$T/fakebin/sleep" "$T/fakebin/git"
 export PATH="$T/fakebin:$PATH"
 
 # --- fixture: main with file.txt, feature (one commit) pushed and checked out in $WT.
@@ -292,6 +302,12 @@ setup; ship; expect 0 "non-draft happy path"
 
 setup; touch "$ST/merge-deletes-branch"; ship; expect 0 "remote branch already deleted"
 grep -q 'cleanup:' <<<"$ERR" && fail "a missing remote ref counts as done: [$ERR]"
+
+setup; touch "$ST/merge-deletes-branch" "$ST/delete-fails"; ship; expect 0 "auto-deleted remote, push error"
+grep -q 'cleanup:' <<<"$ERR" && fail "a missing remote ref counts as done, whatever the push says: [$ERR]"
+
+setup; touch "$ST/delete-fails"; ship; expect 0 "remote delete fails, branch still there"
+grep -q 'cleanup: push origin --delete feature failed' <<<"$ERR" || fail "a remote branch still there is reported: [$ERR]"
 
 setup; touch "$ST/no-merge"; ship; expect 1 "never MERGED"
 [ -d "$WT" ] || fail "worktree kept when never MERGED"
