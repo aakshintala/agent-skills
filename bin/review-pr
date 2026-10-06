@@ -5,9 +5,11 @@
 #   review-pr start <pr> --repo OWNER/NAME --cwd CLONE [--issue N]... [--spec N] --model M --overbuild-model M2 [--workflow-doc PATH] [--head SHA]
 #   review-pr start <pr> --repo OWNER/NAME --cwd CLONE --model M --verify FINDINGS_FILE --since SHA [--workflow-doc PATH] [--head SHA]
 #     --since is the reviewed head; verify diffs from its repair base on current base.
-#     launches one job per review role, prints "<role> <job-id>" per job, and
-#     returns at once. Wait for the ids with the delegation tool's wait command
-#     (delegate watch), in the wait mode your harness instructions prescribe.
+#     launches one job per review role, prints "<role> <job-id>" per job, then
+#     "watch: delegate watch <id>..." and "collect: review-pr collect <id>..."
+#     with every id spelled out, and returns at once. Wait for the ids with the
+#     delegation tool's wait command (delegate watch), in the wait mode your
+#     harness instructions prescribe.
 #   review-pr collect <job-id>...
 #     posts the one PR comment with the patch-id, prints the verdict digest,
 #     removes the worktrees, and exits 1 when any job is unfinished or wrote a
@@ -323,6 +325,7 @@ cmd_start() {
     since="$repair_base"
   fi
 
+  jids=""
   for role in $roles; do
     wt="$run_dir/wt-$role"
     git -C "$clone" worktree add --detach "$wt" "$sha" >&2
@@ -363,7 +366,10 @@ cmd_start() {
     launched[${#launched[@]}]="$wt"
 
     printf '%s %s\n' "$role" "$jid"
+    jids="$jids $jid"
   done
+  printf 'watch: delegate watch%s\n' "$jids"
+  printf 'collect: review-pr collect%s\n' "$jids"
 
   started_ok="1"
   trap - EXIT
