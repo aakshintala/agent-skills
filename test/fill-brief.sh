@@ -125,6 +125,26 @@ stdout="$("$FILL" "$T/p.md" --out rel/brief.md 'A=1' 'B=2' 2>/dev/null)"; [ "$?"
 printf '__X__\n' >"$T/x.md"
 [ "$("$FILL" "$T/x.md" 'X=--out')" = "--out" ] || fail "X=--out is a KEY=VALUE"
 
+# __PARENT__: needs a non-empty PARENT value, no fallback
+printf 'parent __PARENT__ and __A__\n' >"$T/par.md"
+[ "$("$FILL" "$T/par.md" 'PARENT=orch-1' 'A=x')" = "parent orch-1 and x" ] || fail "PARENT=orch-1 fills"
+stdout="$("$FILL" "$T/par.md" 'A=x' 2>"$T/err-par.txt")"; [ "$?" = "1" ] || fail "no PARENT exits 1"
+[ -z "$stdout" ] || fail "no PARENT prints nothing on stdout"
+grep -q '^unfilled: __PARENT__$' "$T/err-par.txt" || fail "no PARENT names __PARENT__"
+stdout="$("$FILL" "$T/par.md" 'PARENT=' 'A=x' 2>"$T/err-par.txt")"; [ "$?" = "1" ] || fail "empty PARENT exits 1"
+[ -z "$stdout" ] || fail "empty PARENT prints nothing on stdout"
+grep -q '^empty value: PARENT$' "$T/err-par.txt" || fail "empty PARENT names PARENT"
+: >"$T/empty-val.txt"
+stdout="$("$FILL" "$T/par.md" "PARENT=@$T/empty-val.txt" 'A=x' 2>"$T/err-par.txt")"; [ "$?" = "1" ] || fail "empty @file PARENT exits 1"
+[ -z "$stdout" ] || fail "empty @file PARENT prints nothing on stdout"
+grep -q '^empty value: PARENT$' "$T/err-par.txt" || fail "empty @file PARENT names PARENT"
+rm -f "$T/par-out.md"
+stdout="$("$FILL" --out "$T/par-out.md" "$T/par.md" 'PARENT=' 'A=x' 2>/dev/null)"; [ "$?" = "1" ] || fail "empty PARENT with --out exits 1"
+[ -z "$stdout" ] || fail "empty PARENT with --out prints nothing on stdout"
+[ ! -e "$T/par-out.md" ] || fail "empty PARENT with --out writes nothing"
+# other keys may be empty
+[ "$("$FILL" "$T/par.md" 'PARENT=p' 'A=')" = "parent p and " ] || fail "empty A still fills"
+
 # --out with a relative path exits 2, nothing on stdout
 stdout="$("$FILL" --out rel/brief.md "$T/o.md" 'A=1' 2>"$T/err-rel.txt")"; [ "$?" = "2" ] || fail "relative --out exits 2"
 [ -z "$stdout" ] || fail "relative --out prints nothing on stdout"

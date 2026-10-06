@@ -7,9 +7,11 @@
 #        multi-line text and & \ / $ pass through unchanged. Without --out, prints
 #        the filled template on stdout. With --out, writes it to <path> and prints
 #        exactly one line on stdout: Read <path> and follow it.
+#        A template containing __PARENT__ needs a non-empty PARENT value (the
+#        parent's session name); there is no fallback.
 #        Exit 1 (nothing on stdout, one problem per line on stderr) when a
-#        placeholder is left unfilled, a key matches nothing, the output cannot be
-#        written, or reading it back differs. Exit 2 on bad usage, including a
+#        placeholder is left unfilled, a key matches nothing, PARENT is empty,
+#        the output cannot be written, or reading it back differs. Exit 2 on bad usage, including a
 #        relative --out path.
 set -euo pipefail
 # bash 5.2+ treats & in a ${var//pat/rep} replacement as the match; keep it literal.
@@ -87,6 +89,15 @@ while [ "$i" -lt "$nkeys" ]; do
       vals[$i]="${vv%x}"
       ;;
   esac
+  i=$((i + 1))
+done
+
+# PARENT is the parent's session name: an empty one is a failure, never a fallback.
+i=0
+while [ "$i" -lt "$nkeys" ]; do
+  if [ "${keys[$i]}" = "PARENT" ] && [ -z "${vals[$i]}" ]; then
+    add_error "empty value: PARENT"
+  fi
   i=$((i + 1))
 done
 
