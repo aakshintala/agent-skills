@@ -177,6 +177,7 @@ grep -q '__[A-Z]' "$T/state/prompt-review.md" && fail "review brief has no place
 grep -q '__[A-Z]' "$T/state/prompt-overbuild.md" && fail "overbuild brief has no placeholders left"
 grep -q 'workflow doc is none' "$T/state/prompt-review.md" || fail "workflow doc defaults to none"
 [ "$(git -C "$T/clone" worktree list | grep -c 'wt-')" = "0" ] || fail "collect removes the worktrees"
+[ -z "$(ls -d "$TMPDIR"/review-pr.run.* 2>/dev/null)" ] || fail "collect removes the run dir"
 [ ! -e "$T/state/watch.txt" ] || fail "collect does not wait"
 
 # --- case: repeated --issue values fill the review brief together
@@ -634,5 +635,33 @@ grep -q -- "--since $MISSING_SINCE is not fetchable" <<<"$err" || fail "missing 
 [ -z "$(ls "$TMPDIR/review-pr" 2>/dev/null)" ] || fail "missing --since saves no state"
 [ -z "$(ls -d "$TMPDIR"/review-pr.run.* 2>/dev/null)" ] || fail "missing --since leaves no run dir"
 [ ! -e "$T/state/runs.txt" ] || fail "missing --since launches no job"
+
+# --- case: collect unregisters the run's worktrees after --cwd is gone, and
+# leaves another run's worktrees alone
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
+  --model M --overbuild-model M2 >/dev/null 2>&1 || fail "sibling run start exits 0"
+mkdir -p "$T/keep"
+mv "$TMPDIR/review-pr/job-review" "$T/keep/job-review"
+mv "$TMPDIR/review-pr/job-overbuild" "$T/keep/job-overbuild"
+sibling_rd="$(sed -n 's/^run_dir=//p' "$T/keep/job-review")"
+git -C "$T/clone" worktree add -q --detach "$T/lane" HEAD
+start_review 7 --repo O/N --cwd "$T/lane" --issue 1 --spec 2 \
+  --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start from a lane worktree exits 0"
+rd="$(sed -n 's/^run_dir=//p' "$TMPDIR/review-pr/job-review")"
+rm -rf "$T/lane"
+"$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "collect after --cwd is gone exits 0"
+[ "$(git -C "$T/clone" worktree list | grep -c "$(basename "$rd")/wt-" || true)" = "0" ] || \
+  fail "collect unregisters the run's worktrees when --cwd is gone"
+[ ! -e "$rd" ] || fail "collect removes the run dir when --cwd is gone"
+[ "$(git -C "$T/clone" worktree list | grep -c "$(basename "$sibling_rd")/wt-")" = "2" ] || \
+  fail "collect leaves another run's worktrees registered"
+[ -d "$sibling_rd/wt-review" ] || fail "collect leaves another run's dir"
 
 echo "review-pr: all cases passed"
