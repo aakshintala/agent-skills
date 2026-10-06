@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ship-pr: run a reviewed PR's merge tail in one command.
-# Usage: ship-pr <pr> --repo OWNER/NAME --reviewed <sha> --worktree <path> [--gate '<cmd>'] [--timeout <s>]
+# Usage: ship-pr <pr> --repo OWNER/NAME --reviewed <sha> --worktree <path> [--gate '<cmd>'] [--timeout <s>] [--body-has <prefix>]...
 #        Run it after review-loop has a verdict on <sha>. In order: check the PR is
 #        open and its head branch is checked out clean in --worktree; rebase onto
 #        origin/main if it moved; compare the PR diff's `git patch-id --stable` with
@@ -8,15 +8,18 @@
 #        --force-with-lease and `gh-ci wait` (--timeout, default 1800); run
 #        pr-closes; mark a draft ready and squash-merge pinned to the checked head;
 #        wait for MERGED; remove the worktree and the local and remote branch.
+#        Each --body-has <prefix> (repeatable) requires a PR body line that starts
+#        with <prefix>, literally and case-sensitively; it is checked after step 1,
+#        before the rebase, and each missing one prints `missing body line: <prefix>`.
 #        Prints `merged <squash sha>` on success. Progress goes to stderr.
 #        Exit 0 merged, 1 gate/CI/push/merge failure, 2 bad usage or a failed
 #        precondition, 3 rebase conflict (aborted) or a conflict `gh-ci wait` found after the push, 4 patch-id mismatch (needs a new
-#        verdict), 5 pr-closes found stray closing keywords, 124 CI wait timeout.
+#        verdict), 5 PR text needs a fix (missing --body-has lines, or stray closing keywords from pr-closes), 124 CI wait timeout.
 #        SHIP_PR_INTERVAL: seconds between MERGED polls (default 5, at most 12 polls).
 set -euo pipefail
 
 usage() {
-  echo "usage: ship-pr <pr> --repo OWNER/NAME --reviewed <sha> --worktree <path> [--gate '<cmd>'] [--timeout <s>]" >&2
+  echo "usage: ship-pr <pr> --repo OWNER/NAME --reviewed <sha> --worktree <path> [--gate '<cmd>'] [--timeout <s>] [--body-has <prefix>]..." >&2
   exit 2
 }
 say() { echo "ship-pr: $*" >&2; }
@@ -25,7 +28,7 @@ die() { local code="$1"; shift; say "$*"; exit "$code"; }
 [ $# -ge 1 ] || usage
 pr="$1"; shift
 case "$pr" in ''|*[!0-9]*) usage ;; esac
-repo="" reviewed="" worktree="" gate="" timeout=1800
+repo="" reviewed="" worktree="" gate="" timeout=1800 body_has=()
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || usage
   case "$1" in
@@ -34,6 +37,7 @@ while [ $# -gt 0 ]; do
     --worktree) worktree="$2" ;;
     --gate) gate="$2" ;;
     --timeout) timeout="$2" ;;
+    --body-has) case "$2" in ''|*$'\n'*) usage ;; esac; body_has+=("$2") ;;
     *) usage ;;
   esac
   shift 2
@@ -59,6 +63,21 @@ git -C "$worktree" fetch -q origin >&2 || die 1 "git fetch origin failed"
   || die 2 "$worktree HEAD is not the PR head $head0; pull or push first"
 git -C "$worktree" rev-parse --verify -q "$reviewed^{commit}" >/dev/null \
   || die 2 "--reviewed $reviewed is not a commit in $worktree"
+
+# Required PR body lines: checked now so a PR with wrong text costs no push and no CI wait.
+if [ "${#body_has[@]}" -gt 0 ]; then
+  body="$(gh pr view "$pr" --repo "$repo" --json body --jq '.body // ""')" \
+    || die 2 "cannot read PR $pr body"
+  missing=0
+  for prefix in "${body_has[@]}"; do
+    found=""
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "${line%$'\r'}" in "$prefix"*) found=1; break ;; esac
+    done <<<"$body"
+    [ -n "$found" ] || { echo "missing body line: $prefix"; missing=1; }
+  done
+  [ "$missing" = 0 ] || die 5 "PR body lacks required lines; edit the PR body, then rerun"
+fi
 
 # Step 2: rebase onto origin/main when it moved.
 if ! git -C "$worktree" merge-base --is-ancestor origin/main HEAD; then
