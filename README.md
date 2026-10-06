@@ -11,6 +11,7 @@ Started from [mattpocock/skills](https://github.com/mattpocock/skills) and rewor
 | `skills/` | One folder per skill: `SKILL.md`, plus brief templates in `briefs/` where the skill starts other jobs. |
 | `delegate/` | The `delegate` CLI (Rust): runs a brief on another model and reports a job record. |
 | `bin/` | Scripts the skills call: `fill-brief`, `review-pr`, `gh-ci`, `pr-closes`, `ship-pr`, `check-pack`. |
+| `claude-code/agents/` | Claude Code agent definitions: `ticket-orchestrator` (a flywheel lane, run as its own `claude --bg` session) and `claude-worker` (a Claude lane, Verifier or fix job). |
 | `test/` | Tests for the scripts. `test/run` runs every suite. |
 | `docs/agents/` | This repo's own setup for the skills: issue tracker, triage labels, workflow doc. |
 
@@ -21,6 +22,7 @@ Clone to `~/.agents` and link the skills into your agent's skills folder, for ex
 ```bash
 git clone https://github.com/aakshintala/switchyard ~/.agents
 for s in ~/.agents/skills/*/; do ln -s "$s" ~/.claude/skills/; done
+for a in ~/.agents/claude-code/agents/*.md; do ln -s "$a" ~/.claude/agents/; done   # Claude Code only
 ```
 
 The skills call scripts at `~/.agents/bin/`.
