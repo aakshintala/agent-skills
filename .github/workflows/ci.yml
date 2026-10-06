@@ -35,3 +35,5 @@ jobs:
         working-directory: delegate
       - run: cargo test
         working-directory: delegate
+        env:
+          DELEGATE_WALL_BUDGETS: "1"
