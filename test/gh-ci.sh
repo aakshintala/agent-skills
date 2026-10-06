@@ -22,8 +22,8 @@ export GH_CI_INTERVAL=7
 A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-# --- fake gh: pr view prints "<sha> CLEAN" (or DIRTY behind the marker),
-# --- heads and checks advance one line per call, last line sticky.
+# --- fake gh: pr view prints "<sha> <state>"; heads, merge states (default
+# --- CLEAN) and checks advance one line per call, last line sticky.
 cat >"$T/fakebin/gh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -41,8 +41,9 @@ case "\$1" in
   view)
     if [ -e "$T/state/view-fail" ]; then exit 3; fi
     h="\$(advance "$T/state/heads.txt")"
-    if [ -e "$T/state/dirty" ]; then printf '%s DIRTY\n' "\$h";
-    else printf '%s CLEAN\n' "\$h"; fi;;
+    m=CLEAN
+    if [ -e "$T/state/merge-state.txt" ]; then m="\$(advance "$T/state/merge-state.txt")"; fi
+    printf '%s %s\n' "\$h" "\$m";;
   checks)
     resp="\$(advance "$T/state/checks.txt")"
     printf '%s\n' "\$resp"
@@ -63,12 +64,13 @@ chmod +x "$T/fakebin/gh" "$T/fakebin/sleep"
 export PATH="$T/fakebin:$PATH"
 
 reset_state() {
-  rm -f "$T/state/sleeps.txt" "$T/state/gh-args.txt" "$T/state/dirty" "$T/state/view-fail"
+  rm -f "$T/state/sleeps.txt" "$T/state/gh-args.txt" "$T/state/merge-state.txt" "$T/state/view-fail"
   rm -f "$T/state/heads.txt" "$T/state/checks.txt"
   : >"$T/state/gh-args.txt"
 }
 
 set_heads() { printf '%s\n' "$@" >"$T/state/heads.txt"; }
+set_merge() { printf '%s\n' "$@" >"$T/state/merge-state.txt"; }
 set_checks() { printf '%s\n' "$@" >"$T/state/checks.txt"; }
 
 OUT=""; CODE=0
@@ -181,15 +183,83 @@ run_wait 7
 [ "$CODE" = "0" ] || fail "verdict race exits 0 (got $CODE): [$OUT]"
 grep -q "head: ${B:0:8} CI: pass" <<<"$OUT" || fail "verdict race names new head: [$OUT]"
 
-# --- case: conflicting PR fails at once
+# --- cases: conflicts. Grace polls sleep 5 s (not GH_CI_INTERVAL) and count
+# --- toward --timeout; only a head that stays DIRTY is reported.
+CONFLICT_MSG="PR 7 has merge conflicts: GitHub runs no CI on it. Rebase first."
+sleeps_are() { # sleeps_are <n> <secs>: sleeps.txt is exactly n lines of secs
+  local want="" i
+  for i in $(seq 1 "$1"); do want="${want}${2}"$'\n'; done
+  [ "$(cat "$T/state/sleeps.txt" 2>/dev/null)" = "${want%$'\n'}" ]
+}
+PASS='[{"bucket":"pass","name":"ci"}]'
+PEND='[{"bucket":"pending","name":"ci"}]'
+
+# persistent DIRTY: exit 3 after six 5 s sleeps
 reset_state
-set_heads "$A"
-set_checks '[{"bucket":"pass","name":"ci"}]'
-touch "$T/state/dirty"
-OUT="$("$GHCI" wait 7 2>"$T/stderr.txt")"; CODE=$?
-[ "$CODE" != "0" ] || fail "conflict exits non-zero"
-grep -qi "merge conflicts" "$T/stderr.txt" || fail "conflict message: [$(cat "$T/stderr.txt")]"
-[ ! -e "$T/state/sleeps.txt" ] || fail "conflict never sleeps"
+export GH_CI_INTERVAL=30
+set_heads "$A"; set_checks "$PASS"; set_merge DIRTY
+run_wait 7
+[ "$CODE" = "3" ] || fail "persistent conflict exits 3 (got $CODE): [$OUT]"
+grep -qF "$CONFLICT_MSG" "$T/stderr.txt" || fail "conflict message: [$(cat "$T/stderr.txt")]"
+sleeps_are 6 5 || fail "conflict grace is six 5s sleeps: [$(cat "$T/state/sleeps.txt")]"
+
+# DIRTY then CLEAN within the grace: normal verdict
+reset_state
+set_heads "$A"; set_checks "$PASS"; set_merge DIRTY DIRTY CLEAN
+run_wait 7
+[ "$CODE" = "0" ] || fail "recovered conflict exits 0 (got $CODE): [$OUT]"
+grep -q "head: ${A:0:8} CI: pass" <<<"$OUT" || fail "recovered conflict pass line: [$OUT]"
+sleeps_are 2 5 || fail "recovered conflict sleeps twice: [$(cat "$T/state/sleeps.txt")]"
+
+# UNKNOWN resets the clock: three DIRTY, UNKNOWN (pending checks), then six DIRTY sleeps
+reset_state
+set_heads "$A"; set_checks "$PEND"
+set_merge DIRTY DIRTY DIRTY UNKNOWN DIRTY
+run_wait 7
+[ "$CODE" = "3" ] || fail "reset clock still ends in 3 (got $CODE): [$OUT]"
+[ "$(grep -c '^5$' "$T/state/sleeps.txt")" = "9" ] || fail "3 + 6 grace sleeps: [$(tr '\n' ' ' <"$T/state/sleeps.txt")]"
+[ "$(grep -c -v '^5$' "$T/state/sleeps.txt")" = "1" ] || fail "UNKNOWN polls checks at the interval: [$(tr '\n' ' ' <"$T/state/sleeps.txt")]"
+
+# UNKNOWN with pending checks never reports a conflict
+reset_state
+set_heads "$A"; set_checks "$PEND"; set_merge UNKNOWN
+run_wait 7 --timeout 60
+[ "$CODE" = "124" ] || fail "UNKNOWN is not a conflict (got $CODE): [$OUT]"
+
+# a new head restarts the clock
+reset_state
+set_heads "$A" "$A" "$A" "$B"; set_checks "$PASS"; set_merge DIRTY
+run_wait 7
+[ "$CODE" = "3" ] || fail "head change conflict exits 3 (got $CODE): [$OUT]"
+sleeps_are 9 5 || fail "clock restarts on the new head (3 + 6 sleeps): [$(tr '\n' ' ' <"$T/state/sleeps.txt")]"
+
+# --timeout bounds the grace; budget spent while DIRTY reports the conflict
+reset_state
+set_heads "$A"; set_checks "$PASS"; set_merge DIRTY
+run_wait 7 --timeout 0
+[ "$CODE" = "3" ] || fail "timeout 0 on conflict exits 3 (got $CODE): [$OUT]"
+[ ! -e "$T/state/sleeps.txt" ] || fail "timeout 0 on conflict never sleeps"
+reset_state
+set_heads "$A"; set_checks "$PASS"; set_merge DIRTY
+run_wait 7 --timeout 10
+[ "$CODE" = "3" ] || fail "timeout 10 on conflict exits 3 (got $CODE): [$OUT]"
+sleeps_are 2 5 || fail "timeout 10 sleeps two 5s: [$(cat "$T/state/sleeps.txt")]"
+
+# a conflict that appears after the checks call discards the verdict
+reset_state
+set_heads "$A"; set_checks "$PASS"; set_merge CLEAN DIRTY
+run_wait 7 --timeout 0
+[ "$CODE" = "3" ] || fail "conflict after checks exits 3 (got $CODE): [$OUT]"
+
+# snapshot and watch-verified exit 3 at once
+reset_state
+set_heads "$A"; set_checks "$PASS"; set_merge DIRTY
+OUT="$("$GHCI" snapshot 7 2>"$T/stderr.txt")"; CODE=$?
+[ "$CODE" = "3" ] || fail "snapshot conflict exits 3 (got $CODE): [$OUT]"
+grep -qF "$CONFLICT_MSG" "$T/stderr.txt" || fail "snapshot conflict message: [$(cat "$T/stderr.txt")]"
+[ ! -e "$T/state/sleeps.txt" ] || fail "snapshot conflict never sleeps"
+OUT="$("$GHCI" watch-verified 99 --pr 7 2>"$T/stderr.txt")"; CODE=$?
+[ "$CODE" = "3" ] || fail "watch-verified conflict exits 3 (got $CODE): [$OUT]"
 
 # --- case: unreadable head never exits 0
 reset_state
