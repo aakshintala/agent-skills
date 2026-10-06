@@ -52,6 +52,13 @@ printf 'Plan:\n__PLAN__ __SINCE__\n' >"$T/q2.md"
 "$FILL" "$T/q2.md" "PLAN=@$T/qp.md" >/dev/null 2>"$T/err-q2.txt" && fail "template placeholder with no key exits 1"
 grep -q '^unfilled: __SINCE__$' "$T/err-q2.txt" || fail "template placeholder with no key names __SINCE__"
 
+# substitution is one pass: a value naming a later key's placeholder stays literal (issue #108)
+printf '__A__ __B__\n' >"$T/op.md"
+out="$("$FILL" "$T/op.md" 'A=__B__' 'B=x')" || fail "one-pass fill exits 0"
+[ "$out" = "__B__ x" ] || fail "one-pass fill keeps a later key's placeholder in a value: got [$out]"
+out="$("$FILL" "$T/op.md" 'B=__A__' 'A=y')" || fail "one-pass fill, reversed keys, exits 0"
+[ "$out" = "y __A__" ] || fail "one-pass fill keeps an earlier key's placeholder in a value: got [$out]"
+
 # adjacent placeholders are filled separately
 printf '__A____B__\n' >"$T/adj.md"
 out="$("$FILL" "$T/adj.md" 'A=1' 'B=2')" || fail "adjacent placeholders exit 0"
