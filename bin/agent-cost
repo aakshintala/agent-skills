@@ -117,7 +117,7 @@ def main(argv):
             if i and cw > 20000:
                 k['miss5'] += 1
                 k['missw'] += cw
-    for v in kinds.values():
+    for name, v in kinds.items():
         v['cost'] = v['inp'] + 1.25 * v['cw5'] + 2 * v['cw1'] + 0.1 * v['cr'] + 5 * v['out']
     for k, v in sorted(kinds.items(), key=lambda x: (-x[1]['cost'], x[0])):
         n, cost, turns, cw5, cw1, cr, out = (v[x] for x in ('n', 'cost', 'turns', 'cw5', 'cw1', 'cr', 'out'))
