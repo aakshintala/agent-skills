@@ -59,11 +59,22 @@ Done when `review-loop` is done.
 
 ### 7. CI
 
-Run `ci-triage` until the required checks are green on the current head SHA. Wait on the PR with `gh-ci wait <pr>`, in the wait mode `ci-triage` gives; it follows a new head pushed mid-wait. Green comes from a fix, never a rerun: a flake gets `ci-triage`'s one fresh build and a `test-only` issue, and `gh-ci resample` only measures how often a failure happens.
+`ship-pr` (step 8) waits on CI; come here when it reports failing checks. Run `ci-triage` until the required checks are green on the current head SHA. Wait on the PR with `gh-ci wait <pr>`, in the wait mode `ci-triage` gives; it follows a new head pushed mid-wait. Green comes from a fix, never a rerun: a flake gets `ci-triage`'s one fresh build and a `test-only` issue, and `gh-ci resample` only measures how often a failure happens.
 
 Done when CI is green on the head a verdict covers.
 
 ### 8. Merge
+
+When the workflow doc's merge rule allows a squash merge and the merge terms cover this PR, run `~/.agents/bin/ship-pr <pr> --repo <owner/name> --reviewed <head the verdict covers> --worktree <worktree> --gate '<gate command>' --timeout <s>`, in the wait mode `ci-triage` gives, with `--timeout` inside your shell cap. It rebases, gates, waits on CI, runs `pr-closes`, squash-merges and cleans up, and prints `merged <sha>`. Route any other exit, then rerun it:
+
+- 124: CI is still pending. Rerun as is.
+- 1: read stderr. Failing checks go to step 7, a failed gate goes back to the lane, and `origin/main moved during CI` needs only the rerun. After a failed merge or MERGED wait, check `gh pr view <pr> --json state` before rerunning: if it reads `MERGED`, finish the by-hand cleanup below instead.
+- 3: `ship-pr` aborted the rebase. Run `git rebase origin/main` again, resolve with `resolving-merge-conflicts`, push with `--force-with-lease`, and take the new head through `review-loop`'s verify.
+- 4: the rebase changed the diff, and the rebased head is local only. Push it with `--force-with-lease`, take it through `review-loop`'s verify, and rerun with it as `--reviewed`.
+- 5: handle the printed matches as the next paragraph says.
+- 2: a precondition failed; stderr names it.
+
+The rest of this step is the by-hand merge, for the cases `ship-pr` doesn't cover.
 
 Run `~/.agents/bin/pr-closes <pr> --repo <owner/name>` first. Exit 1 lists each issue a closing keyword would close outside the PR's `Resolves` lines. Reword a title or body match and rerun. When only commit-message matches remain, merge with `gh pr merge --subject <title> --body <body>` so the squash commit carries the PR text alone.
 
