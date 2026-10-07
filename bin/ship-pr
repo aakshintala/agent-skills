@@ -9,9 +9,12 @@
 #        ready (once, before the first CI wait); `gh-ci wait` (--timeout, default
 #        1800); run pr-closes; squash-merge pinned to the checked head; wait for
 #        MERGED; remove the worktree and the local and remote branch.
-#        When the PR has a ready_for_review event (just made, or from an earlier
-#        run), the CI wait passes its latest time as `gh-ci wait --since`, so a
-#        check that started while the PR was a draft never counts.
+#        The CI wait trusts the repo's required checks: one green on the exact
+#        head counts whenever it ran, so marking ready need not start a new run,
+#        and a run that starts after the wait passed does not hold the merge. An
+#        absent required check is pending. To keep a draft run from satisfying
+#        the wait, give its check a name other than the required one (fiber's
+#        draft run reports `CI (draft)`; the required check is `CI`).
 #        Each --body-has <prefix> (repeatable) requires a PR body line that starts
 #        with <prefix>, literally and case-sensitively; it is checked after step 1,
 #        before the rebase, and each missing one prints `missing body line: <prefix>`.
@@ -155,16 +158,6 @@ if [ "$strict" = 0 ]; then
   fi
 fi
 
-# The time GitHub recorded the PR's latest ready_for_review event, if any.
-ready_time() {
-  gh api --paginate "repos/$repo/issues/$pr/events" \
-    --jq '.[] | select(.event=="ready_for_review") | .created_at' | tail -n 1
-}
-since=""
-if [ "$draft" != "true" ]; then
-  since="$(ready_time 2>/dev/null)" || { say "cannot read the ready_for_review time; waiting on every check"; since=""; }
-fi
-
 # Steps 3-5 repeat when origin/main moves during the CI wait (strict only), at most 3 times.
 # lease is the branch SHA last known on the remote: head0, then each pushed pin.
 lease="$head0" retries=0
@@ -192,13 +185,10 @@ while :; do
     say "marking PR $pr ready"
     gh pr ready "$pr" --repo "$repo" >&2 || die 1 "gh pr ready failed"
     draft=false
-    since="$(ready_time)" && [ -n "$since" ] || die 1 "cannot read the ready_for_review time"
   fi
-  ci_args=(wait "$pr" --timeout "$timeout")
-  [ -z "$since" ] || ci_args+=(--since "$since")
   say "waiting for CI"
   rc=0
-  ci_out="$(GH_CI_REPO="$repo" bash "$here/gh-ci" "${ci_args[@]}" 2>&1)" || rc=$?
+  ci_out="$(GH_CI_REPO="$repo" bash "$here/gh-ci" wait "$pr" --timeout "$timeout" 2>&1)" || rc=$?
   if [ "$rc" -ne 0 ]; then
     printf '%s\n' "$ci_out"
     case "$rc" in
