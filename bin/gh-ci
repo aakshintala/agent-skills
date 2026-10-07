@@ -183,8 +183,7 @@ cmd_wait() {
     draft=true
   fi
   if [ "$draft" = true ]; then
-    req="[]"
-    empty_ok=false
+    :
   elif names=$(required_names "$pr" 2>/dev/null); then
     req=$(printf '%s' "$names" | jq -Rsc 'split("\n") | map(select(. != ""))')
     empty_ok=true
