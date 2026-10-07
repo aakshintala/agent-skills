@@ -54,6 +54,10 @@ gh() (
     view)
       if [ -e "$T/state/view-fail" ]; then exit 3; fi
       case " $* " in *" baseRefName "*) echo main; exit 0;; esac
+      case " $* " in *" isDraft "*)
+        if [ -e "$T/state/draft" ]; then cat "$T/state/draft"; else echo "false"; fi
+        exit 0;;
+      esac
       h="$(advance "$T/state/heads.txt")"
       m=CLEAN
       if [ -e "$T/state/merge-state.txt" ]; then m="$(advance "$T/state/merge-state.txt")"; fi
@@ -76,7 +80,7 @@ export -f gh sleep
 
 reset_state() {
   rm -f "$T/state/sleeps.txt" "$T/state/gh-args.txt" "$T/state/merge-state.txt" "$T/state/view-fail"
-  rm -f "$T/state/heads.txt" "$T/state/checks.txt" "$T/state/rules" "$T/state/rules-fail" "$T/state/classic"
+  rm -f "$T/state/heads.txt" "$T/state/checks.txt" "$T/state/rules" "$T/state/rules-fail" "$T/state/classic" "$T/state/draft"
   : >"$T/state/gh-args.txt"
 }
 
@@ -325,6 +329,37 @@ run_wait 7 --timeout 0
 [ "$CODE" = "124" ] || fail "unreadable names, empty list is pending (got $CODE): [$OUT]"
 grep -q "gh-ci: cannot read required checks; absent ones are not detected" "$T/stderr.txt" \
   || fail "lookup warning: [$(cat "$T/stderr.txt")]"
+
+# --- cases: draft PRs settle on the head's checks (no --required, no padding)
+# a draft whose only check is `CI (draft)` passes at once, though `CI` is required
+reset_state
+export GH_CI_INTERVAL=7
+set_heads "$A"; echo true >"$T/state/draft"; echo "$RULES_CI" >"$T/state/rules"
+set_checks '[{"bucket":"pass","name":"CI (draft)"}]'
+run_wait 7 --timeout 7
+[ "$CODE" = "0" ] || fail "draft green exits 0 (got $CODE): [$OUT]"
+grep -q "head: ${A:0:8} CI: pass (draft: required checks run once ready)" <<<"$OUT" \
+  || fail "draft pass note: [$OUT]"
+[ ! -e "$T/state/sleeps.txt" ] || fail "draft green never sleeps"
+! grep -q -- --required "$T/state/gh-args.txt" || fail "draft: checks call drops --required"
+! grep -q 'rules/branches' "$T/state/gh-args.txt" || fail "draft: required names never read"
+
+# a draft with a failing check fails
+reset_state
+set_heads "$A"; echo true >"$T/state/draft"; echo "$RULES_CI" >"$T/state/rules"
+set_checks '[{"bucket":"fail","name":"CI (draft)"}]'
+run_wait 7
+[ "$CODE" = "1" ] || fail "draft failure exits 1 (got $CODE): [$OUT]"
+grep -q "head: ${A:0:8} CI: fail" <<<"$OUT" || fail "draft fail header: [$OUT]"
+grep -q '^failing: CI (draft)$' <<<"$OUT" || fail "draft failing job named: [$OUT]"
+
+# a draft with no checks yet stays pending to timeout
+reset_state
+set_heads "$A"; echo true >"$T/state/draft"; echo "$RULES_CI" >"$T/state/rules"
+set_checks '[]'
+run_wait 7 --timeout 7
+[ "$CODE" = "124" ] || fail "draft empty stays pending (got $CODE): [$OUT]"
+grep -q "head: ${A:0:8} timeout after 7s" <<<"$OUT" || fail "draft empty timeout header: [$OUT]"
 
 # --- case: usage errors exit 2
 reset_state
