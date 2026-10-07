@@ -163,8 +163,9 @@ required_names() {
 # wait settles on the checks the head actually has, an empty list stays
 # pending, and the pass line notes required checks run once ready.
 # A required check on the head counts whenever it ran. A required name of
-# the base branch with no check on the head counts as pending. An empty
-# list passes only when the required names were read and there are none.
+# the base branch with no check on the head counts as pending. When the
+# required names were read and there are none, the verdict is pass without
+# calling gh pr checks.
 cmd_wait() {
   local pr="" timeout=1800 req="[]" empty_ok=false names
   while [ $# -gt 0 ]; do case "$1" in
@@ -206,6 +207,8 @@ cmd_wait() {
     dirty_head=""
     if [ "$draft" = true ]; then
       checks_json=$(gh pr checks "$pr" --repo "$REPO" --json name,bucket 2>&1 || true)
+    elif [ "$empty_ok" = true ] && [ "$req" = "[]" ]; then
+      checks_json='[]'
     else
       checks_json=$(gh pr checks "$pr" --repo "$REPO" --required --json name,bucket 2>&1 || true)
       padded=$(printf '%s' "$checks_json" | jq -c --argjson req "$req" '

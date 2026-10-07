@@ -33,7 +33,7 @@ gh() (
     [ ! -e "$ST/api-fail" ] || { echo "gh: forbidden (HTTP 403)" >&2; exit 1; }
     case "$path" in
       */rules/branches/main)
-        json="$(rd rules '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true}}]')";;
+        json="$(rd rules '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"ci"}]}}]')";;
       */protection/required_status_checks)
         [ ! -e "$ST/classic-fail" ] || { echo "gh: forbidden (HTTP 403)" >&2; exit 1; }
         [ -e "$ST/classic" ] || { echo "gh: Branch not protected (HTTP 404)" >&2; exit 1; }
@@ -296,7 +296,7 @@ git --git-dir="$ORIGIN" merge-base --is-ancestor main "$mh" || fail "merge pinne
 # ===== strictness of main's required checks decides when ship-pr rebases
 STRICT_LINE='required checks on main are strict: rebasing when origin/main moves'
 LOOSE_LINE='required checks on main are not strict: rebasing only on a conflict'
-NOSTRICT='[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false}}]'
+NOSTRICT='[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"ci"}]}}]'
 FALLBACK_LINE='cannot read whether required checks on main are strict; assuming strict'
 
 setup; ship; expect 0 "default reads strict"
