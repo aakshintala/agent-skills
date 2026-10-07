@@ -32,10 +32,19 @@ stdout="$(bash "$FILL" "$T/k.md" 'ZZZ=1' 2>"$T/err2.txt")" && fail "unknown key 
 [ -z "$stdout" ] || fail "unknown key prints nothing on stdout"
 grep -q '^unknown key: ZZZ$' "$T/err2.txt" || fail "unknown key names ZZZ"
 
-# unknown key alongside an otherwise clean fill still fails
+# unknown key with valid fill still fails
 printf 'hi __WHO__\n' >"$T/k2.md"
 bash "$FILL" "$T/k2.md" 'WHO=you' 'EXTRA=1' >/dev/null 2>"$T/err3.txt" && fail "unknown key with valid fill exits 1"
 grep -q '^unknown key: EXTRA$' "$T/err3.txt" || fail "unknown key with valid fill names EXTRA"
+
+# an unknown key error also names the template's keys, once per run:
+# its distinct __NAME__ placeholders in first-appearance order
+printf 'hi __A__ __B__ __A__ __PARENT__\n' >"$T/keys.md"
+bash "$FILL" "$T/keys.md" 'A=1' 'B=2' 'PARENT=p' 'NOPE=3' 'ALSOBAD=4' >/dev/null 2>"$T/err-keys.txt" && fail "unknown key listing exits 1"
+grep -q '^unknown key: NOPE$' "$T/err-keys.txt" || fail "unknown key listing names NOPE"
+grep -q '^unknown key: ALSOBAD$' "$T/err-keys.txt" || fail "unknown key listing names ALSOBAD"
+grep -q "takes: A B PARENT" "$T/err-keys.txt" || fail "unknown key listing names the template keys"
+[ "$(grep -c 'takes:' "$T/err-keys.txt")" = "1" ] || fail "unknown key listing names keys once"
 
 # key early in a long template must not trip pipefail + grep -q EPIPE (issue #55)
 { echo '__A__'; seq 1 5000 | sed 's/^/filler line /'; } >"$T/big.md"
@@ -160,10 +169,20 @@ stdout="$(bash "$FILL" --out "$T/par-out.md" "$T/par.md" 'PARENT=' 'A=x' 2>/dev/
 stdout="$(bash "$FILL" --out rel/brief.md "$T/o.md" 'A=1' 2>"$T/err-rel.txt")"; [ "$?" = "2" ] || fail "relative --out exits 2"
 [ -z "$stdout" ] || fail "relative --out prints nothing on stdout"
 
-# --out to an unwritable path exits 1, nothing on stdout
-stdout="$(bash "$FILL" --out "$T/no-such-dir/brief.md" "$T/o.md" 'A=1' 2>/dev/null)"; [ "$?" = "1" ] || fail "unwritable --out exits 1"
-[ -z "$stdout" ] || fail "unwritable --out prints nothing on stdout"
-[ ! -e "$T/no-such-dir/brief.md" ] || fail "unwritable --out writes nothing"
+# --out creates a missing parent directory, then writes the file
+rm -rf "$T/newdir"
+bash "$FILL" --out "$T/newdir/sub/brief.md" "$T/o.md" 'A=1' >"$T/newdir-line.txt" || fail "--out missing dir exits 0"
+[ -f "$T/newdir/sub/brief.md" ] || fail "--out missing dir writes the file"
+bash "$FILL" "$T/o.md" 'A=1' >"$T/newdir-std.txt" || fail "--out missing dir stdout baseline exits 0"
+cmp -s "$T/newdir/sub/brief.md" "$T/newdir-std.txt" || fail "--out missing dir file matches stdout mode"
+[ "$(cat "$T/newdir-line.txt")" = "Read $T/newdir/sub/brief.md and follow it." ] || fail "--out missing dir prints launch line"
+
+# --out to a path that still cannot be written keeps today's error and exit code
+: >"$T/blocker"
+stdout="$(bash "$FILL" --out "$T/blocker/brief.md" "$T/o.md" 'A=1' 2>"$T/err-blocked.txt")"; [ "$?" = "1" ] || fail "blocked --out exits 1"
+[ -z "$stdout" ] || fail "blocked --out prints nothing on stdout"
+grep -q 'cannot write output file' "$T/err-blocked.txt" || fail "blocked --out keeps cannot-write error"
+[ ! -e "$T/blocker/brief.md" ] || fail "blocked --out writes nothing"
 
 # a failing placeholder check with --out exits 1 and writes nothing
 printf 'hello __NAME__\n' >"$T/ou.md"

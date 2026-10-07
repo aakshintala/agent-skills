@@ -5,13 +5,16 @@
 #        --out may appear anywhere among the arguments, at most once.
 #        A VALUE starting with @ is read from that file. All values are literal:
 #        multi-line text and & \ / $ pass through unchanged. Without --out, prints
-#        the filled template on stdout. With --out, writes it to <path> and prints
+#        the filled template on stdout. With --out, missing parent directories
+#        are created first, then it writes to <path> and prints
 #        exactly one line on stdout: Read <path> and follow it.
 #        A template containing __PARENT__ needs a non-empty PARENT value (the
 #        parent's session name); there is no fallback.
 #        Exit 1 (nothing on stdout, one problem per line on stderr) when a
 #        placeholder is left unfilled, a key matches nothing, PARENT is empty,
-#        the output cannot be written, or reading it back differs. Exit 2 on bad usage, including a
+#        the output cannot be written, or reading it back differs. An unknown-key
+#        error is followed by one line naming the keys the template takes.
+#        Exit 2 on bad usage, including a
 #        relative --out path.
 set -euo pipefail
 # bash 5.2+ treats & in a ${var//pat/rep} replacement as the match; keep it literal.
@@ -98,11 +101,36 @@ while [ "$i" -lt "$nkeys" ]; do
 done
 
 if [ "$nkeys" -gt 0 ]; then
+  unknown=0
   for k in "${keys[@]}"; do
     if [[ "$orig" != *"__${k}__"* ]]; then
       add_error "unknown key: $k"
+      unknown=1
     fi
   done
+  if [ "$unknown" = 1 ]; then
+    # Name the keys the template takes: its distinct __NAME__ placeholders,
+    # in first-appearance order. Exactly one line per run.
+    takes=""
+    seen_takes="|"
+    while IFS= read -r m; do
+      [ -n "$m" ] || continue
+      name="${m#__}"
+      name="${name%__}"
+      case "$seen_takes" in
+        *"|$name|"*) ;;
+        *)
+          seen_takes="$seen_takes$name|"
+          if [ -z "$takes" ]; then takes="$name"; else takes="$takes $name"; fi
+          ;;
+      esac
+    done <<<"$(printf '%s' "$orig" | grep -oE '__[A-Z][A-Z0-9_]*__' || true)"
+    if [ -n "$takes" ]; then
+      add_error "fill-brief: $template takes: $takes"
+    else
+      add_error "fill-brief: $template takes:"
+    fi
+  fi
 fi
 
 # One pass over the template: take the earliest placeholder left, copy the text
@@ -151,6 +179,9 @@ if [ -n "$errors" ]; then
 fi
 
 if [ -n "$out_path" ]; then
+  out_dir="${out_path%/*}"
+  [ -n "$out_dir" ] || out_dir="/"
+  mkdir -p "$out_dir" 2>/dev/null || true
   if ! printf '%s' "$out" >"$out_path"; then
     echo "fill-brief: cannot write output file: $out_path" >&2
     exit 1
