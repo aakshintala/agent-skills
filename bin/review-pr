@@ -549,7 +549,15 @@ cmd_collect() {
     if [ -n "$role_bad" ]; then
       : # a bad verdict fails loudly as BAD-VERDICT, never UNFINISHED
     elif [ "$status" != "DONE" ] && [ "$status" != "DONE_WITH_CONCERNS" ]; then
-      printf 'UNFINISHED %s %s gate=%s %s\n' "$role" "$status" "$gate" "$rec" >>"$unfinished_f"
+      reason_suffix=""
+      if [ "$status" = "ERROR" ]; then
+        reason="$(printf '%s\n' "$text" | sed -n 's/^[[:space:]]*//; /./{s/[[:space:]]*$//;p;q;}')"
+        reason="$(printf '%.200s' "$reason")"
+        if [ -n "$reason" ]; then
+          reason_suffix=" reason: $reason"
+        fi
+      fi
+      printf 'UNFINISHED %s %s gate=%s %s%s\n' "$role" "$status" "$gate" "$rec" "$reason_suffix" >>"$unfinished_f"
       unfinished=$((unfinished + 1))
     else
       complete=""
