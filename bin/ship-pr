@@ -220,7 +220,24 @@ esac
 
 # Step 7: merge pinned to the checked head, then wait for GitHub to say MERGED.
 say "merging PR $pr at ${pin:0:8}"
-gh pr merge "$pr" --repo "$repo" --squash --match-head-commit "$pin" >&2 || die 1 "gh pr merge failed"
+merge_err=""
+if ! merge_err="$(gh pr merge "$pr" --repo "$repo" --squash --match-head-commit "$pin" 2>&1)"; then
+  printf '%s\n' "$merge_err" >&2
+  case "$merge_err" in
+    *"Base branch was modified"*)
+      say "base branch was modified during merge; retrying once after 5 s"
+      sleep 5
+      if ! merge_err="$(gh pr merge "$pr" --repo "$repo" --squash --match-head-commit "$pin" 2>&1)"; then
+        printf '%s\n' "$merge_err" >&2
+        die 1 "gh pr merge failed"
+      fi
+      [ -z "$merge_err" ] || printf '%s\n' "$merge_err" >&2
+      ;;
+    *) die 1 "gh pr merge failed" ;;
+  esac
+else
+  [ -z "$merge_err" ] || printf '%s\n' "$merge_err" >&2
+fi
 merged="" sha=""
 for i in $(seq 1 12); do
   IFS=$'\t' read -r state sha < <(gh pr view "$pr" --repo "$repo" --json state,mergeCommit \

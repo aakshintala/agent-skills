@@ -158,6 +158,10 @@ required_names() {
 # only after the same head reads DIRTY for 30 s of 5 s polls (GitHub
 # recomputes mergeability late after a push), or once the timeout budget
 # is spent while DIRTY.
+# On a draft PR (isDraft read once at the start), the base branch's
+# required names are skipped and the checks call drops --required: the
+# wait settles on the checks the head actually has, an empty list stays
+# pending, and the pass line notes required checks run once ready.
 # A required check on the head counts whenever it ran. A required name of
 # the base branch with no check on the head counts as pending. An empty
 # list passes only when the required names were read and there are none.
@@ -174,8 +178,14 @@ cmd_wait() {
   case "$timeout" in ''|*[!0-9]*) usage;; esac
   local interval="${GH_CI_INTERVAL:-30}"
   local slept=0 head head2 state state2 checks_json padded verdict
-  local dirty_head="" dirty_for=0
-  if names=$(required_names "$pr" 2>/dev/null); then
+  local dirty_head="" dirty_for=0 draft=false
+  if [ "$(gh pr view "$pr" --repo "$REPO" --json isDraft --jq .isDraft 2>/dev/null)" = "true" ]; then
+    draft=true
+  fi
+  if [ "$draft" = true ]; then
+    req="[]"
+    empty_ok=false
+  elif names=$(required_names "$pr" 2>/dev/null); then
     req=$(printf '%s' "$names" | jq -Rsc 'split("\n") | map(select(. != ""))')
     empty_ok=true
   else
@@ -195,11 +205,15 @@ cmd_wait() {
       continue
     fi
     dirty_head=""
-    checks_json=$(gh pr checks "$pr" --repo "$REPO" --required --json name,bucket 2>&1 || true)
-    padded=$(printf '%s' "$checks_json" | jq -c --argjson req "$req" '
-      if type != "array" then . else
-        . as $f | $f + [$req[] | select(. as $n | all($f[]; .name != $n)) | {name: ., bucket: "pending"}] end' 2>/dev/null) \
-      && checks_json="$padded"
+    if [ "$draft" = true ]; then
+      checks_json=$(gh pr checks "$pr" --repo "$REPO" --json name,bucket 2>&1 || true)
+    else
+      checks_json=$(gh pr checks "$pr" --repo "$REPO" --required --json name,bucket 2>&1 || true)
+      padded=$(printf '%s' "$checks_json" | jq -c --argjson req "$req" '
+        if type != "array" then . else
+          . as $f | $f + [$req[] | select(. as $n | all($f[]; .name != $n)) | {name: ., bucket: "pending"}] end' 2>/dev/null) \
+        && checks_json="$padded"
+    fi
     verdict=$(printf '%s' "$checks_json" | jq -r --argjson empty_ok "$empty_ok" '
       if type == "array" and length == 0 and $empty_ok then "pass"
       elif type != "array" or length == 0 then "pending"
@@ -226,7 +240,11 @@ cmd_wait() {
       printf '%s' "$checks_json" | jq -r '.[] | select(.bucket == "fail" or .bucket == "cancel") | "failing: \(.name)"' 2>/dev/null || true
       return 1
     fi
-    echo "head: ${head:0:8} CI: pass"
+    if [ "$draft" = true ]; then
+      echo "head: ${head:0:8} CI: pass (draft: required checks run once ready)"
+    else
+      echo "head: ${head:0:8} CI: pass"
+    fi
     return 0
   done
 }

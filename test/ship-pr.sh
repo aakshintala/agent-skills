@@ -76,6 +76,12 @@ gh() (
       [ ! -e "$ST/ready-fail" ] || exit 1
       echo false >"$ST/draft";;
     merge)
+      if [ -e "$ST/merge-fail-once" ]; then
+        cat "$ST/merge-fail-once" >&2
+        rm -f "$ST/merge-fail-once"
+        exit 1
+      fi
+      if [ -e "$ST/merge-fail-msg" ]; then cat "$ST/merge-fail-msg" >&2; exit 1; fi
       [ ! -e "$ST/merge-fail" ] || exit 1
       [ -e "$ST/no-merge" ] || echo MERGED >"$ST/state"
       [ ! -e "$ST/merge-deletes-branch" ] || git --git-dir="$ORIGIN" update-ref -d refs/heads/feature;;
@@ -460,6 +466,28 @@ setup; touch "$ST/no-merge"; ship; expect 1 "never MERGED"
 [ "$(wc -l <"$ST/sleeps.txt")" -eq 11 ] || fail "11 sleeps across 12 polls: [$(cat "$ST/sleeps.txt")]"
 
 setup; touch "$ST/merge-fail"; ship; expect 1 "merge refused"
+[ -d "$WT" ] || fail "worktree kept when the merge is refused"
+
+# ===== merge race: 'Base branch was modified' retries once after 5 s
+setup; printf 'Base branch was modified. Review and try the merge again.' >"$ST/merge-fail-once"
+ship; expect 0 "merge race retries once"
+[ "$OUT" = "merged $MERGE_SHA" ] || fail "merged line after retry: [$OUT]"
+[ "$(grep -c '^gh pr merge' "$ST/gh.log")" -eq 2 ] || fail "merge called twice on a race"
+grep -q 'retrying once' <<<"$ERR" || fail "retry message: [$ERR]"
+grep -q '^5$' "$ST/sleeps.txt" || fail "retry sleeps 5 s: [$(cat "$ST/sleeps.txt" 2>/dev/null)]"
+[ ! -e "$WT" ] || fail "worktree removed after a retried merge"
+
+setup; printf 'Base branch was modified. Review and try the merge again.' >"$ST/merge-fail-msg"
+ship; expect 1 "race on both attempts still dies 1"
+[ "$(grep -c '^gh pr merge' "$ST/gh.log")" -eq 2 ] || fail "exactly one retry on a race"
+grep -q 'Base branch was modified' <<<"$ERR" || fail "gh error printed on the second failure: [$ERR]"
+[ -d "$WT" ] || fail "worktree kept when the retry fails"
+
+setup; printf 'Pull request cannot be merged: review required.' >"$ST/merge-fail-msg"
+ship; expect 1 "other merge errors never retry"
+[ "$(grep -c '^gh pr merge' "$ST/gh.log")" -eq 1 ] || fail "no retry on another error"
+! grep -q 'retrying once' <<<"$ERR" || fail "no retry message on another error: [$ERR]"
+grep -q 'review required' <<<"$ERR" || fail "gh error printed: [$ERR]"
 [ -d "$WT" ] || fail "worktree kept when the merge is refused"
 
 # ===== draft PRs: marked ready once before the CI wait; a required check green
