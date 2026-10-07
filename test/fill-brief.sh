@@ -88,6 +88,11 @@ done
 bash "$FILL" "$T/t.md" 'NOEQUALS'>/dev/null 2>&1; [ "$?" = "2" ] || fail "key without = exits 2"
 bash "$FILL" "$T/does-not-exist.md" 'A=1' >/dev/null 2>&1; [ "$?" = "2" ] || fail "missing template exits 2"
 
+# --out creates a missing directory
+printf 'n __A__\n' >"$T/n.md"
+bash "$FILL" --out "$T/new/dir/b.md" "$T/n.md" 'A=1' >/dev/null || fail "--out into a new directory exits 0"
+[ -f "$T/new/dir/b.md" ] || fail "--out into a new directory writes the file"
+
 # --out writes the file and prints exactly the launch line
 printf 'a __A__ b\n' >"$T/o.md"
 bash "$FILL" --out "$T/brief.md" "$T/o.md" 'A=1' >"$T/line.txt" || fail "--out exits 0"
@@ -161,7 +166,7 @@ stdout="$(bash "$FILL" --out rel/brief.md "$T/o.md" 'A=1' 2>"$T/err-rel.txt")"; 
 [ -z "$stdout" ] || fail "relative --out prints nothing on stdout"
 
 # --out to an unwritable path exits 1, nothing on stdout
-stdout="$(bash "$FILL" --out "$T/no-such-dir/brief.md" "$T/o.md" 'A=1' 2>/dev/null)"; [ "$?" = "1" ] || fail "unwritable --out exits 1"
+: >"$T/blocker"; stdout="$(bash "$FILL" --out "$T/blocker/brief.md" "$T/o.md" 'A=1' 2>/dev/null)"; [ "$?" = "1" ] || fail "unwritable --out exits 1"
 [ -z "$stdout" ] || fail "unwritable --out prints nothing on stdout"
 [ ! -e "$T/no-such-dir/brief.md" ] || fail "unwritable --out writes nothing"
 

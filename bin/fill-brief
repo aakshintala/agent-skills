@@ -5,7 +5,7 @@
 #        --out may appear anywhere among the arguments, at most once.
 #        A VALUE starting with @ is read from that file. All values are literal:
 #        multi-line text and & \ / $ pass through unchanged. Without --out, prints
-#        the filled template on stdout. With --out, writes it to <path> and prints
+#        the filled template on stdout. With --out, creates <path>'s directory, writes it there and prints
 #        exactly one line on stdout: Read <path> and follow it.
 #        A template containing __PARENT__ needs a non-empty PARENT value (the
 #        parent's session name); there is no fallback.
@@ -151,6 +151,7 @@ if [ -n "$errors" ]; then
 fi
 
 if [ -n "$out_path" ]; then
+  mkdir -p "${out_path%/*}" 2>/dev/null || true
   if ! printf '%s' "$out" >"$out_path"; then
     echo "fill-brief: cannot write output file: $out_path" >&2
     exit 1
