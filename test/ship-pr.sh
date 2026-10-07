@@ -446,8 +446,8 @@ origin_head >/dev/null && fail "origin branch deleted"
 
 setup; ship; expect 0 "non-draft happy path"
 ! grep -q '^gh pr ready' "$ST/gh.log" || fail "non-draft never marked ready"
-grep -q -- '--json name,bucket$' "$ST/gh.log" && ! grep -q startedAt "$ST/gh.log" \
-  || fail "a PR that never was a draft waits as before (no --since)"
+grep -q -- '--json name,bucket$' "$ST/gh.log" || fail "a PR that never was a draft waits as before"
+! grep -q startedAt "$ST/gh.log" || fail "a PR that never was a draft waits without --since"
 [ ! -e "$WT" ] || fail "non-draft: worktree removed"
 
 setup; touch "$ST/merge-deletes-branch"; ship; expect 0 "remote branch already deleted"
