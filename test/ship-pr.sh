@@ -25,10 +25,27 @@ MERGE_SHA="1f2e3d4c5b6a79881726354433221100ffeeddcc"
 gh() (
   set -euo pipefail
   echo "gh $*" >>"$ST/gh.log"
-  [ "$1" = "pr" ] || { echo "fake gh: only pr supported" >&2; exit 2; }
+  rd() { [ -e "$ST/$1" ] && cat "$ST/$1" || echo "$2"; }
+  if [ "$1" = "api" ]; then
+    shift; path="$1"; shift
+    jq=""
+    while [ $# -gt 0 ]; do [ "$1" = "--jq" ] && jq="$2"; shift; done
+    [ ! -e "$ST/api-fail" ] || { echo "gh: forbidden (HTTP 403)" >&2; exit 1; }
+    case "$path" in
+      */rules/branches/main)
+        json="$(rd rules '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true}}]')";;
+      */protection/required_status_checks)
+        [ ! -e "$ST/classic-fail" ] || { echo "gh: forbidden (HTTP 403)" >&2; exit 1; }
+        [ -e "$ST/classic" ] || { echo "gh: Branch not protected (HTTP 404)" >&2; exit 1; }
+        json="$(cat "$ST/classic")";;
+      *) echo "fake gh: unknown api $path" >&2; exit 2;;
+    esac
+    if [ -n "$jq" ]; then jq -r "$jq" <<<"$json"; else echo "$json"; fi
+    exit 0
+  fi
+  [ "$1" = "pr" ] || { echo "fake gh: only pr and api supported" >&2; exit 2; }
   shift
   sub="$1"; shift
-  rd() { [ -e "$ST/$1" ] && cat "$ST/$1" || echo "$2"; }
   case "$sub" in
     view)
       [ ! -e "$ST/view-fail" ] || exit 1
@@ -39,9 +56,9 @@ gh() (
         h="$(cat "$ST/lasthead")"
       fi
       state="$(rd state OPEN)"
-      json="$(jq -nc --arg h "$h" --arg s "$state" --arg d "$(rd draft false)" --arg ms "$(rd merge-state CLEAN)" --arg b "$(rd body 'Resolves #97')" \
+      json="$(jq -nc --arg h "$h" --arg s "$state" --arg d "$(rd draft false)" --arg ms "$(rd merge-state CLEAN)" --arg mg "$(rd mergeable MERGEABLE)" --arg b "$(rd body 'Resolves #97')" \
         --argjson bn "$([ -e "$ST/body-null" ] && echo true || echo false)" --argjson c "$(rd commits '[]')" --arg m "$MERGE_SHA" \
-        '{state:$s, headRefName:"feature", headRefOid:$h, isDraft:($d=="true"), mergeStateStatus:$ms,
+        '{state:$s, headRefName:"feature", headRefOid:$h, isDraft:($d=="true"), mergeStateStatus:$ms, mergeable:$mg,
           title:"t", body:(if $bn then null else $b end), commits:$c, mergeCommit:(if $s=="MERGED" then {oid:$m} else null end)}')"
       jq=""
       while [ $# -gt 0 ]; do [ "$1" = "--jq" ] && jq="$2"; shift; done
@@ -267,6 +284,81 @@ ship --gate 'test ! -e newfile.txt && echo x >>"$ST/gates"'; expect 0 "gate runs
 [ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 2 ] || fail "2 CI waits"
 mh="$(grep -o 'match-head-commit [0-9a-f]*' "$ST/gh.log" | awk '{print $2}')"
 git --git-dir="$ORIGIN" merge-base --is-ancestor main "$mh" || fail "merge pinned to a head descending from the moved main"
+
+# ===== strictness of main's required checks decides when ship-pr rebases
+STRICT_LINE='required checks on main are strict: rebasing when origin/main moves'
+LOOSE_LINE='required checks on main are not strict: rebasing only on a conflict'
+NOSTRICT='[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false}}]'
+FALLBACK_LINE='cannot read whether required checks on main are strict; assuming strict'
+
+setup; ship; expect 0 "default reads strict"
+grep -q "$STRICT_LINE" <<<"$ERR" || fail "strict mode line: [$ERR]"
+setup; echo "$NOSTRICT" >"$ST/rules"; ship; expect 0 "rules not strict"
+grep -q "$LOOSE_LINE" <<<"$ERR" || fail "not strict mode line: [$ERR]"
+setup; echo '[]' >"$ST/rules"; ship; expect 0 "no rules"
+grep -q "$LOOSE_LINE" <<<"$ERR" || fail "no rules is not strict: [$ERR]"
+setup; echo '[{"type":"required_status_checks","parameters":{}},{"type":"deletion"}]' >"$ST/rules"; ship; expect 0 "rule without the strict field"
+grep -q "$LOOSE_LINE" <<<"$ERR" || fail "missing strict field is not strict: [$ERR]"
+setup; echo "$NOSTRICT" >"$ST/rules"; echo '{"strict":true}' >"$ST/classic"; ship; expect 0 "classic strict"
+grep -q "$STRICT_LINE" <<<"$ERR" || fail "classic strict wins: [$ERR]"
+setup; echo "$NOSTRICT" >"$ST/rules"; echo '{"strict":false}' >"$ST/classic"; ship; expect 0 "classic not strict"
+grep -q "$LOOSE_LINE" <<<"$ERR" || fail "classic false is not strict: [$ERR]"
+setup; touch "$ST/api-fail"; ship; expect 0 "lookup fails"
+grep -q "$FALLBACK_LINE" <<<"$ERR" && grep -q "$STRICT_LINE" <<<"$ERR" || fail "lookup failure falls back to strict: [$ERR]"
+setup; echo "$NOSTRICT" >"$ST/rules"; touch "$ST/classic-fail"; ship; expect 0 "classic lookup fails"
+grep -q "$FALLBACK_LINE" <<<"$ERR" && grep -q "$STRICT_LINE" <<<"$ERR" || fail "classic failure falls back to strict: [$ERR]"
+
+# not strict: no rebase because main moved
+setup; echo "$NOSTRICT" >"$ST/rules"; advance_main other.txt o
+ship; expect 0 "not strict, main moved before ship"
+grep -q 'rebasing feature' <<<"$ERR" && fail "no rebase: [$ERR]"
+! grep -q 'pushing rebased' <<<"$ERR" || fail "no push: [$ERR]"
+grep -q "^gh pr merge 7 --repo O/N --squash --match-head-commit $HEAD0\$" "$ST/gh.log" || fail "merge pinned to HEAD0"
+[ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 1 ] || fail "one CI wait"
+
+setup; echo "$NOSTRICT" >"$ST/rules"; checks_hook "$BUMP_MAIN"
+ship; expect 0 "not strict, main moves during CI"
+grep -q 'retry' <<<"$ERR" && fail "no retry: [$ERR]"
+grep -q "^gh pr merge 7 --repo O/N --squash --match-head-commit $HEAD0\$" "$ST/gh.log" || fail "merge pinned to HEAD0 after a main move"
+[ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 1 ] || fail "one CI wait despite the main move"
+
+# not strict: a reported conflict rebases, before the first push
+setup; echo "$NOSTRICT" >"$ST/rules"; echo CONFLICTING >"$ST/mergeable"; advance_main other.txt o
+ship --gate 'test ! -e other.txt && echo x >>"$ST/gates"'; expect 0 "not strict, conflict that rebases cleanly"
+[ "$(wc -l <"$ST/gates")" -eq 1 ] || fail "gate ran once, on the pre-rebase head"
+mh="$(grep -o 'match-head-commit [0-9a-f]*' "$ST/gh.log" | awk '{print $2}')"
+[ "$mh" != "$HEAD0" ] && git --git-dir="$ORIGIN" merge-base --is-ancestor main "$mh" || fail "merge pinned to the rebased head"
+[ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 1 ] || fail "one CI wait after the rebase"
+
+setup; echo "$NOSTRICT" >"$ST/rules"; echo CONFLICTING >"$ST/mergeable"; advance_main other.txt o
+run 7 --repo O/N --reviewed "$(git -C "$C" rev-parse HEAD)" --worktree "$WT"; expect 4 "not strict, rebase checks the patch-id"
+no_merge "not strict patch-id"; [ "$(origin_head)" = "$HEAD0" ] || fail "mismatch pushes nothing"
+
+setup; echo "$NOSTRICT" >"$ST/rules"; echo DIRTY >"$ST/merge-state"; advance_main other.txt o
+ship; expect 3 "not strict, DIRTY after the rebase and push"; no_merge "not strict DIRTY"
+grep -q "PR conflicts with origin/main after the push; rebase again, then rerun" <<<"$ERR" || fail "DIRTY message: [$ERR]"
+[ "$(origin_head)" != "$HEAD0" ] || fail "DIRTY probe rebased and pushed"
+
+setup; echo "$NOSTRICT" >"$ST/rules"; echo UNKNOWN >"$ST/mergeable"; echo UNKNOWN >"$ST/merge-state"; advance_main other.txt o
+ship; expect 0 "not strict, UNKNOWN mergeable"
+! grep -q "rebasing feature" <<<"$ERR" || fail "UNKNOWN does not rebase: [$ERR]"
+
+setup; echo "$NOSTRICT" >"$ST/rules"; echo CONFLICTING >"$ST/mergeable"
+echo changed >"$WT/file.txt"; git -C "$WT" commit -qam "touch file"; git -C "$WT" push -q origin feature
+HEAD0="$(git -C "$WT" rev-parse HEAD)"
+advance_main file.txt conflicting
+ship; expect 3 "not strict, truly conflicting"; untouched "not strict conflict"; no_merge "not strict conflict"
+for d in rebase-merge rebase-apply; do
+  [ ! -e "$(git -C "$WT" rev-parse --git-path $d)" ] || fail "not strict conflict leaves no $d"
+done
+[ -z "$(git -C "$WT" status --porcelain)" ] || fail "not strict conflict leaves a clean tree"
+
+# the conflicting commit lands during the gate: the probe's rebase refetches main first
+setup; echo "$NOSTRICT" >"$ST/rules"; echo CONFLICTING >"$ST/mergeable"
+echo changed >"$WT/file.txt"; git -C "$WT" commit -qam "touch file"; git -C "$WT" push -q origin feature
+HEAD0="$(git -C "$WT" rev-parse HEAD)"
+ship --gate 'echo conflicting >"$C/file.txt"; git -C "$C" commit -qam m; git -C "$C" push -q origin main'
+expect 3 "not strict, conflicting commit lands during the gate"; untouched "conflict during the gate"; no_merge "conflict during the gate"
 
 # ===== exit 5: stray closing keywords
 setup; echo 'Resolves #97. also fixes #9' >"$ST/body"

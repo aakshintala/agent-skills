@@ -4,7 +4,7 @@
 #        Run it after review-loop has a verdict on <sha>. In order: check the PR is
 #        open and its head branch is checked out clean in --worktree; run --gate in
 #        the worktree on that head, once, before any rebase or push; rebase onto
-#        origin/main if it moved; compare the PR diff's `git patch-id --stable` with
+#        origin/main (see below); compare the PR diff's `git patch-id --stable` with
 #        <sha>'s; push a rebased branch with
 #        --force-with-lease and `gh-ci wait` (--timeout, default 1800); run
 #        pr-closes; mark a draft ready and squash-merge pinned to the checked head;
@@ -16,9 +16,17 @@
 #        Exit 0 merged, 1 gate/CI/push/merge failure, 2 bad usage or a failed
 #        precondition, 3 rebase conflict (aborted) or a conflict `gh-ci wait` found after the push, 4 patch-id mismatch (needs a new
 #        verdict), 5 PR text needs a fix (missing --body-has lines, or stray closing keywords from pr-closes), 124 CI wait timeout.
-#        When origin/main moves during the CI wait, ship-pr goes back to the rebase
-#        (rebase, patch-id check, push and CI wait again; no gate), at most 3 times;
-#        the 4th move exits 1.
+#        Rebase rule, by whether main's required-status-checks rule is strict (a
+#        ruleset's strict_required_status_checks_policy, or classic branch
+#        protection's required_status_checks.strict; strict if either says so; a
+#        failed lookup, other than a classic 404, falls back to strict). The mode is
+#        printed once.
+#        Strict: rebase onto origin/main when it moved. When origin/main moves during
+#        the CI wait, ship-pr goes back to the rebase (rebase, patch-id check, push
+#        and CI wait again; no gate), at most 3 times; the 4th move exits 1.
+#        Not strict: after the gate, read the PR's mergeable and mergeStateStatus;
+#        rebase (after refetching origin/main) only on CONFLICTING or DIRTY. One CI
+#        wait, no retry when origin/main moves; a conflict found after CI exits 3.
 #        --timeout bounds each CI wait, so a run can take one gate and up to 4 CI waits.
 #        SHIP_PR_INTERVAL: seconds between MERGED polls (default 5, at most 12 polls).
 set -euo pipefail
@@ -90,6 +98,35 @@ patch_id() {
   echo "${id:-none}"
 }
 
+# Whether main's required checks are strict. Any lookup error other than a classic
+# rule's 404 (no classic rule) counts as strict: the old behaviour, costing only CI time.
+strict_checks() {
+  local out
+  if ! out="$(gh api "repos/$repo/rules/branches/main" \
+    --jq '[.[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy] | any' 2>/dev/null)"; then
+    say "cannot read whether required checks on main are strict; assuming strict"; return 0
+  fi
+  [ "$out" != "true" ] || return 0
+  if ! out="$(gh api "repos/$repo/branches/main/protection/required_status_checks" --jq .strict 2>&1)"; then
+    case "$out" in *"HTTP 404"*) return 1 ;; esac
+    say "cannot read whether required checks on main are strict; assuming strict"; return 0
+  fi
+  [ "$out" = "true" ]
+}
+if strict_checks; then
+  strict=1; say "required checks on main are strict: rebasing when origin/main moves"
+else
+  strict=0; say "required checks on main are not strict: rebasing only on a conflict"
+fi
+
+rebase_main() {
+  say "rebasing $branch onto origin/main"
+  if ! git -C "$worktree" rebase origin/main >&2; then
+    git -C "$worktree" rebase --abort >&2 || true
+    die 3 "rebase onto origin/main conflicts; resolve it, then rerun"
+  fi
+}
+
 # Step 2: the gate runs once, on the PR head, before any rebase or push. It checks
 # code; it never changes what was reviewed. CI covers the rebased head.
 if [ -n "$gate" ]; then
@@ -102,17 +139,28 @@ if [ -n "$gate" ]; then
     || die 1 "the gate changed the worktree; commit nothing from a gate"
 fi
 
-# Steps 3-5 repeat when origin/main moves during the CI wait, at most 3 times.
+# Not strict: ask GitHub for a conflict now, after the gate (which takes minutes).
+# main may have gained the conflicting commit meanwhile, so refetch before the rebase.
+conflict=""
+if [ "$strict" = 0 ]; then
+  probe="$(gh pr view "$pr" --repo "$repo" --json mergeable,mergeStateStatus \
+    --jq '[.mergeable, .mergeStateStatus] | @tsv' 2>/dev/null)" || probe=""
+  [ -n "$probe" ] || say "cannot read PR $pr mergeability; not rebasing"
+  case "$probe" in CONFLICTING*|*DIRTY) conflict=1 ;; esac
+  if [ -n "$conflict" ]; then
+    git -C "$worktree" fetch -q origin +refs/heads/main:refs/remotes/origin/main >&2 || die 1 "git fetch origin main failed"
+  fi
+fi
+
+# Steps 3-5 repeat when origin/main moves during the CI wait (strict only), at most 3 times.
 # lease is the branch SHA last known on the remote: head0, then each pushed pin.
 lease="$head0" retries=0
 while :; do
-  # Step 3: rebase onto origin/main when it moved.
-  if ! git -C "$worktree" merge-base --is-ancestor origin/main HEAD; then
-    say "rebasing $branch onto origin/main"
-    if ! git -C "$worktree" rebase origin/main >&2; then
-      git -C "$worktree" rebase --abort >&2 || true
-      die 3 "rebase onto origin/main conflicts; resolve it, then rerun"
-    fi
+  # Step 3: rebase onto origin/main when it moved (strict) or on a reported conflict.
+  if [ "$strict" = 1 ]; then
+    git -C "$worktree" merge-base --is-ancestor origin/main HEAD || rebase_main
+  elif [ -n "$conflict" ]; then
+    rebase_main
   fi
   pin="$(git -C "$worktree" rev-parse HEAD)"
 
@@ -139,6 +187,8 @@ while :; do
     esac
   fi
   grep -q "^head: ${pin:0:8} " <<<"$ci_out" || { printf '%s\n' "$ci_out"; die 1 "CI passed on a head other than ${pin:0:8}"; }
+
+  [ "$strict" = 1 ] || break
 
   # Up to date at merge: CI "must pass on a head up to date with main".
   git -C "$worktree" fetch -q origin +refs/heads/main:refs/remotes/origin/main >&2 || die 1 "git fetch origin main failed"
