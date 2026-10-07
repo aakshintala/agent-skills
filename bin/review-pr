@@ -43,6 +43,10 @@ fill_brief="$script_dir/fill-brief"
 jobs_dir="${TMPDIR:-/tmp}/delegate-jobs"
 state_dir="${TMPDIR:-/tmp}/review-pr"
 
+# State files older than this whose job is not RUNNING are pruned at the start
+# of a new run, so finished runs nobody collected cannot leak worktrees.
+stale_run_mins=360
+
 brief_for() {
   case "$1" in
     review) printf '%s' "$briefs_dir/review.md";;
@@ -115,6 +119,46 @@ ci_state() {
     done <<<"$checks"
   fi
   printf '%s' "$ci"
+}
+
+# remove_state_worktree STATE_FILE: remove the worktree recorded in a state
+# file and prune its registration. Best-effort: never fails and prints nothing.
+remove_state_worktree() {
+  local sf_rm wt wclone
+  sf_rm="$1"
+  wt="$(state_get "$sf_rm" worktree 2>/dev/null || true)"
+  wclone="$(state_get "$sf_rm" clone 2>/dev/null || true)"
+  [ -n "$wt" ] || return 0
+  # Remove through the worktree itself, so its registration goes even
+  # when the clone start ran in is gone.
+  git -C "$wt" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt" >/dev/null 2>&1 || true
+  if [ -n "$wclone" ] && [ -d "$wclone" ]; then
+    git -C "$wclone" worktree prune >/dev/null 2>&1 || true
+  fi
+}
+
+# prune_stale_runs: remove worktrees, run dirs and state files for runs whose
+# state file was last modified more than $stale_run_mins ago and whose job is
+# not RUNNING (record missing or .status anything but RUNNING). Best-effort:
+# never fails and prints nothing.
+prune_stale_runs() {
+  local sf jid rec status rd
+  [ -d "$state_dir" ] || return 0
+  find "$state_dir" -type f -mmin "+$stale_run_mins" 2>/dev/null | while IFS= read -r sf; do
+    [ -n "$sf" ] || continue
+    jid="${sf##*/}"
+    rec="$jobs_dir/$jid.json"
+    status="MISSING"
+    if [ -f "$rec" ]; then
+      status="$(jq -r '.status // "MISSING"' "$rec" 2>/dev/null || echo MISSING)"
+    fi
+    [ "$status" = "RUNNING" ] && continue
+    remove_state_worktree "$sf" >/dev/null 2>&1 || true
+    rd="$(state_get "$sf" run_dir 2>/dev/null || true)"
+    case "$rd" in "${TMPDIR:-/tmp}"/review-pr.run.*) rm -rf "$rd" >/dev/null 2>&1 || true;; esac
+    rm -f "$sf" >/dev/null 2>&1 || true
+  done >/dev/null 2>&1 || true
+  return 0
 }
 
 cmd_start() {
@@ -241,6 +285,8 @@ cmd_start() {
     patch_id="$(gh pr diff "$pr" --repo "$repo" | git patch-id --stable | awk '{print $1}')"
     if [ -z "$patch_id" ]; then patch_id="none"; fi
   fi
+
+  prune_stale_runs >/dev/null 2>&1 || true
 
   mkdir -p "$state_dir"
   run_dir="$(mktemp -d "${TMPDIR:-/tmp}/review-pr.run.XXXXXX")"
@@ -395,15 +441,7 @@ cmd_collect() {
   posted_ok=""
   cleanup() {
     for sf in ${state_rm[@]+"${state_rm[@]}"}; do
-      wt="$(state_get "$sf" worktree 2>/dev/null || true)"
-      wclone="$(state_get "$sf" clone 2>/dev/null || true)"
-      [ -n "$wt" ] || continue
-      # Remove through the worktree itself, so its registration goes even
-      # when the clone start ran in is gone.
-      git -C "$wt" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
-      if [ -n "$wclone" ]; then
-        git -C "$wclone" worktree prune >/dev/null 2>&1 || true
-      fi
+      remove_state_worktree "$sf" || true
     done
     for sf in ${state_rm[@]+"${state_rm[@]}"}; do
       rd="$(state_get "$sf" run_dir 2>/dev/null || true)"

@@ -734,4 +734,148 @@ bash "$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "collect
   fail "collect leaves another run's worktrees registered"
 [ -d "$sibling_rd/wt-review" ] || fail "collect leaves another run's dir"
 
+# --- case: start prunes a finished run nobody collected
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+mkdir -p "$TMPDIR/review-pr" "$TMPDIR/delegate-jobs"
+stale_rd="$(mktemp -d "$TMPDIR/review-pr.run.XXXXXX")"
+stale_wt="$stale_rd/wt-old"
+git -C "$T/clone" worktree add -q --detach "$stale_wt" "$FAKE_SHA" || fail "stale worktree setup"
+stale_sf="$TMPDIR/review-pr/job-old"
+{
+  printf 'role=%s\n' "review"
+  printf 'repo=%s\n' "O/N"
+  printf 'pr=%s\n' "7"
+  printf 'sha=%s\n' "$FAKE_SHA"
+  printf 'patch_id=%s\n' "none"
+  printf 'model=%s\n' "M"
+  printf 'clone=%s\n' "$T/clone"
+  printf 'worktree=%s\n' "$stale_wt"
+  printf 'run_dir=%s\n' "$stale_rd"
+} >"$stale_sf"
+printf '{"status":"DONE"}\n' >"$TMPDIR/delegate-jobs/job-old.json"
+old_ts="$(date -v-7H +%Y%m%d%H%M 2>/dev/null || date -d '7 hours ago' +%Y%m%d%H%M)"
+touch -t "$old_ts" "$stale_sf" || fail "touch stale state"
+start_out="$(start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 --model M --overbuild-model M2 2>"$T/stderr.txt")" || fail "pruning start exits 0"
+[ "$start_out" = "review job-review
+overbuild job-overbuild
+watch: delegate watch job-review job-overbuild
+collect: review-pr collect job-review job-overbuild" ] || fail "pruning start prints only the new jobs: [$start_out]"
+[ ! -e "$stale_sf" ] || fail "prune removes the stale state file"
+[ ! -e "$stale_wt" ] || fail "prune removes the stale worktree"
+[ ! -e "$stale_rd" ] || fail "prune removes the stale run dir"
+[ "$(git -C "$T/clone" worktree list | grep -c "$stale_rd" || true)" = "0" ] || fail "prune unregisters the stale worktree"
+[ -f "$TMPDIR/review-pr/job-review" ] || fail "pruning start still saves the new state"
+bash "$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "collect after prune exits 0"
+
+# --- case: start keeps a stale state file whose job is still running
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+mkdir -p "$TMPDIR/review-pr" "$TMPDIR/delegate-jobs"
+stale_rd="$(mktemp -d "$TMPDIR/review-pr.run.XXXXXX")"
+stale_wt="$stale_rd/wt-old"
+git -C "$T/clone" worktree add -q --detach "$stale_wt" "$FAKE_SHA" || fail "stale worktree setup"
+stale_sf="$TMPDIR/review-pr/job-old"
+{
+  printf 'role=%s\n' "review"
+  printf 'repo=%s\n' "O/N"
+  printf 'pr=%s\n' "7"
+  printf 'sha=%s\n' "$FAKE_SHA"
+  printf 'patch_id=%s\n' "none"
+  printf 'model=%s\n' "M"
+  printf 'clone=%s\n' "$T/clone"
+  printf 'worktree=%s\n' "$stale_wt"
+  printf 'run_dir=%s\n' "$stale_rd"
+} >"$stale_sf"
+printf '{"status":"RUNNING"}\n' >"$TMPDIR/delegate-jobs/job-old.json"
+old_ts="$(date -v-7H +%Y%m%d%H%M 2>/dev/null || date -d '7 hours ago' +%Y%m%d%H%M)"
+touch -t "$old_ts" "$stale_sf" || fail "touch stale state"
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start with a running stale run exits 0"
+[ -f "$stale_sf" ] || fail "running stale state is kept"
+[ -d "$stale_wt" ] || fail "running stale worktree is kept"
+[ -d "$stale_rd" ] || fail "running stale run dir is kept"
+bash "$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "collect after running-stale exits 0"
+git -C "$T/clone" worktree remove --force "$stale_wt" >/dev/null 2>&1 || rm -rf "$stale_wt"
+rm -rf "$stale_rd"
+rm -f "$stale_sf" "$TMPDIR/delegate-jobs/job-old.json"
+
+# --- case: start keeps a finished run whose state file is fresh
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+mkdir -p "$TMPDIR/review-pr" "$TMPDIR/delegate-jobs"
+stale_rd="$(mktemp -d "$TMPDIR/review-pr.run.XXXXXX")"
+stale_wt="$stale_rd/wt-old"
+git -C "$T/clone" worktree add -q --detach "$stale_wt" "$FAKE_SHA" || fail "stale worktree setup"
+stale_sf="$TMPDIR/review-pr/job-old"
+{
+  printf 'role=%s\n' "review"
+  printf 'repo=%s\n' "O/N"
+  printf 'pr=%s\n' "7"
+  printf 'sha=%s\n' "$FAKE_SHA"
+  printf 'patch_id=%s\n' "none"
+  printf 'model=%s\n' "M"
+  printf 'clone=%s\n' "$T/clone"
+  printf 'worktree=%s\n' "$stale_wt"
+  printf 'run_dir=%s\n' "$stale_rd"
+} >"$stale_sf"
+printf '{"status":"DONE"}\n' >"$TMPDIR/delegate-jobs/job-old.json"
+fresh_ts="$(date -v-1H +%Y%m%d%H%M 2>/dev/null || date -d '1 hour ago' +%Y%m%d%H%M)"
+touch -t "$fresh_ts" "$stale_sf" || fail "touch fresh state"
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start with a fresh stale run exits 0"
+[ -f "$stale_sf" ] || fail "fresh state is kept"
+[ -d "$stale_wt" ] || fail "fresh worktree is kept"
+[ -d "$stale_rd" ] || fail "fresh run dir is kept"
+bash "$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "collect after fresh-stale exits 0"
+git -C "$T/clone" worktree remove --force "$stale_wt" >/dev/null 2>&1 || rm -rf "$stale_wt"
+rm -rf "$stale_rd"
+rm -f "$stale_sf" "$TMPDIR/delegate-jobs/job-old.json"
+
+# --- case: start prunes a stale state file with no job record
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+mkdir -p "$TMPDIR/review-pr" "$TMPDIR/delegate-jobs"
+stale_rd="$(mktemp -d "$TMPDIR/review-pr.run.XXXXXX")"
+stale_wt="$stale_rd/wt-old"
+git -C "$T/clone" worktree add -q --detach "$stale_wt" "$FAKE_SHA" || fail "stale worktree setup"
+stale_sf="$TMPDIR/review-pr/job-old"
+{
+  printf 'role=%s\n' "review"
+  printf 'repo=%s\n' "O/N"
+  printf 'pr=%s\n' "7"
+  printf 'sha=%s\n' "$FAKE_SHA"
+  printf 'patch_id=%s\n' "none"
+  printf 'model=%s\n' "M"
+  printf 'clone=%s\n' "$T/clone"
+  printf 'worktree=%s\n' "$stale_wt"
+  printf 'run_dir=%s\n' "$stale_rd"
+} >"$stale_sf"
+rm -f "$TMPDIR/delegate-jobs/job-old.json"
+old_ts="$(date -v-7H +%Y%m%d%H%M 2>/dev/null || date -d '7 hours ago' +%Y%m%d%H%M)"
+touch -t "$old_ts" "$stale_sf" || fail "touch stale state"
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 --model M --overbuild-model M2 >/dev/null 2>&1 || fail "pruning start exits 0"
+[ ! -e "$stale_sf" ] || fail "prune removes the recordless state file"
+[ ! -e "$stale_wt" ] || fail "prune removes the recordless worktree"
+[ ! -e "$stale_rd" ] || fail "prune removes the recordless run dir"
+bash "$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "collect after recordless prune exits 0"
+
 echo "review-pr: all cases passed"
