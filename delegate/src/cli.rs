@@ -12,7 +12,7 @@ use crate::status_record::{
 };
 use crate::types::{Config, JobSpec, ResumeContext};
 use crate::util::{json_compact, random_uuid, resolve_path};
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
 const USAGE: &str =
-    "usage: delegate run --model M [--cwd D] [--gate CMD] [--tool-idle-ms N] [--prompt-file F]
+    "usage: delegate run --model M [--cwd D] [--gate CMD] [--tool-idle-ms N] [--prompt-file F | stdin]
        delegate resume <jobId> [--model M] [--gate CMD] [--prompt-file F | stdin]
        delegate cancel <jobId>
        delegate watch <jobId>... [--timeout S]  (exit 1: timed out; jobs still RUNNING)
@@ -178,8 +178,27 @@ fn launch(p: LaunchParams<'_>) -> Result<String, LaunchErr> {
     Ok(id)
 }
 
+/// The prompt from `--prompt-file`, else stdin. A terminal stdin is a usage error:
+/// reading it would block waiting for input nobody meant to type (#168).
+fn read_prompt(kv: &[(String, String)]) -> Result<String, Usage> {
+    let mut prompt = String::new();
+    match flag(kv, "--prompt-file") {
+        Some(f) => prompt = std::fs::read_to_string(f).map_err(|e| Usage(format!("{f}: {e}")))?,
+        None => {
+            if std::io::stdin().is_terminal() {
+                return usage("no prompt: pass it on stdin or with --prompt-file");
+            }
+            let _ = std::io::stdin().read_to_string(&mut prompt);
+        }
+    }
+    if prompt.trim().is_empty() {
+        return usage("prompt is empty");
+    }
+    Ok(prompt)
+}
+
 fn run(args: &[String]) -> Result<i32, Usage> {
-    let (kv, _) = parse(
+    let (kv, pos) = parse(
         args,
         &[
             "--model",
@@ -189,6 +208,11 @@ fn run(args: &[String]) -> Result<i32, Usage> {
             "--prompt-file",
         ],
     )?;
+    if let Some(p) = pos.first() {
+        return usage(format!(
+            "unexpected argument {p:?}: pass the prompt on stdin or with --prompt-file"
+        ));
+    }
     let Some(model) = flag(&kv, "--model") else {
         return usage("--model is required");
     };
@@ -217,16 +241,7 @@ fn run(args: &[String]) -> Result<i32, Usage> {
         }
         return usage(format!("{e}"));
     }
-    let mut prompt = String::new();
-    match flag(&kv, "--prompt-file") {
-        Some(f) => prompt = std::fs::read_to_string(f).map_err(|e| Usage(format!("{f}: {e}")))?,
-        None => {
-            let _ = std::io::stdin().read_to_string(&mut prompt);
-        }
-    }
-    if prompt.trim().is_empty() {
-        return usage("prompt is empty");
-    }
+    let prompt = read_prompt(&kv)?;
     let cwd = match flag(&kv, "--cwd") {
         Some(d) => resolve_path(d),
         None => std::env::current_dir()
@@ -329,16 +344,7 @@ fn resume(args: &[String]) -> Result<i32, Usage> {
     }
     let gate = flag(&kv, "--gate").unwrap_or(&stored_gate).to_string();
 
-    let mut prompt = String::new();
-    match flag(&kv, "--prompt-file") {
-        Some(f) => prompt = std::fs::read_to_string(f).map_err(|e| Usage(format!("{f}: {e}")))?,
-        None => {
-            let _ = std::io::stdin().read_to_string(&mut prompt);
-        }
-    }
-    if prompt.trim().is_empty() {
-        return usage("prompt is empty");
-    }
+    let prompt = read_prompt(&kv)?;
     if !std::path::Path::new(&stored_cwd).is_dir() {
         return usage(format!("cwd {stored_cwd} is not a directory"));
     }
