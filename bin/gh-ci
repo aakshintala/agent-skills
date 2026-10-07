@@ -205,12 +205,10 @@ cmd_wait() {
       continue
     fi
     dirty_head=""
-    verdict=""
     if [ "$draft" = true ]; then
       checks_json=$(gh pr checks "$pr" --repo "$REPO" --json name,bucket 2>&1 || true)
     elif [ "$empty_ok" = true ] && [ "$req" = "[]" ]; then
       checks_json='[]'
-      verdict=pass
     else
       checks_json=$(gh pr checks "$pr" --repo "$REPO" --required --json name,bucket 2>&1 || true)
       padded=$(printf '%s' "$checks_json" | jq -c --argjson req "$req" '
@@ -218,14 +216,12 @@ cmd_wait() {
           . as $f | $f + [$req[] | select(. as $n | all($f[]; .name != $n)) | {name: ., bucket: "pending"}] end' 2>/dev/null) \
         && checks_json="$padded"
     fi
-    if [ -z "$verdict" ]; then
-      verdict=$(printf '%s' "$checks_json" | jq -r --argjson empty_ok "$empty_ok" '
+    verdict=$(printf '%s' "$checks_json" | jq -r --argjson empty_ok "$empty_ok" '
       if type == "array" and length == 0 and $empty_ok then "pass"
       elif type != "array" or length == 0 then "pending"
       elif any(.[]; .bucket != "pass" and .bucket != "skipping" and .bucket != "fail" and .bucket != "cancel") then "pending"
       elif any(.[]; .bucket == "fail" or .bucket == "cancel") then "fail"
       else "pass" end' 2>/dev/null) || verdict=pending
-    fi
     case "$verdict" in pass|fail) ;; *) verdict="pending";; esac
     if [ "$verdict" = "pending" ]; then
       if [ "$slept" -ge "$timeout" ]; then
