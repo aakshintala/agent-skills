@@ -30,6 +30,7 @@ out_path=""
 have_out=0
 args=()
 while [ $# -gt 0 ]; do
+  case "$1" in --help|-h) usage;; esac
   if [ "$1" = "--out" ]; then
     [ "$have_out" = 0 ] && [ $# -ge 2 ] || usage
     have_out=1

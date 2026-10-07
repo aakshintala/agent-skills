@@ -81,6 +81,10 @@ bash "$FILL" >/dev/null 2>&1; [ "$?" = "2" ] || fail "no args exits 2"
 usage_out="$(bash "$FILL" 2>&1 >/dev/null)" || true
 case "$usage_out" in *"must come first"*) fail "usage no longer says --out must come first" ;; esac
 case "$usage_out" in *"--out may come anywhere"*) ;; *) fail "usage says --out may come anywhere" ;; esac
+for h in --help -h; do
+  help_out="$(bash "$FILL" "$h" 2>&1 >/dev/null)" && fail "$h exits non-zero"
+  case "$help_out" in "usage: fill-brief"*) ;; *) fail "$h prints usage, got [$help_out]" ;; esac
+done
 bash "$FILL" "$T/t.md" 'NOEQUALS'>/dev/null 2>&1; [ "$?" = "2" ] || fail "key without = exits 2"
 bash "$FILL" "$T/does-not-exist.md" 'A=1' >/dev/null 2>&1; [ "$?" = "2" ] || fail "missing template exits 2"
 
