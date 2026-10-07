@@ -49,7 +49,7 @@ delegate run --model composer-2.5 --cwd /abs/repo \
 The gate is the repo's own gate command (its workflow doc names it, e.g. `scripts/check` or `cargo nextest run`), exactly as CI runs it.
 
 `run` prints the job id and returns; the job runs in a detached supervisor.
-A Claude model id may carry a trailing `:<level>` (`low|medium|high|xhigh|max`), passed to `claude` as `--effort` (e.g. `claude-fable-5-1:low`).
+A Claude model id may carry a trailing `:<level>` (`low|medium|high|xhigh|max`), passed to `claude` as `--effort` (e.g. `claude-opus-5-5:high`).
 Every job can write, so a read task says "do not edit" in its brief, the record's
 `changeSet` shows any write, and parallel jobs need separate cwds (one worktree per lane).
 
