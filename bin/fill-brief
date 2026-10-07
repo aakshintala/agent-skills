@@ -5,24 +5,17 @@
 #        --out may appear anywhere among the arguments, at most once.
 #        A VALUE starting with @ is read from that file. All values are literal:
 #        multi-line text and & \ / $ pass through unchanged. Without --out, prints
-#        the filled template on stdout. With --out, missing parent directories
-#        are created first, then it writes to <path> and prints
+#        the filled template on stdout. With --out, creates <path>'s directory, writes it there and prints
 #        exactly one line on stdout: Read <path> and follow it.
 #        A template containing __PARENT__ needs a non-empty PARENT value (the
 #        parent's session name); there is no fallback.
 #        Exit 1 (nothing on stdout, one problem per line on stderr) when a
 #        placeholder is left unfilled, a key matches nothing, PARENT is empty,
-#        the output cannot be written, or reading it back differs. An unknown-key
-#        error is followed by one line naming the keys the template takes.
-#        Exit 2 on bad usage, including a key that is not upper-case words joined
-#        by single underscores, or a
+#        the output cannot be written, or reading it back differs. Exit 2 on bad usage, including a
 #        relative --out path.
 set -euo pipefail
 # bash 5.2+ treats & in a ${var//pat/rep} replacement as the match; keep it literal.
 shopt -u patsub_replacement 2>/dev/null || true
-# A placeholder: __NAME__, NAME upper-case words joined by single underscores,
-# so adjacent placeholders (__A____B__) read as two.
-placeholder_re='__[A-Z][A-Z0-9]*(_[A-Z0-9]+)*__'
 
 usage() {
   {
@@ -77,7 +70,7 @@ for arg in ${args[@]+"${args[@]:1}"}; do
     *=*) k="${arg%%=*}"; v="${arg#*=}" ;;
     *) usage ;;
   esac
-  [[ "__${k}__" =~ ^${placeholder_re}$ ]] || { echo "fill-brief: bad key: $k (upper-case words joined by single underscores)" >&2; exit 2; }
+  [ -n "$k" ] || usage
   keys[${#keys[@]}]="$k"
   vals[${#vals[@]}]="$v"
 done
@@ -105,20 +98,11 @@ while [ "$i" -lt "$nkeys" ]; do
 done
 
 if [ "$nkeys" -gt 0 ]; then
-  unknown=0
   for k in "${keys[@]}"; do
     if [[ "$orig" != *"__${k}__"* ]]; then
       add_error "unknown key: $k"
-      unknown=1
     fi
   done
-  if [ "$unknown" = 1 ]; then
-    # Name the keys the template takes: its distinct __NAME__ placeholders,
-    # in first-appearance order. Exactly one line per run.
-    takes="$(printf '%s' "$orig" | grep -oE "$placeholder_re" \
-      | awk '!seen[$0]++ { sub(/^__/, ""); sub(/__$/, ""); printf "%s%s", sep, $0; sep=" " }' || true)"
-    add_error "fill-brief: $template takes:${takes:+ $takes}"
-  fi
 fi
 
 # One pass over the template: take the earliest placeholder left, copy the text
@@ -151,7 +135,7 @@ while [ "$i" -lt "$nkeys" ]; do
   rest="${rest//"__${keys[$i]}__"/ }"
   i=$((i + 1))
 done
-leftovers="$(printf '%s' "$rest" | grep -oE "$placeholder_re" || true)"
+leftovers="$(printf '%s' "$rest" | grep -oE '__[A-Z][A-Z0-9_]*__' || true)"
 seen="|"
 while IFS= read -r m; do
   [ -n "$m" ] || continue
@@ -167,9 +151,7 @@ if [ -n "$errors" ]; then
 fi
 
 if [ -n "$out_path" ]; then
-  out_dir="${out_path%/*}"
-  [ -n "$out_dir" ] || out_dir="/"
-  mkdir -p "$out_dir" 2>/dev/null || true
+  mkdir -p "${out_path%/*}" 2>/dev/null || true
   if ! printf '%s' "$out" >"$out_path"; then
     echo "fill-brief: cannot write output file: $out_path" >&2
     exit 1
