@@ -132,6 +132,34 @@ const SORTED_IDS: [&str; 11] = [
 ];
 
 #[test]
+fn help_flags_print_usage_on_stdout_and_exit_0() {
+    let e = Env::new("help", &agent_script(FULL_LIST));
+    for args in [&["--help"][..], &["-h"][..], &["help"][..]] {
+        let out = e.delegate(args, None);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "args {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8(out.stdout).unwrap();
+        assert!(
+            stdout.contains("usage: delegate run"),
+            "args {args:?}: {stdout:?}"
+        );
+        assert!(
+            stdout.contains("delegate doctor"),
+            "args {args:?}: {stdout:?}"
+        );
+        assert!(
+            out.stderr.is_empty(),
+            "args {args:?}: stderr {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
 fn models_lists_every_row_with_default_marked() {
     let e = Env::new("models", &agent_script(FULL_LIST));
     let out = e.delegate(&["models"], None);

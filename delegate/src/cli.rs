@@ -37,6 +37,13 @@ fn usage<T>(msg: impl Into<String>) -> Result<T, Usage> {
 
 pub fn main() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(
+        args.first().map(String::as_str),
+        Some("--help" | "-h" | "help")
+    ) {
+        println!("{USAGE}");
+        return 0;
+    }
     let res = match args.first().map(String::as_str) {
         Some("run") => run(&args[1..]),
         Some("resume") => resume(&args[1..]),
