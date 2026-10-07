@@ -122,42 +122,56 @@ ci_state() {
 }
 
 # remove_state_worktree STATE_FILE: remove the worktree recorded in a state
-# file and prune its registration. Best-effort: never fails and prints nothing.
+# file and prune its registration. Callers silence output and tolerate failure.
 remove_state_worktree() {
   local sf_rm wt wclone
   sf_rm="$1"
-  wt="$(state_get "$sf_rm" worktree 2>/dev/null || true)"
-  wclone="$(state_get "$sf_rm" clone 2>/dev/null || true)"
+  wt="$(state_get "$sf_rm" worktree)"
+  wclone="$(state_get "$sf_rm" clone)"
   [ -n "$wt" ] || return 0
   # Remove through the worktree itself, so its registration goes even
   # when the clone start ran in is gone.
-  git -C "$wt" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt" >/dev/null 2>&1 || true
+  git -C "$wt" worktree remove --force "$wt" || rm -rf "$wt"
   if [ -n "$wclone" ] && [ -d "$wclone" ]; then
-    git -C "$wclone" worktree prune >/dev/null 2>&1 || true
+    git -C "$wclone" worktree prune
   fi
 }
 
 # prune_stale_runs: remove worktrees, run dirs and state files for runs whose
 # state file was last modified more than $stale_run_mins ago and whose job is
 # not RUNNING (record missing or .status anything but RUNNING). Best-effort:
-# never fails and prints nothing.
+# the call silences output and ignores failure, so nothing here silences itself.
+# In collect's order: gather the stale state files, then remove every worktree,
+# then the guarded run dirs, then the state files.
 prune_stale_runs() {
-  local sf jid rec status rd
+  local sf jid rec status stale_list rd
   [ -d "$state_dir" ] || return 0
-  find "$state_dir" -type f -mmin "+$stale_run_mins" 2>/dev/null | while IFS= read -r sf; do
+  stale_list="$(mktemp "${TMPDIR:-/tmp}/review-pr.prune.XXXXXX")"
+  find "$state_dir" -type f -mmin "+$stale_run_mins" | while IFS= read -r sf; do
     [ -n "$sf" ] || continue
     jid="${sf##*/}"
     rec="$jobs_dir/$jid.json"
     status="MISSING"
     if [ -f "$rec" ]; then
-      status="$(jq -r '.status // "MISSING"' "$rec" 2>/dev/null || echo MISSING)"
+      status="$(jq -r '.status // "MISSING"' "$rec" || echo MISSING)"
     fi
     [ "$status" = "RUNNING" ] && continue
-    remove_state_worktree "$sf" >/dev/null 2>&1 || true
-    rd="$(state_get "$sf" run_dir 2>/dev/null || true)"
-    case "$rd" in "${TMPDIR:-/tmp}"/review-pr.run.*) rm -rf "$rd" >/dev/null 2>&1 || true;; esac
-    rm -f "$sf" >/dev/null 2>&1 || true
-  done >/dev/null 2>&1 || true
+    printf '%s\n' "$sf" >>"$stale_list"
+  done
+  while IFS= read -r sf; do
+    [ -n "$sf" ] || continue
+    remove_state_worktree "$sf"
+  done <"$stale_list"
+  while IFS= read -r sf; do
+    [ -n "$sf" ] || continue
+    rd="$(state_get "$sf" run_dir)"
+    case "$rd" in "${TMPDIR:-/tmp}"/review-pr.run.*) rm -rf "$rd";; esac
+  done <"$stale_list"
+  while IFS= read -r sf; do
+    [ -n "$sf" ] || continue
+    rm -f "$sf"
+  done <"$stale_list"
+  rm -f "$stale_list"
   return 0
 }
 
