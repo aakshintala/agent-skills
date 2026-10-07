@@ -194,3 +194,76 @@ fn argv_flag(argv: &str, flag: &str) -> String {
         .unwrap_or_else(|| panic!("no {flag} in {argv}"))[1]
         .to_string()
 }
+
+#[test]
+fn effort_suffix_runs_and_plain_resume_keeps_it() {
+    let e = Env::new("effort-run");
+    let id = e.ok(&["run", "--model", "claude-fable-5-1:low"], "hi");
+    let done = e.wait_terminal(&id);
+    assert_eq!(done["status"], "DONE");
+    assert_eq!(done["resume"]["model"], "claude-fable-5-1:low");
+    let argv = e.argv_text();
+    assert_eq!(argv_flag(&argv, "--model"), "claude-fable-5-1", "{argv}");
+    assert_eq!(argv_flag(&argv, "--effort"), "low", "{argv}");
+
+    // A plain resume carries the stored suffixed id, so the effort survives.
+    let n_before = argv.len();
+    let next = e.ok(&["resume", &id], "again");
+    assert_eq!(e.wait_terminal(&next)["status"], "DONE");
+    assert_eq!(e.record(&next)["resume"]["model"], "claude-fable-5-1:low");
+    let tail = &e.argv_text()[n_before..];
+    assert!(tail.contains("\n--resume\n"), "{tail}");
+    assert_eq!(argv_flag(tail, "--model"), "claude-fable-5-1", "{tail}");
+    assert_eq!(argv_flag(tail, "--effort"), "low", "{tail}");
+}
+
+#[test]
+fn resume_override_can_add_or_change_effort() {
+    let e = Env::new("effort-resume");
+    let id = e.ok(&["run", "--model", "claude-sonnet-5-5"], "hi");
+    e.wait_terminal(&id);
+    let n_before = e.argv_text().len();
+    let next = e.ok(
+        &["resume", &id, "--model", "claude-sonnet-5-5:high"],
+        "again",
+    );
+    assert_eq!(e.wait_terminal(&next)["status"], "DONE");
+    assert_eq!(e.record(&next)["resume"]["model"], "claude-sonnet-5-5:high");
+    let tail = &e.argv_text()[n_before..];
+    assert_eq!(argv_flag(tail, "--model"), "claude-sonnet-5-5", "{tail}");
+    assert_eq!(argv_flag(tail, "--effort"), "high", "{tail}");
+}
+
+#[test]
+fn bad_effort_level_is_rejected_with_usage() {
+    let e = Env::new("effort-bad");
+    let out = e.delegate(&["run", "--model", "claude-fable-5-1:bogus"], Some("hi"));
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        out.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("claude-fable-5-1:bogus"), "{err}");
+    assert!(err.contains("unknown effort level \"bogus\""), "{err}");
+    assert!(err.contains("low, medium, high, xhigh, max"), "{err}");
+
+    // A bad level on resume override takes the same shape.
+    let id = e.ok(&["run", "--model", "claude-sonnet-5-5"], "hi");
+    e.wait_terminal(&id);
+    let out = e.delegate(
+        &["resume", &id, "--model", "claude-sonnet-5-5:bogus"],
+        Some("hi"),
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        out.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("claude-sonnet-5-5:bogus"), "{err}");
+    assert!(err.contains("unknown effort level \"bogus\""), "{err}");
+    assert!(err.contains("low, medium, high, xhigh, max"), "{err}");
+}

@@ -5,7 +5,7 @@ use crate::backends::Backend;
 use crate::config::build_deps;
 use crate::git::capture_head;
 use crate::job::{JobDeps, JobHandle};
-use crate::models::resolve_model;
+use crate::models::{base_model_id, resolve_model};
 use crate::prompt::status_block;
 use crate::status_record::{
     CliRecordWriter, job_record_path, write_atomic, write_cancelled, write_supervisor_died,
@@ -288,15 +288,29 @@ fn resume(args: &[String]) -> Result<i32, Usage> {
         }
     };
     // Overrides replace stored values. A model on another backend would continue the
-    // wrong session, so it is rejected before anything spawns.
+    // wrong session, so it is rejected before anything spawns. Both ids go through
+    // `base_model_id` first so a suffixed Claude id compares on its base (#157); a bad
+    // level is a usage error of its own, not the allow-list.
     let model = flag(&kv, "--model").unwrap_or(&stored_model).to_string();
     if flag(&kv, "--model").is_some() {
+        let stored_base = match base_model_id(&stored_model, &deps.config.models) {
+            Ok(b) => b.to_string(),
+            Err(msg) => return usage(msg),
+        };
+        let new_base = match base_model_id(&model, &deps.config.models) {
+            Ok(b) => b.to_string(),
+            Err(msg) => return usage(msg),
+        };
         let stored_backend = deps
             .config
             .models
-            .get(&stored_model)
+            .get(&stored_base)
             .map(|e| e.backend.as_str());
-        let new_backend = deps.config.models.get(&model).map(|e| e.backend.as_str());
+        let new_backend = deps
+            .config
+            .models
+            .get(&new_base)
+            .map(|e| e.backend.as_str());
         match (stored_backend, new_backend) {
             (Some(a), Some(b)) if a != b => {
                 return usage(format!(
@@ -542,6 +556,9 @@ fn supervise(args: &[String]) -> i32 {
     let session = flag(&kv, "--session").map(str::to_string);
     let resumed_from = flag(&kv, "--resumed-from").map(str::to_string);
     let argv = backend.argv(model, session.as_deref(), &prompt);
+    // Cost is keyed on the full id; a suffixed id prices as its base row (#157).
+    let mut price_map = config.price_map.clone();
+    price_map.insert(model.to_string(), resolved.price);
     let spec = JobSpec {
         bin: backend.bin(),
         argv,
@@ -553,7 +570,7 @@ fn supervise(args: &[String]) -> i32 {
         gate: gate.clone(),
         idle_ms: None,
         tool_idle_ms: tool_idle_ms.map(Some),
-        price_map: config.price_map.clone(),
+        price_map,
         resume_context: ResumeContext {
             model: model.clone(),
             gate: gate.clone(),

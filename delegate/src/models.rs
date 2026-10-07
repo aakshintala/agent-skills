@@ -1,5 +1,41 @@
 use crate::backends::Backend;
-use crate::types::{Config, ResolvedModel};
+use crate::types::{Config, ModelEntry, ResolvedModel};
+use std::collections::HashMap;
+
+/// The `claude --effort` values; a Claude model id may end in `:<one of these>` (#157).
+pub const CLAUDE_EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// Resolves a model id to its models.json row id. An exact key wins; otherwise a
+/// trailing `:<level>` is stripped only when the base is a key whose backend is
+/// `claude` and the level is one of [`CLAUDE_EFFORT_LEVELS`]. An invalid level on a
+/// Claude base is an error (a plain message, not [`ModelNotAllowedError`]); everything
+/// else passes through whole and the caller rejects it as unknown.
+pub fn base_model_id<'a>(
+    model: &'a str,
+    models: &HashMap<String, ModelEntry>,
+) -> Result<&'a str, String> {
+    if models.contains_key(model) {
+        return Ok(model);
+    }
+    let Some((base, level)) = model.rsplit_once(':') else {
+        return Ok(model);
+    };
+    let Some(entry) = models.get(base) else {
+        return Ok(model);
+    };
+    if entry.backend != "claude" {
+        return Ok(model);
+    }
+    if CLAUDE_EFFORT_LEVELS.contains(&level) {
+        Ok(base)
+    } else {
+        Err(format!(
+            "model \"{model}\": unknown effort level \"{level}\"; \
+             use one of {}",
+            CLAUDE_EFFORT_LEVELS.join(", ")
+        ))
+    }
+}
 
 #[derive(Debug)]
 pub struct ModelNotAllowedError {
@@ -20,7 +56,8 @@ pub fn resolve_model(
     let model = model
         .map(|s| s.to_string())
         .unwrap_or_else(|| config.default_model().to_string());
-    let entry = config.models().get(&model).ok_or_else(|| {
+    let entry_id = base_model_id(&model, config.models())?;
+    let entry = config.models().get(entry_id).ok_or_else(|| {
         Box::new(ModelNotAllowedError {
             message: format!("model \"{model}\" is not in the allow-list"),
         }) as Box<dyn std::error::Error + Send + Sync>
@@ -112,6 +149,15 @@ mod tests {
             },
         );
         models.insert(
+            "claude-fable-5-1".into(),
+            ModelEntry {
+                label: "Claude Fable 5.1".into(),
+                backend: "claude".into(),
+                price: price(10.0, 50.0, 0.25, 12.5),
+                tiers: vec![],
+            },
+        );
+        models.insert(
             "claude-sonnet-5-5".into(),
             ModelEntry {
                 label: "Claude Sonnet 5.5".into(),
@@ -155,6 +201,52 @@ mod tests {
         assert_eq!(r.model, "claude-sonnet-5-5");
         assert_eq!(r.backend, "claude");
         assert_eq!(r.price, m["claude-sonnet-5-5"].price);
+    }
+
+    #[test]
+    fn suffixed_claude_id_resolves_as_its_base() {
+        let (d, m) = base();
+        for (id, base_id) in [
+            ("claude-fable-5-1:low", "claude-fable-5-1"),
+            ("claude-sonnet-5-5:max", "claude-sonnet-5-5"),
+        ] {
+            let r = resolve_model(Some(id), &(d.as_str(), &m)).unwrap();
+            assert_eq!(r.model, id, "{id}");
+            assert_eq!(r.backend, "claude", "{id}");
+            assert_eq!(r.price, m[base_id].price, "{id}");
+        }
+    }
+
+    #[test]
+    fn bad_effort_level_is_a_plain_error_naming_the_levels() {
+        let (d, m) = base();
+        for id in [
+            "claude-fable-5-1:bogus",
+            "claude-fable-5-1:",
+            "claude-fable-5-1:LOW",
+        ] {
+            let e = resolve_model(Some(id), &(d.as_str(), &m)).unwrap_err();
+            assert!(
+                e.downcast_ref::<ModelNotAllowedError>().is_none(),
+                "{id} should not be a ModelNotAllowedError"
+            );
+            let msg = e.to_string();
+            assert!(msg.contains(&format!("model \"{id}\"")), "{msg}");
+            assert!(msg.contains("unknown effort level"), "{msg}");
+            assert!(msg.contains("low, medium, high, xhigh, max"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn suffix_on_non_claude_id_is_unknown_model() {
+        let (d, m) = base();
+        for id in ["composer-2.5:low", "nope:low"] {
+            let e = resolve_model(Some(id), &(d.as_str(), &m)).unwrap_err();
+            assert!(
+                e.downcast_ref::<ModelNotAllowedError>().is_some(),
+                "{id} should be a ModelNotAllowedError"
+            );
+        }
     }
 
     #[test]
