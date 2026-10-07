@@ -168,6 +168,8 @@ collect: review-pr collect job-review job-overbuild" ] || fail "start prints a r
 out="$(bash "$REVIEW" collect job-review job-overbuild 2>"$T/stderr.txt")" || fail "collect exits 0"
 [ "$(printf '%s' "$out" | head -1)" = "patch-id $EXPECTED_PID" ] || fail "collect patch-id line"
 grep -q "^VERDICT spec: CHANGES$" <<<"$out" || fail "collect carries VERDICT lines"
+grep -q "^VERDICT overbuild: APPROVE$" <<<"$out" || fail "collect labels the overbuild verdict"
+grep -q "^VERDICT: APPROVE$" <<<"$out" && fail "overbuild verdict is never bare"
 grep -q "^P1 fix the off-by-one$" <<<"$out" || fail "collect carries P1 lines"
 grep -q "^CI $SHORT pass$" <<<"$out" || fail "collect CI line"
 grep -q UNFINISHED <<<"$out" && fail "collect has no UNFINISHED"
@@ -296,7 +298,7 @@ start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
 out="$(bash "$REVIEW" collect job-review job-overbuild 2>/dev/null)" || fail "decorated verdicts collect exits 0"
 grep -q "^VERDICT standards: APPROVE$" <<<"$out" || fail "decorated standards verdict accepted"
 grep -q "^VERDICT spec: CHANGES$" <<<"$out" || fail "decorated spec verdict accepted"
-grep -q "^VERDICT: CHANGES$" <<<"$out" || fail "decorated overbuild verdict accepted"
+grep -q "^VERDICT overbuild: CHANGES$" <<<"$out" || fail "decorated overbuild verdict accepted"
 grep -q UNFINISHED <<<"$out" && fail "decorated verdicts are finished"
 grep -q BAD-VERDICT <<<"$out" && fail "decorated verdicts are not bad"
 
@@ -390,7 +392,7 @@ start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
 out="$(bash "$REVIEW" collect job-review job-overbuild 2>/dev/null)" && fail "glued verdict collect exits 1"
 grep -q 'UNFINISHED overbuild' <<<"$out" || fail "glued verdict is unfinished overbuild"
 grep -q BAD-VERDICT <<<"$out" && fail "glued verdict is not bad"
-grep -q '^VERDICT: APPROVE$' <<<"$out" && fail "glued line is not a verdict line"
+grep -q '^VERDICT overbuild: APPROVE$' <<<"$out" && fail "glued line is not a verdict line"
 
 # --- case: verify with a finding line that mentions VERDICT and a real FIX-OK line
 reset_state
@@ -445,6 +447,32 @@ start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
 out="$(bash "$REVIEW" collect job-review job-overbuild 2>/dev/null)" || fail "verdict mention collect exits 0"
 grep -q BAD-VERDICT <<<"$out" && fail "a VERDICT mention is not a bad verdict"
 grep -q UNFINISHED <<<"$out" && fail "a VERDICT mention is finished"
+
+# --- case: a RUNNING job waits: no post, nothing removed, retry collects
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review RUNNING "still working, no verdict yet"
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
+  --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start exits 0"
+out="$(bash "$REVIEW" collect job-review job-overbuild 2>/dev/null)" && fail "running collect exits 1"
+[ "$out" = "RUNNING review job-review: wait with delegate watch job-review job-overbuild" ] || \
+  fail "running line names role id and watch: [$out]"
+[ ! -e "$T/state/comment.md" ] || fail "running collect posts no comment"
+[ -f "$TMPDIR/review-pr/job-review" ] || fail "running collect keeps state for the retry"
+[ -f "$TMPDIR/review-pr/job-overbuild" ] || fail "running collect keeps the sibling state"
+rd="$(sed -n 's/^run_dir=//p' "$TMPDIR/review-pr/job-review")"
+[ -n "$rd" ] && [ -d "$rd" ] || fail "running collect keeps the run dir"
+[ "$(git -C "$T/clone" worktree list | grep -c 'wt-')" = "2" ] || fail "running collect keeps the worktrees"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+cp "$T/canned/review.json" "$TMPDIR/delegate-jobs/job-review.json"
+out="$(bash "$REVIEW" collect job-review job-overbuild 2>/dev/null)" || fail "retry after running exits 0"
+grep -q "^VERDICT standards: APPROVE$" <<<"$out" || fail "retry carries the review verdict"
+grep -q "^VERDICT overbuild: APPROVE$" <<<"$out" || fail "retry carries the labelled overbuild verdict"
+grep -q UNFINISHED <<<"$out" && fail "retry is finished"
 
 # --- case: collect with only one role's job id fails before posting and keeps state
 reset_state
@@ -563,9 +591,11 @@ bash "$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "--head 
 
 # --- case: --head must be a full SHA
 reset_state
-start_review 8 --repo O/N --cwd "$T/clone" --model M --overbuild-model M2 \
-  --head abc123 >/dev/null 2>&1
+err="$(start_review 8 --repo O/N --cwd "$T/clone" --model M --overbuild-model M2 \
+  --head abc123 2>&1 >/dev/null)"
 [ $? -eq 2 ] || fail "--head short sha is a usage error"
+[ "$err" = "review-pr: --head needs the full 40-character SHA (git rev-parse <sha>)" ] || \
+  fail "--head short sha message: [$err]"
 
 # --- case: --head in verify mode
 reset_state

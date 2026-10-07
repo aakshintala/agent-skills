@@ -22,6 +22,7 @@ set -euo pipefail
 #   review role:    VERDICT standards: APPROVE|CHANGES
 #                   VERDICT spec: APPROVE|CHANGES
 #   overbuild role: VERDICT: APPROVE|CHANGES
+# (collect prints the overbuild verdict as VERDICT overbuild: APPROVE|CHANGES.)
 #   verify role:    FIX-OK | FIX-INCOMPLETE (trailing detail allowed)
 # Verdict lines must start with the form below (after normalisation).
 # Matching tolerates decoration: leading/trailing whitespace, **bold**, `code`.
@@ -188,7 +189,10 @@ cmd_start() {
   fi
   if [ -z "$wdoc" ]; then wdoc="none"; fi
   if [ -n "$head" ]; then
-    printf '%s' "$head" | grep -Eq '^[0-9a-f]{40}$' || usage
+    if ! printf '%s' "$head" | grep -Eq '^[0-9a-f]{40}$'; then
+      echo 'review-pr: --head needs the full 40-character SHA (git rev-parse <sha>)' >&2
+      exit 2
+    fi
   fi
   # An issue number would otherwise wait out the --head loop below.
   if ! pr_err="$(gh pr view "$pr" --repo "$repo" --json number 2>&1 >/dev/null)"; then
@@ -476,6 +480,27 @@ cmd_collect() {
     exit 1
   fi
 
+  # A RUNNING role job has no verdict yet: say how to wait, post nothing
+  # and remove nothing, so a later collect sees the finished verdicts.
+  running_f="$tmp/running.txt"
+  : >"$running_f"
+  for jid in ${id_list[@]+"${id_list[@]}"}; do
+    rec="$jobs_dir/$jid.json"
+    [ -f "$rec" ] || continue
+    status="$(jq -r '.status // "MISSING"' "$rec" 2>/dev/null || echo MISSING)"
+    if [ "$status" = "RUNNING" ]; then
+      role="$(state_get "$state_dir/$jid" role)"
+      printf 'RUNNING %s %s: wait with delegate watch %s\n' "$role" "$jid" "$*" >>"$running_f"
+    fi
+  done
+  if [ -s "$running_f" ]; then
+    cat "$running_f"
+    # Readiness, not a finished run: keep every state file, worktree and
+    # run dir for the retry; only the scratch dir is removed by the trap.
+    state_rm=()
+    exit 1
+  fi
+
   body="$tmp/comment.md"
   {
     printf 'review-pr: patch-id %s, head %s\n' "${patch_id:-none}" "${sha:-unknown}"
@@ -525,7 +550,13 @@ cmd_collect() {
         norm="$(norm_line "$line")"
         [ -n "$norm" ] || continue
         if is_verdict "$role" "$norm"; then
-          printf '%s\n' "$norm" >>"$verdicts_f"
+          # Collect labels the overbuild verdict; the job still writes the
+          # bare form above, and the PR comment keeps the job's full text.
+          if [ "$role" = "overbuild" ]; then
+            printf 'VERDICT overbuild:%s\n' "${norm#VERDICT:}" >>"$verdicts_f"
+          else
+            printf '%s\n' "$norm" >>"$verdicts_f"
+          fi
           case "$role:$norm" in
             review:"VERDICT standards: "*) std_ok="1";;
             review:"VERDICT spec: "*) spec_ok="1";;
