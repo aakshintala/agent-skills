@@ -163,8 +163,9 @@ required_names() {
 # wait settles on the checks the head actually has, an empty list stays
 # pending, and the pass line notes required checks run once ready.
 # A required check on the head counts whenever it ran. A required name of
-# the base branch with no check on the head counts as pending. An empty
-# list passes only when the required names were read and there are none.
+# the base branch with no check on the head counts as pending. When the
+# required names were read and there are none, the verdict is pass without
+# calling gh pr checks.
 cmd_wait() {
   local pr="" timeout=1800 req="[]" empty_ok=false names
   while [ $# -gt 0 ]; do case "$1" in
@@ -204,8 +205,12 @@ cmd_wait() {
       continue
     fi
     dirty_head=""
+    verdict=""
     if [ "$draft" = true ]; then
       checks_json=$(gh pr checks "$pr" --repo "$REPO" --json name,bucket 2>&1 || true)
+    elif [ "$empty_ok" = true ] && [ "$req" = "[]" ]; then
+      checks_json='[]'
+      verdict=pass
     else
       checks_json=$(gh pr checks "$pr" --repo "$REPO" --required --json name,bucket 2>&1 || true)
       padded=$(printf '%s' "$checks_json" | jq -c --argjson req "$req" '
@@ -213,12 +218,14 @@ cmd_wait() {
           . as $f | $f + [$req[] | select(. as $n | all($f[]; .name != $n)) | {name: ., bucket: "pending"}] end' 2>/dev/null) \
         && checks_json="$padded"
     fi
-    verdict=$(printf '%s' "$checks_json" | jq -r --argjson empty_ok "$empty_ok" '
+    if [ -z "$verdict" ]; then
+      verdict=$(printf '%s' "$checks_json" | jq -r --argjson empty_ok "$empty_ok" '
       if type == "array" and length == 0 and $empty_ok then "pass"
       elif type != "array" or length == 0 then "pending"
       elif any(.[]; .bucket != "pass" and .bucket != "skipping" and .bucket != "fail" and .bucket != "cancel") then "pending"
       elif any(.[]; .bucket == "fail" or .bucket == "cancel") then "fail"
       else "pass" end' 2>/dev/null) || verdict=pending
+    fi
     case "$verdict" in pass|fail) ;; *) verdict="pending";; esac
     if [ "$verdict" = "pending" ]; then
       if [ "$slept" -ge "$timeout" ]; then

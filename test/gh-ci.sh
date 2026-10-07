@@ -93,10 +93,12 @@ run_wait() {
   OUT="$(bash "$GHCI" wait "$@" 2>"$T/stderr.txt")"; CODE=$?
 }
 
+RULES_CI='[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"ci"}]}}]'
+
 # --- case: pending then green, with a passing name containing
 # --- "failing: 0 pending: 0" (proves no substring matching)
 reset_state
-set_heads "$A"
+set_heads "$A"; echo "$RULES_CI" >"$T/state/rules"
 set_checks \
   '[{"bucket":"pending","name":"ci"},{"bucket":"pass","name":"setup"}]' \
   '[{"bucket":"pass","name":"failing: 0 pending: 0 lint-fail"},{"bucket":"pass","name":"ci"}]'
@@ -111,7 +113,7 @@ grep -q "^7$" "$T/state/sleeps.txt" || fail "sleep uses GH_CI_INTERVAL: [$(cat "
 
 # --- case: pending then one failure (plus one pass)
 reset_state
-set_heads "$A"
+set_heads "$A"; echo "$RULES_CI" >"$T/state/rules"
 set_checks \
   '[{"bucket":"pending","name":"ci"}]' \
   '[{"bucket":"fail","name":"ci"},{"bucket":"pass","name":"lint"}]'
@@ -123,7 +125,7 @@ grep -q "failing: lint" <<<"$OUT" && fail "passing job not listed: [$OUT]"
 
 # --- case: cancel counts as failing
 reset_state
-set_heads "$A"
+set_heads "$A"; echo "$RULES_CI" >"$T/state/rules"
 set_checks '[{"bucket":"cancel","name":"ci"}]'
 run_wait 7
 [ "$CODE" = "1" ] || fail "cancel exits 1 (got $CODE): [$OUT]"
@@ -131,8 +133,8 @@ grep -q "^failing: ci$" <<<"$OUT" || fail "cancel named as failing: [$OUT]"
 
 # --- case: failing name with an embedded newline still fails (not timeout)
 reset_state
-set_heads "$A"
-set_checks '[{"bucket":"fail","name":"ci\nextra"}]'
+set_heads "$A"; echo "$RULES_CI" >"$T/state/rules"
+set_checks '[{"bucket":"fail","name":"ci\nextra"},{"bucket":"pass","name":"ci"}]'
 run_wait 7 --timeout 0
 [ "$CODE" = "1" ] || fail "newline failing name exits 1 (got $CODE): [$OUT]"
 grep -q "head: ${A:0:8} CI: fail" <<<"$OUT" || fail "newline failing name header: [$OUT]"
@@ -149,7 +151,7 @@ grep -q "failing:" <<<"$OUT" && fail "injection names never listed as failing: [
 # --- case: always pending hits the timeout
 reset_state
 export GH_CI_INTERVAL=30
-set_heads "$A"
+set_heads "$A"; echo "$RULES_CI" >"$T/state/rules"
 set_checks '[{"bucket":"pending","name":"ci"}]'
 run_wait 7 --timeout 60
 [ "$CODE" = "124" ] || fail "timeout exits 124 (got $CODE): [$OUT]"
@@ -161,13 +163,11 @@ grep -q "^pending: ci$" <<<"$OUT" || fail "pending job named: [$OUT]"
 # --- case: --timeout 0 polls exactly once
 reset_state
 export GH_CI_INTERVAL=30
-set_heads "$A"
+set_heads "$A"; echo "$RULES_CI" >"$T/state/rules"
 set_checks '[{"bucket":"pending","name":"ci"}]'
 run_wait 7 --timeout 0
 [ "$CODE" = "124" ] || fail "timeout 0 exits 124 (got $CODE): [$OUT]"
 [ ! -e "$T/state/sleeps.txt" ] || fail "timeout 0 never sleeps"
-
-RULES_CI='[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"ci"}]}}]'
 
 # --- case: empty list and non-JSON output never exit 0 early while a check is required
 reset_state
@@ -182,7 +182,7 @@ grep -q "head: ${A:0:8} CI: pass" <<<"$OUT" || fail "empty-then-green pass line:
 
 # --- case: head changes mid-wait waits on the new head
 reset_state
-set_heads "$A" "$B"
+set_heads "$A" "$B"; echo "$RULES_CI" >"$T/state/rules"
 set_checks \
   '[{"bucket":"pending","name":"ci"}]' \
   '[{"bucket":"pass","name":"ci"}]'
@@ -192,7 +192,7 @@ grep -q "head: ${B:0:8} CI: pass" <<<"$OUT" || fail "head change names new head:
 
 # --- case: head moves during a verdict discards it
 reset_state
-set_heads "$A" "$B"
+set_heads "$A" "$B"; echo "$RULES_CI" >"$T/state/rules"
 set_checks \
   '[{"bucket":"fail","name":"ci"}]' \
   '[{"bucket":"pass","name":"ci"}]'
@@ -222,7 +222,7 @@ sleeps_are 6 5 || fail "conflict grace is six 5s sleeps: [$(cat "$T/state/sleeps
 
 # DIRTY then CLEAN within the grace: normal verdict
 reset_state
-set_heads "$A"; set_checks "$PASS"; set_merge DIRTY DIRTY CLEAN
+set_heads "$A"; set_checks "$PASS"; echo "$RULES_CI" >"$T/state/rules"; set_merge DIRTY DIRTY CLEAN
 run_wait 7
 [ "$CODE" = "0" ] || fail "recovered conflict exits 0 (got $CODE): [$OUT]"
 grep -q "head: ${A:0:8} CI: pass" <<<"$OUT" || fail "recovered conflict pass line: [$OUT]"
@@ -230,7 +230,7 @@ sleeps_are 2 5 || fail "recovered conflict sleeps twice: [$(cat "$T/state/sleeps
 
 # UNKNOWN resets the clock: three DIRTY, UNKNOWN (pending checks), then six DIRTY sleeps
 reset_state
-set_heads "$A"; set_checks "$PEND"
+set_heads "$A"; set_checks "$PEND"; echo "$RULES_CI" >"$T/state/rules"
 set_merge DIRTY DIRTY DIRTY UNKNOWN DIRTY
 run_wait 7
 [ "$CODE" = "3" ] || fail "reset clock still ends in 3 (got $CODE): [$OUT]"
@@ -239,7 +239,7 @@ run_wait 7
 
 # UNKNOWN with pending checks never reports a conflict
 reset_state
-set_heads "$A"; set_checks "$PEND"; set_merge UNKNOWN
+set_heads "$A"; set_checks "$PEND"; echo "$RULES_CI" >"$T/state/rules"; set_merge UNKNOWN
 run_wait 7 --timeout 60
 [ "$CODE" = "124" ] || fail "UNKNOWN is not a conflict (got $CODE): [$OUT]"
 
@@ -264,7 +264,7 @@ sleeps_are 2 5 || fail "timeout 10 sleeps two 5s: [$(cat "$T/state/sleeps.txt")]
 
 # a conflict that appears after the checks call discards the verdict
 reset_state
-set_heads "$A"; set_checks "$PASS"; set_merge CLEAN DIRTY
+set_heads "$A"; set_checks "$PASS"; echo "$RULES_CI" >"$T/state/rules"; set_merge CLEAN DIRTY
 run_wait 7 --timeout 0
 [ "$CODE" = "3" ] || fail "conflict after checks exits 3 (got $CODE): [$OUT]"
 
@@ -316,11 +316,22 @@ run_wait 7 --timeout 7
 [ "$CODE" = "124" ] || fail "absent required check times out (got $CODE): [$OUT]"
 grep -q "^pending: ci$" <<<"$OUT" || fail "absent check named pending: [$OUT]"
 
-# no required names (classic 404, no rules): empty list passes (#155)
+# no required names (classic 404, no rules): gh's "no checks" text passes at once (#155)
 reset_state
-set_heads "$A"; set_checks '[]'
+set_heads "$A"; set_checks 'no checks reported on the '"'"'main'"'"' branch'
 run_wait 7 --timeout 0
-[ "$CODE" = "0" ] || fail "no required names, empty list passes (got $CODE): [$OUT]"
+[ "$CODE" = "0" ] || fail "no required names, no-checks text passes (got $CODE): [$OUT]"
+grep -q "head: ${A:0:8} CI: pass" <<<"$OUT" || fail "no required names pass line: [$OUT]"
+[ ! -e "$T/state/sleeps.txt" ] || fail "no required names never sleeps"
+! grep -q '^gh pr checks' "$T/state/gh-args.txt" || fail "no required names never calls pr checks"
+
+# no required names while a non-required check is pending: still passes at once (#155)
+reset_state
+set_heads "$A"; set_checks '[{"bucket":"pending","name":"lint"}]'
+run_wait 7 --timeout 0
+[ "$CODE" = "0" ] || fail "no required names, pending non-required passes (got $CODE): [$OUT]"
+grep -q "head: ${A:0:8} CI: pass" <<<"$OUT" || fail "non-required pending pass line: [$OUT]"
+[ ! -e "$T/state/sleeps.txt" ] || fail "non-required pending never sleeps"
 
 # rules lookup fails: warning, empty list stays pending
 reset_state
