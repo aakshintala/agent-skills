@@ -35,7 +35,7 @@ Done when you know the tracker, labels, workflow doc and models, and the task ha
 
 Prepare the base first. A new ticket's base is `origin/main`. A re-plan's base is the PR's branch, brought up to date: merge `origin/main` into it in the PR's worktree and push, so the preflight and the Verifier never read a stale branch. Run the preflight and the Verifier in a checkout of the base: an up-to-date clone on `origin/main`, or the PR's worktree.
 
-Fill `../planning/briefs/preflight.md` with `fill-brief --out <absolute path>` (e.g. `/tmp/<repo>-<issue>-preflight.md`) and run it as its own job, on a `strong` model from a different family than yours, before any plan exists, using the printed line verbatim as the prompt, never a hand-written path. A `core` item parks the ticket. `non-blocking` items and the file list go to the plan.
+Fill `../planning/briefs/preflight.md` with `fill-brief --out <absolute path>` (e.g. `~/.cache/agents/<repo>-<issue>-preflight.md`) and run it as its own job, on a `strong` model from a different family than yours, before any plan exists, using the printed line verbatim as the prompt, never a hand-written path. A `core` item parks the ticket. `non-blocking` items and the file list go to the plan.
 
 Done when the preflight has returned and no `core` item is open.
 
@@ -73,7 +73,7 @@ Done when CI is green on the head a verdict covers.
 
 ### 8. Merge
 
-When the workflow doc's merge rule allows a squash merge and the merge terms cover this PR, run `~/.agents/bin/ship-pr <pr> --repo <owner/name> --reviewed <head the verdict covers> --worktree <worktree> --gate '<gate command>' --timeout <s>`, in the wait mode `ci-triage` gives. It gates the head first, then rebases (when `main`'s required checks are strict: if `origin/main` moved; otherwise only on a reported conflict; a rebase does not rerun the gate), marks a draft PR ready, waits on CI (required checks green on the exact head count, whenever they ran), runs `pr-closes`, squash-merges and cleans up, and prints `merged <sha>`. Add `--body-has '<prefix>'` once for each line the workflow doc requires in a PR body; `ship-pr` checks them first. Route any other exit, then rerun it:
+When the workflow doc's merge rule allows a squash merge and the merge terms cover this PR, run `~/.agents/bin/ship-pr <pr> --repo <owner/name> --reviewed <head the verdict covers> --worktree <worktree> --gate '<gate command>'` (keep its default CI `--timeout`), in the wait mode `ci-triage` gives. It gates the head first, then rebases (when `main`'s required checks are strict: if `origin/main` moved; otherwise only on a reported conflict; a rebase does not rerun the gate), marks a draft PR ready, waits on CI (required checks green on the exact head count, whenever they ran), runs `pr-closes`, squash-merges and cleans up, and prints `merged <sha>`. Add `--body-has '<prefix>'` once for each line the workflow doc requires in a PR body; `ship-pr` checks them first. Route any other exit, then rerun it:
 
 - 124: CI is still pending. Rerun as is.
 - 1: read stderr. Failing checks go to step 7, a failed gate goes back to the lane, and `origin/main moved during CI` means ship-pr already retried 3 times itself, so rerun it. After a failed merge or MERGED wait, check `gh pr view <pr> --json state` before rerunning: if it reads `MERGED`, finish the by-hand cleanup below instead.
