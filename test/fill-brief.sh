@@ -72,6 +72,10 @@ out="$(bash "$FILL" "$T/op.md" 'B=__A__' 'A=y')" || fail "one-pass fill, reverse
 printf '__A____B__\n' >"$T/adj.md"
 out="$(bash "$FILL" "$T/adj.md" 'A=1' 'B=2')" || fail "adjacent placeholders exit 0"
 [ "$out" = "12" ] || fail "adjacent placeholders content: got [$out]"
+err="$(bash "$FILL" "$T/adj.md" 'A=1' 'B=2' 'EXTRA=3' 2>&1 >/dev/null)" && fail "adjacent + unknown key exits non-zero"
+grep -q "takes: A B$" <<<"$err" || fail "adjacent placeholders listed as two keys: [$err]"
+err="$(bash "$FILL" "$T/adj.md" 'A=1' 2>&1 >/dev/null)" && fail "adjacent, one unfilled exits non-zero"
+grep -q "unfilled: __B__" <<<"$err" || fail "adjacent unfilled names __B__: [$err]"
 
 # multi-line @file value containing & \ $ / passes through unchanged
 printf 'first __V__ last\n' >"$T/m.md"

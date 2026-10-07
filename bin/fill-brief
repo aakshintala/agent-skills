@@ -19,6 +19,9 @@
 set -euo pipefail
 # bash 5.2+ treats & in a ${var//pat/rep} replacement as the match; keep it literal.
 shopt -u patsub_replacement 2>/dev/null || true
+# A placeholder: __NAME__, NAME upper-case words joined by single underscores,
+# so adjacent placeholders (__A____B__) read as two.
+placeholder_re='__[A-Z][A-Z0-9]*(_[A-Z0-9]+)*__'
 
 usage() {
   {
@@ -111,25 +114,9 @@ if [ "$nkeys" -gt 0 ]; then
   if [ "$unknown" = 1 ]; then
     # Name the keys the template takes: its distinct __NAME__ placeholders,
     # in first-appearance order. Exactly one line per run.
-    takes=""
-    seen_takes="|"
-    while IFS= read -r m; do
-      [ -n "$m" ] || continue
-      name="${m#__}"
-      name="${name%__}"
-      case "$seen_takes" in
-        *"|$name|"*) ;;
-        *)
-          seen_takes="$seen_takes$name|"
-          if [ -z "$takes" ]; then takes="$name"; else takes="$takes $name"; fi
-          ;;
-      esac
-    done <<<"$(printf '%s' "$orig" | grep -oE '__[A-Z][A-Z0-9_]*__' || true)"
-    if [ -n "$takes" ]; then
-      add_error "fill-brief: $template takes: $takes"
-    else
-      add_error "fill-brief: $template takes:"
-    fi
+    takes="$(printf '%s' "$orig" | grep -oE "$placeholder_re" \
+      | awk '!seen[$0]++ { sub(/^__/, ""); sub(/__$/, ""); printf "%s%s", sep, $0; sep=" " }' || true)"
+    add_error "fill-brief: $template takes:${takes:+ $takes}"
   fi
 fi
 
@@ -163,7 +150,7 @@ while [ "$i" -lt "$nkeys" ]; do
   rest="${rest//"__${keys[$i]}__"/ }"
   i=$((i + 1))
 done
-leftovers="$(printf '%s' "$rest" | grep -oE '__[A-Z][A-Z0-9_]*__' || true)"
+leftovers="$(printf '%s' "$rest" | grep -oE "$placeholder_re" || true)"
 seen="|"
 while IFS= read -r m; do
   [ -n "$m" ] || continue
