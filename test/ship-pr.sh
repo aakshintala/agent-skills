@@ -19,6 +19,7 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 export GH_CI_INTERVAL=7 SHIP_PR_INTERVAL=1
 MERGE_SHA="1f2e3d4c5b6a79881726354433221100ffeeddcc"
+export READY_AT="2026-10-06T12:00:00Z"
 
 # --- fake gh. Reads $ST (state dir) and $ORIGIN. The PR head is origin's
 # --- feature branch, so a push is visible to gh-ci. --jq runs through jq.
@@ -27,7 +28,7 @@ gh() (
   echo "gh $*" >>"$ST/gh.log"
   rd() { [ -e "$ST/$1" ] && cat "$ST/$1" || echo "$2"; }
   if [ "$1" = "api" ]; then
-    shift; path="$1"; shift
+    shift; [ "$1" != "--paginate" ] || shift; path="$1"; shift
     jq=""
     while [ $# -gt 0 ]; do [ "$1" = "--jq" ] && jq="$2"; shift; done
     [ ! -e "$ST/api-fail" ] || { echo "gh: forbidden (HTTP 403)" >&2; exit 1; }
@@ -38,6 +39,9 @@ gh() (
         [ ! -e "$ST/classic-fail" ] || { echo "gh: forbidden (HTTP 403)" >&2; exit 1; }
         [ -e "$ST/classic" ] || { echo "gh: Branch not protected (HTTP 404)" >&2; exit 1; }
         json="$(cat "$ST/classic")";;
+      */issues/7/events)
+        [ ! -e "$ST/events-fail" ] || { echo "gh: server error (HTTP 500)" >&2; exit 1; }
+        json="$(rd events '[]')";;
       *) echo "fake gh: unknown api $path" >&2; exit 2;;
     esac
     if [ -n "$jq" ]; then jq -r "$jq" <<<"$json"; else echo "$json"; fi
@@ -58,7 +62,7 @@ gh() (
       state="$(rd state OPEN)"
       json="$(jq -nc --arg h "$h" --arg s "$state" --arg d "$(rd draft false)" --arg ms "$(rd merge-state CLEAN)" --arg mg "$(rd mergeable MERGEABLE)" --arg b "$(rd body 'Resolves #97')" \
         --argjson bn "$([ -e "$ST/body-null" ] && echo true || echo false)" --argjson c "$(rd commits '[]')" --arg m "$MERGE_SHA" \
-        '{state:$s, headRefName:"feature", headRefOid:$h, isDraft:($d=="true"), mergeStateStatus:$ms, mergeable:$mg,
+        '{state:$s, headRefName:"feature", baseRefName:"main", headRefOid:$h, isDraft:($d=="true"), mergeStateStatus:$ms, mergeable:$mg,
           title:"t", body:(if $bn then null else $b end), commits:$c, mergeCommit:(if $s=="MERGED" then {oid:$m} else null end)}')"
       jq=""
       while [ $# -gt 0 ]; do [ "$1" = "--jq" ] && jq="$2"; shift; done
@@ -72,7 +76,10 @@ gh() (
         *'"bucket":"fail"'*) exit 1;;
         *'"bucket":"pending"'*) exit 8;;
       esac;;
-    ready) echo false >"$ST/draft";;
+    ready)
+      [ ! -e "$ST/ready-fail" ] || exit 1
+      echo false >"$ST/draft"
+      echo "[{\"event\":\"ready_for_review\",\"created_at\":\"$READY_AT\"}]" >"$ST/events";;
     merge)
       [ ! -e "$ST/merge-fail" ] || exit 1
       [ -e "$ST/no-merge" ] || echo MERGED >"$ST/state"
@@ -430,14 +437,17 @@ cd "$T" || fail "cd out"
 expect 0 "draft happy path"
 [ "$OUT" = "merged $MERGE_SHA" ] || fail "merged line: [$OUT]"
 grep -q "^gh pr merge 7 --repo O/N --squash --match-head-commit $HEAD0\$" "$ST/gh.log" || fail "merge call: [$(grep merge "$ST/gh.log")]"
-[ "$(grep -n '^gh pr ready 7 --repo O/N' "$ST/gh.log" | cut -d: -f1)" -lt "$(grep -n '^gh pr merge' "$ST/gh.log" | cut -d: -f1)" ] \
-  || fail "ready runs before merge"
+[ "$(grep -n '^gh pr ready 7 --repo O/N' "$ST/gh.log" | cut -d: -f1)" -lt "$(grep -n -m1 '^gh pr checks' "$ST/gh.log" | cut -d: -f1)" ] \
+  || fail "ready runs before the first CI wait"
+[ "$(grep -c '^gh pr ready' "$ST/gh.log")" -eq 1 ] || fail "ready runs once"
 [ ! -e "$WT" ] || fail "worktree removed"
 git -C "$C" rev-parse --verify -q refs/heads/feature >/dev/null && fail "local branch deleted"
 origin_head >/dev/null && fail "origin branch deleted"
 
 setup; ship; expect 0 "non-draft happy path"
 ! grep -q '^gh pr ready' "$ST/gh.log" || fail "non-draft never marked ready"
+grep -q -- '--json name,bucket$' "$ST/gh.log" && ! grep -q startedAt "$ST/gh.log" \
+  || fail "a PR that never was a draft waits as before (no --since)"
 [ ! -e "$WT" ] || fail "non-draft: worktree removed"
 
 setup; touch "$ST/merge-deletes-branch"; ship; expect 0 "remote branch already deleted"
@@ -456,5 +466,45 @@ setup; touch "$ST/no-merge"; ship; expect 1 "never MERGED"
 
 setup; touch "$ST/merge-fail"; ship; expect 1 "merge refused"
 [ -d "$WT" ] || fail "worktree kept when the merge is refused"
+
+# ===== draft PRs: ready before the CI wait, then only checks started after it count
+RULES_CI='[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"ci"}]}}]'
+STALE='[{"bucket":"pass","name":"ci","startedAt":"2026-10-06T11:59:00Z"}]'
+FRESH='[{"bucket":"pass","name":"ci","startedAt":"2026-10-06T12:00:30Z"}]'
+# fresh_on_call <n>: from the nth `gh pr checks` on, the checks are FRESH.
+fresh_on_call() {
+  checks_each "n=\$((\$(cat \"\$ST/n\" 2>/dev/null || echo 0) + 1)); echo \$n >\"\$ST/n\"; [ \$n -lt $1 ] || echo '$FRESH' >\"\$ST/checks\""
+}
+
+setup; echo true >"$ST/draft"; echo "$RULES_CI" >"$ST/rules"; echo "$STALE" >"$ST/checks"; fresh_on_call 3
+ship; expect 0 "draft with a green stale run waits for the post-ready run"
+[ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 3 ] || fail "stale green does not satisfy the wait"
+grep -q -- "--json name,bucket,startedAt" "$ST/gh.log" || fail "draft wait reads startedAt"
+[ "$(grep -n '^gh pr ready' "$ST/gh.log" | cut -d: -f1)" -lt "$(grep -n -m1 '^gh pr checks' "$ST/gh.log" | cut -d: -f1)" ] \
+  || fail "ready before the first checks call"
+
+setup; echo true >"$ST/draft"; echo "$RULES_CI" >"$ST/rules"
+echo '[{"bucket":"pass","name":"lint","startedAt":"2026-10-06T12:01:00Z"}]' >"$ST/checks"
+ship --timeout 14; expect 124 "absent required check stays pending"
+grep -q '^pending: ci$' <<<"$OUT" || fail "absent check named: [$OUT]"
+! grep -q '^gh pr merge' "$ST/gh.log" || fail "absent check: no merge"
+
+# rerun after a 124: no longer a draft, but the past ready event still filters
+setup; echo "$RULES_CI" >"$ST/rules"; echo "$STALE" >"$ST/checks"
+echo "[{\"event\":\"ready_for_review\",\"created_at\":\"$READY_AT\"}]" >"$ST/events"; fresh_on_call 2
+ship; expect 0 "rerun of a readied PR"
+! grep -q '^gh pr ready' "$ST/gh.log" || fail "rerun never marks ready again"
+[ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 2 ] || fail "rerun: stale run does not satisfy the wait"
+
+setup; echo true >"$ST/draft"; touch "$ST/ready-fail"
+ship; expect 1 "gh pr ready fails"; ! grep -q '^gh pr \(checks\|merge\)' "$ST/gh.log" || fail "no CI wait or merge after ready fails"
+[ -d "$WT" ] || fail "worktree kept when ready fails"
+
+setup; echo true >"$ST/draft"; touch "$ST/events-fail"
+ship; expect 1 "events read fails after ready"; ! grep -q '^gh pr \(checks\|merge\)' "$ST/gh.log" || fail "no CI wait after the events read fails"
+grep -q 'cannot read the ready_for_review time' <<<"$ERR" || fail "events failure message: [$ERR]"
+
+setup; touch "$ST/events-fail"; ship; expect 0 "non-draft, events read fails: waits as before"
+grep -q 'cannot read the ready_for_review time; waiting on every check' <<<"$ERR" || fail "non-draft events warning: [$ERR]"
 
 echo "ship-pr: all cases passed"
