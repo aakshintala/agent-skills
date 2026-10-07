@@ -321,6 +321,39 @@ fn watch_unknown_job_exits_2() {
 }
 
 #[test]
+fn positional_prompt_exits_2_without_reading_stdin() {
+    let e = Env::new("positional");
+    // stdin stays open: the old code read it to EOF and hung here.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_delegate"))
+        .args(["run", "--model", "composer-2.5", "do X"])
+        .current_dir(&e.dir)
+        .env("TMPDIR", &e.dir)
+        .env("CURSOR_AGENT_BIN", e.dir.join("agent.sh"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdin = child.stdin.take().unwrap();
+    let mut status = None;
+    until("delegate run exits with stdin open", || {
+        status = child.try_wait().unwrap();
+        status.is_some()
+    });
+    drop(stdin);
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(status.unwrap().code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains(
+            "unexpected argument \"do X\": pass the prompt on stdin or with --prompt-file"
+        ),
+        "{err}"
+    );
+    assert!(!e.dir.join("delegate-jobs").exists());
+}
+
+#[test]
 fn bad_run_input_exits_2() {
     let e = Env::new("bad");
     let out = e.delegate(&["run", "--model", "nope-9"], Some("hi"));
