@@ -30,17 +30,28 @@ pub(crate) fn resolve_bin(r#override: Option<&str>) -> String {
 }
 
 /// Argv for a run. Every job runs with writes enabled: `--permission-mode auto`.
+/// A trailing `:<level>` on the model id becomes `--effort <level>` (#157); the
+/// resolver has already validated it, so `--effort` appears iff the id ends in
+/// `:<one of CLAUDE_EFFORT_LEVELS>` and `--model` never carries the suffix.
 pub(crate) fn argv(model: &str, session: Option<&str>, prompt: &str) -> Vec<String> {
+    let (base, effort) = match model.rsplit_once(':') {
+        Some((b, l)) if crate::models::CLAUDE_EFFORT_LEVELS.contains(&l) => (b, Some(l)),
+        _ => (model, None),
+    };
     let mut args = vec![
         "-p".into(),
         "--output-format".into(),
         "stream-json".into(),
         "--verbose".into(),
         "--model".into(),
-        model.to_string(),
+        base.to_string(),
         "--permission-mode".into(),
         "auto".into(),
     ];
+    if let Some(level) = effort {
+        args.push("--effort".into());
+        args.push(level.to_string());
+    }
     if let Some(id) = session {
         args.push("--resume".into());
         args.push(id.to_string());
@@ -76,6 +87,33 @@ mod tests {
     use crate::finalize::{default_finalize_ctx, finalize_run};
     use crate::stream::{init_stream_state, parse_line};
     use crate::types::{RunStatus, Usage};
+
+    #[test]
+    fn argv_splits_an_effort_suffix() {
+        for (model, session) in [
+            ("claude-fable-5-1:low", None),
+            ("claude-sonnet-5-5:high", Some("sid")),
+        ] {
+            let a = argv(model, session, "hi");
+            let pair = |x: &str, y: &str| a.windows(2).any(|w| w[0] == x && w[1] == y);
+            assert!(
+                pair("--model", "claude-fable-5-1") || pair("--model", "claude-sonnet-5-5"),
+                "{a:?}"
+            );
+            assert!(pair("--effort", "low") || pair("--effort", "high"), "{a:?}");
+            assert!(
+                !a.iter()
+                    .any(|s| s.ends_with(":low") || s.ends_with(":high")),
+                "{a:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn argv_without_suffix_has_no_effort() {
+        let a = argv("claude-sonnet-5-5", Some("sid"), "hi");
+        assert!(!a.iter().any(|s| s == "--effort"), "{a:?}");
+    }
 
     #[test]
     fn argv_always_uses_auto_mode() {

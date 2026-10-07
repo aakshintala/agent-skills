@@ -36,6 +36,7 @@ Every job runs with writes enabled. A read task says "do not edit" in its brief;
 | `claude` | Implemented (`claude`). |
 
 Model ids and prices come from bundled `config/models.json`, merged with your host profile.
+A Claude model id may carry a trailing `:<level>` (`low|medium|high|xhigh|max`), run as `claude --model <base> --effort <level>` (e.g. `claude-fable-5-1:low`); ids without a suffix are unchanged, and pi ids with a thinking suffix such as `openai-codex/gpt-6-luna:xhigh` stay their own ids.
 
 ## Status records
 
