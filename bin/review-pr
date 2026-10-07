@@ -43,6 +43,10 @@ fill_brief="$script_dir/fill-brief"
 jobs_dir="${TMPDIR:-/tmp}/delegate-jobs"
 state_dir="${TMPDIR:-/tmp}/review-pr"
 
+# State files older than this whose job is not RUNNING are pruned at the start
+# of a new run, so finished runs nobody collected cannot leak worktrees.
+stale_run_mins=360
+
 brief_for() {
   case "$1" in
     review) printf '%s' "$briefs_dir/review.md";;
@@ -115,6 +119,89 @@ ci_state() {
     done <<<"$checks"
   fi
   printf '%s' "$ci"
+}
+
+# remove_state_worktree STATE_FILE: remove the worktree recorded in a state
+# file and prune its registration. Callers silence output and tolerate failure.
+remove_state_worktree() {
+  local sf_rm wt wclone
+  sf_rm="$1"
+  wt="$(state_get "$sf_rm" worktree)"
+  wclone="$(state_get "$sf_rm" clone)"
+  [ -n "$wt" ] || return 0
+  # Remove through the worktree itself, so its registration goes even
+  # when the clone start ran in is gone.
+  git -C "$wt" worktree remove --force "$wt" || rm -rf "$wt"
+  if [ -n "$wclone" ] && [ -d "$wclone" ]; then
+    git -C "$wclone" worktree prune
+  fi
+}
+
+# prune_stale_runs: remove worktrees, run dirs and state files for runs nobody
+# collected. A run is every state file sharing one run dir; it is pruned only
+# when each of its state files was last modified more than $stale_run_mins ago
+# and none of their jobs is RUNNING (record missing or .status anything but
+# RUNNING). One live or young sibling spares the whole run. Best-effort: the
+# call silences output and ignores failure, so nothing here silences itself.
+# In collect's order: gather the stale state files, then remove every worktree,
+# then the guarded run dirs, then the state files.
+prune_stale_runs() {
+  local sf jid rec status all_list old_list stale_list rd sib sib_rd sib_rec sib_status run_ok
+  [ -d "$state_dir" ] || return 0
+  all_list="$(mktemp "${TMPDIR:-/tmp}/review-pr.prune-all.XXXXXX")"
+  old_list="$(mktemp "${TMPDIR:-/tmp}/review-pr.prune-old.XXXXXX")"
+  stale_list="$(mktemp "${TMPDIR:-/tmp}/review-pr.prune.XXXXXX")"
+  find "$state_dir" -type f >"$all_list"
+  find "$state_dir" -type f -mmin "+$stale_run_mins" >"$old_list"
+  while IFS= read -r sf; do
+    [ -n "$sf" ] || continue
+    jid="${sf##*/}"
+    rec="$jobs_dir/$jid.json"
+    status="MISSING"
+    if [ -f "$rec" ]; then
+      status="$(jq -r '.status // "MISSING"' "$rec" || echo MISSING)"
+    fi
+    [ "$status" = "RUNNING" ] && continue
+    rd="$(state_get "$sf" run_dir)"
+    if [ -z "$rd" ]; then
+      grep -Fxq "$sf" "$stale_list" || printf '%s\n' "$sf" >>"$stale_list"
+      continue
+    fi
+    run_ok=1
+    while IFS= read -r sib; do
+      [ -n "$sib" ] || continue
+      sib_rd="$(state_get "$sib" run_dir)"
+      [ "$sib_rd" = "$rd" ] || continue
+      grep -Fxq "$sib" "$old_list" || { run_ok=0; break; }
+      sib_rec="$jobs_dir/${sib##*/}.json"
+      sib_status="MISSING"
+      if [ -f "$sib_rec" ]; then
+        sib_status="$(jq -r '.status // "MISSING"' "$sib_rec" || echo MISSING)"
+      fi
+      [ "$sib_status" = "RUNNING" ] && { run_ok=0; break; }
+    done <"$all_list"
+    [ "$run_ok" -eq 1 ] || continue
+    while IFS= read -r sib; do
+      [ -n "$sib" ] || continue
+      [ "$(state_get "$sib" run_dir)" = "$rd" ] || continue
+      grep -Fxq "$sib" "$stale_list" || printf '%s\n' "$sib" >>"$stale_list"
+    done <"$all_list"
+  done <"$old_list"
+  while IFS= read -r sf; do
+    [ -n "$sf" ] || continue
+    remove_state_worktree "$sf"
+  done <"$stale_list"
+  while IFS= read -r sf; do
+    [ -n "$sf" ] || continue
+    rd="$(state_get "$sf" run_dir)"
+    case "$rd" in "${TMPDIR:-/tmp}"/review-pr.run.*) rm -rf "$rd";; esac
+  done <"$stale_list"
+  while IFS= read -r sf; do
+    [ -n "$sf" ] || continue
+    rm -f "$sf"
+  done <"$stale_list"
+  rm -f "$stale_list" "$all_list" "$old_list"
+  return 0
 }
 
 cmd_start() {
@@ -241,6 +328,8 @@ cmd_start() {
     patch_id="$(gh pr diff "$pr" --repo "$repo" | git patch-id --stable | awk '{print $1}')"
     if [ -z "$patch_id" ]; then patch_id="none"; fi
   fi
+
+  prune_stale_runs >/dev/null 2>&1 || true
 
   mkdir -p "$state_dir"
   run_dir="$(mktemp -d "${TMPDIR:-/tmp}/review-pr.run.XXXXXX")"
@@ -395,15 +484,7 @@ cmd_collect() {
   posted_ok=""
   cleanup() {
     for sf in ${state_rm[@]+"${state_rm[@]}"}; do
-      wt="$(state_get "$sf" worktree 2>/dev/null || true)"
-      wclone="$(state_get "$sf" clone 2>/dev/null || true)"
-      [ -n "$wt" ] || continue
-      # Remove through the worktree itself, so its registration goes even
-      # when the clone start ran in is gone.
-      git -C "$wt" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
-      if [ -n "$wclone" ]; then
-        git -C "$wclone" worktree prune >/dev/null 2>&1 || true
-      fi
+      remove_state_worktree "$sf" || true
     done
     for sf in ${state_rm[@]+"${state_rm[@]}"}; do
       rd="$(state_get "$sf" run_dir 2>/dev/null || true)"

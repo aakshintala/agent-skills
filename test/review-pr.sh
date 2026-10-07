@@ -143,6 +143,35 @@ start_review() {
   bash "$REVIEW" start "$@"
 }
 
+stale_state() {
+  # stale_state RUN_DIR JID ROLE AGE_HOURS STATUS CLONE: plant one stale-run
+  # fixture: a real worktree RUN_DIR/wt-ROLE added from the fixture clone, a
+  # state file TMPDIR/review-pr/JID aged AGE_HOURS hours, and, unless STATUS
+  # is NOREC, a job record carrying that status.
+  stale_run_dir="$1"; stale_jid="$2"; stale_role="$3"
+  stale_age="$4"; stale_status="$5"; stale_clone="$6"
+  mkdir -p "$TMPDIR/review-pr" "$TMPDIR/delegate-jobs"
+  git -C "$T/clone" worktree add -q --detach "$stale_run_dir/wt-$stale_role" "$FAKE_SHA" || fail "stale fixture worktree setup"
+  {
+    printf 'role=%s\n' "$stale_role"
+    printf 'repo=%s\n' "O/N"
+    printf 'pr=%s\n' "7"
+    printf 'sha=%s\n' "$FAKE_SHA"
+    printf 'patch_id=%s\n' "none"
+    printf 'model=%s\n' "M"
+    printf 'clone=%s\n' "$stale_clone"
+    printf 'worktree=%s\n' "$stale_run_dir/wt-$stale_role"
+    printf 'run_dir=%s\n' "$stale_run_dir"
+  } >"$TMPDIR/review-pr/$stale_jid"
+  if [ "$stale_status" = "NOREC" ]; then
+    rm -f "$TMPDIR/delegate-jobs/$stale_jid.json"
+  else
+    printf '{"status":"%s"}\n' "$stale_status" >"$TMPDIR/delegate-jobs/$stale_jid.json"
+  fi
+  stale_ts="$(date -v-"$stale_age"H +%Y%m%d%H%M 2>/dev/null || date -d "$stale_age hours ago" +%Y%m%d%H%M)"
+  touch -t "$stale_ts" "$TMPDIR/review-pr/$stale_jid" || fail "stale fixture touch"
+}
+
 # --- case: review-mode success across start and collect
 reset_state
 printf 'ci\tpass\nlint\tpass\n' >"$T/checks.txt"
@@ -733,5 +762,137 @@ bash "$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "collect
 [ "$(git -C "$T/clone" worktree list | grep -c "$(basename "$sibling_rd")/wt-")" = "2" ] || \
   fail "collect leaves another run's worktrees registered"
 [ -d "$sibling_rd/wt-review" ] || fail "collect leaves another run's dir"
+
+# --- case: start prunes a finished run nobody collected
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+stale_rd="$(mktemp -d "$TMPDIR/review-pr.run.XXXXXX")"
+stale_state "$stale_rd" job-old review 7 DONE "$T/clone"
+stale_sf="$TMPDIR/review-pr/job-old"
+stale_wt="$stale_rd/wt-review"
+start_out="$(start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 --model M --overbuild-model M2 2>"$T/stderr.txt")" || fail "pruning start exits 0"
+[ "$start_out" = "review job-review
+overbuild job-overbuild
+watch: delegate watch job-review job-overbuild
+collect: review-pr collect job-review job-overbuild" ] || fail "pruning start prints only the new jobs: [$start_out]"
+[ ! -e "$stale_sf" ] || fail "prune removes the stale state file"
+[ ! -e "$stale_wt" ] || fail "prune removes the stale worktree"
+[ ! -e "$stale_rd" ] || fail "prune removes the stale run dir"
+stale_base="$(basename "$stale_rd")"
+[ "$(git -C "$T/clone" worktree list | grep -c "$stale_base/wt-" || true)" = "0" ] || fail "prune unregisters the stale worktree"
+[ -f "$TMPDIR/review-pr/job-review" ] || fail "pruning start still saves the new state"
+bash "$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "collect after prune exits 0"
+
+# --- case: start keeps a stale state file whose job is still running
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+stale_rd="$(mktemp -d "$TMPDIR/review-pr.run.XXXXXX")"
+stale_state "$stale_rd" job-old review 7 RUNNING "$T/clone"
+stale_sf="$TMPDIR/review-pr/job-old"
+stale_wt="$stale_rd/wt-review"
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start with a running stale run exits 0"
+[ -f "$stale_sf" ] || fail "running stale state is kept"
+[ -d "$stale_wt" ] || fail "running stale worktree is kept"
+[ -d "$stale_rd" ] || fail "running stale run dir is kept"
+bash "$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "collect after running-stale exits 0"
+git -C "$T/clone" worktree remove --force "$stale_wt" >/dev/null 2>&1 || rm -rf "$stale_wt"
+rm -rf "$stale_rd"
+rm -f "$stale_sf" "$TMPDIR/delegate-jobs/job-old.json"
+
+# --- case: start keeps a finished run whose state file is fresh
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+stale_rd="$(mktemp -d "$TMPDIR/review-pr.run.XXXXXX")"
+stale_state "$stale_rd" job-old review 1 DONE "$T/clone"
+stale_sf="$TMPDIR/review-pr/job-old"
+stale_wt="$stale_rd/wt-review"
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start with a fresh stale run exits 0"
+[ -f "$stale_sf" ] || fail "fresh state is kept"
+[ -d "$stale_wt" ] || fail "fresh worktree is kept"
+[ -d "$stale_rd" ] || fail "fresh run dir is kept"
+bash "$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "collect after fresh-stale exits 0"
+git -C "$T/clone" worktree remove --force "$stale_wt" >/dev/null 2>&1 || rm -rf "$stale_wt"
+rm -rf "$stale_rd"
+rm -f "$stale_sf" "$TMPDIR/delegate-jobs/job-old.json"
+
+# --- case: start prunes a stale state file with no job record
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+stale_rd="$(mktemp -d "$TMPDIR/review-pr.run.XXXXXX")"
+stale_state "$stale_rd" job-old review 7 NOREC "$T/clone"
+stale_sf="$TMPDIR/review-pr/job-old"
+stale_wt="$stale_rd/wt-review"
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 --model M --overbuild-model M2 >/dev/null 2>&1 || fail "pruning start exits 0"
+[ ! -e "$stale_sf" ] || fail "prune removes the recordless state file"
+[ ! -e "$stale_wt" ] || fail "prune removes the recordless worktree"
+[ ! -e "$stale_rd" ] || fail "prune removes the recordless run dir"
+bash "$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "collect after recordless prune exits 0"
+
+# --- case: start prunes a stale two-role run sharing one run dir when the clone is gone
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+gone_clone="$T/clone-gone"
+stale_rd="$(mktemp -d "$TMPDIR/review-pr.run.XXXXXX")"
+stale_state "$stale_rd" job-stale-review review 7 DONE "$gone_clone"
+stale_state "$stale_rd" job-stale-overbuild overbuild 7 DONE "$gone_clone"
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start with a stale two-role run exits 0"
+[ ! -e "$TMPDIR/review-pr/job-stale-review" ] || fail "prune removes the stale two-role review state"
+[ ! -e "$TMPDIR/review-pr/job-stale-overbuild" ] || fail "prune removes the stale two-role overbuild state"
+[ ! -e "$stale_rd" ] || fail "prune removes the shared run dir"
+stale_base="$(basename "$stale_rd")"
+[ "$(git -C "$T/clone" worktree list | grep -c "$stale_base/wt-" || true)" = "0" ] || fail "prune deregisters both worktrees when the clone is gone"
+[ -f "$TMPDIR/review-pr/job-review" ] || fail "two-role prune still saves the new state"
+bash "$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "collect after two-role prune exits 0"
+
+# --- case: start spares a run with a live sibling: review DONE but overbuild RUNNING
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+stale_rd="$(mktemp -d "$TMPDIR/review-pr.run.XXXXXX")"
+stale_state "$stale_rd" job-live-review review 7 DONE "$T/clone"
+stale_state "$stale_rd" job-live-overbuild overbuild 7 RUNNING "$T/clone"
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start with a live sibling exits 0"
+[ -f "$TMPDIR/review-pr/job-live-review" ] || fail "live run keeps the finished state"
+[ -f "$TMPDIR/review-pr/job-live-overbuild" ] || fail "live run keeps the running state"
+[ -d "$stale_rd/wt-review" ] || fail "live run keeps the finished worktree"
+[ -d "$stale_rd/wt-overbuild" ] || fail "live run keeps the running worktree"
+[ -d "$stale_rd" ] || fail "live run keeps the run dir"
+stale_base="$(basename "$stale_rd")"
+[ "$(git -C "$T/clone" worktree list | grep -c "$stale_base/wt-" || true)" = "2" ] || fail "live run keeps both worktrees registered"
+bash "$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "collect after live-sibling exits 0"
+git -C "$T/clone" worktree remove --force "$stale_rd/wt-review" >/dev/null 2>&1 || rm -rf "$stale_rd/wt-review"
+git -C "$T/clone" worktree remove --force "$stale_rd/wt-overbuild" >/dev/null 2>&1 || rm -rf "$stale_rd/wt-overbuild"
+rm -rf "$stale_rd"
+rm -f "$TMPDIR/review-pr/job-live-review" "$TMPDIR/review-pr/job-live-overbuild"
+rm -f "$TMPDIR/delegate-jobs/job-live-review.json" "$TMPDIR/delegate-jobs/job-live-overbuild.json"
 
 echo "review-pr: all cases passed"
