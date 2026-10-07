@@ -27,7 +27,21 @@ B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 gh() (
   set -euo pipefail
   echo "gh $*" >>"$T/state/gh-args.txt"
-  [ "$1" = "pr" ] || { echo "fake gh: only pr supported" >&2; exit 2; }
+  if [ "$1" = "api" ]; then
+    # rules (default none) and classic protection (default 404) of the base branch
+    jq=""; for a in "$@"; do [ "${prev:-}" = "--jq" ] && jq="$a"; prev="$a"; done
+    case "$2" in
+      repos/O/N/rules/branches/main)
+        [ ! -e "$T/state/rules-fail" ] || { echo "gh: forbidden (HTTP 403)" >&2; exit 1; }
+        json="$(cat "$T/state/rules" 2>/dev/null || echo '[]')";;
+      repos/O/N/branches/main/protection/required_status_checks)
+        [ -e "$T/state/classic" ] || { echo "gh: Branch not protected (HTTP 404)" >&2; exit 1; }
+        json="$(cat "$T/state/classic")";;
+      *) echo "fake gh: unknown api $2" >&2; exit 2;;
+    esac
+    jq -r "$jq" <<<"$json"; exit 0
+  fi
+  [ "$1" = "pr" ] || { echo "fake gh: only pr and api supported" >&2; exit 2; }
   shift
   advance() {
     local f="$1"
@@ -39,6 +53,7 @@ gh() (
   case "$1" in
     view)
       if [ -e "$T/state/view-fail" ]; then exit 3; fi
+      case " $* " in *" baseRefName "*) echo main; exit 0;; esac
       h="$(advance "$T/state/heads.txt")"
       m=CLEAN
       if [ -e "$T/state/merge-state.txt" ]; then m="$(advance "$T/state/merge-state.txt")"; fi
@@ -61,7 +76,7 @@ export -f gh sleep
 
 reset_state() {
   rm -f "$T/state/sleeps.txt" "$T/state/gh-args.txt" "$T/state/merge-state.txt" "$T/state/view-fail"
-  rm -f "$T/state/heads.txt" "$T/state/checks.txt"
+  rm -f "$T/state/heads.txt" "$T/state/checks.txt" "$T/state/rules" "$T/state/rules-fail" "$T/state/classic"
   : >"$T/state/gh-args.txt"
 }
 
@@ -267,6 +282,59 @@ OUT="$(bash "$GHCI" wait 7 2>"$T/stderr.txt")"; CODE=$?
 grep -qi "could not read the head" "$T/stderr.txt" || fail "unreadable head message: [$(cat "$T/stderr.txt")]"
 [ ! -e "$T/state/sleeps.txt" ] || fail "unreadable head never sleeps"
 
+# --- cases: --since drops checks that started before it; absent required names are pending
+SINCE=2026-10-06T12:00:00Z
+STALE='[{"bucket":"pass","name":"ci","startedAt":"2026-10-06T11:59:59Z"}]'
+FRESH='[{"bucket":"pass","name":"ci","startedAt":"2026-10-06T12:00:00Z"}]'
+RULES_CI='[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"ci"}]}}]'
+
+# stale green, then a fresh green: waits, then passes
+reset_state
+export GH_CI_INTERVAL=7
+set_heads "$A"; set_checks "$STALE" "$FRESH"; echo "$RULES_CI" >"$T/state/rules"
+run_wait 7 --since "$SINCE"
+[ "$CODE" = "0" ] || fail "stale then fresh exits 0 (got $CODE): [$OUT]"
+[ -s "$T/state/sleeps.txt" ] || fail "stale green does not satisfy the wait"
+grep -q -- '--json name,bucket,startedAt' "$T/state/gh-args.txt" || fail "--since reads startedAt"
+
+# a required name with no check stays pending, while the others pass
+reset_state
+set_heads "$A"
+set_checks '[{"bucket":"pass","name":"lint","startedAt":"2026-10-06T12:01:00Z"}]'
+echo '{"contexts":["lint","ci"]}' >"$T/state/classic"
+run_wait 7 --since "$SINCE" --timeout 7
+[ "$CODE" = "124" ] || fail "absent required check times out (got $CODE): [$OUT]"
+grep -q "^pending: ci$" <<<"$OUT" || fail "absent check named pending: [$OUT]"
+
+# stale only, no required names (classic 404, no rules): empty list passes (#155 in since mode)
+reset_state
+set_heads "$A"; set_checks "$STALE"
+run_wait 7 --since "$SINCE" --timeout 0
+[ "$CODE" = "0" ] || fail "no required names, empty list passes (got $CODE): [$OUT]"
+
+# rules lookup fails: warning, stale still dropped, empty list stays pending
+reset_state
+set_heads "$A"; set_checks "$STALE"; touch "$T/state/rules-fail"
+run_wait 7 --since "$SINCE" --timeout 0
+[ "$CODE" = "124" ] || fail "unreadable names, stale only is pending (got $CODE): [$OUT]"
+grep -q "gh-ci: cannot read required checks; absent ones are not detected" "$T/stderr.txt" \
+  || fail "lookup warning: [$(cat "$T/stderr.txt")]"
+
+# fresh fail fails; a queued check (null startedAt) is pending, not stale
+reset_state
+set_heads "$A"
+set_checks '[{"bucket":"pending","name":"ci","startedAt":null}]' '[{"bucket":"fail","name":"ci","startedAt":"2026-10-06T12:05:00Z"}]'
+run_wait 7 --since "$SINCE"
+[ "$CODE" = "1" ] || fail "fresh fail exits 1 (got $CODE): [$OUT]"
+[ -s "$T/state/sleeps.txt" ] || fail "queued check waits"
+
+# without --since: no api call, no startedAt
+reset_state
+set_heads "$A"; set_checks "$STALE"
+run_wait 7
+[ "$CODE" = "0" ] || fail "no --since keeps the old wait (got $CODE): [$OUT]"
+! grep -q -e '^gh api' -e startedAt -e baseRefName "$T/state/gh-args.txt" || fail "no --since makes the old calls only"
+
 # --- case: usage errors exit 2
 reset_state
 run_wait; [ "$CODE" = "2" ] || fail "missing pr exits 2 (got $CODE)"
@@ -274,6 +342,8 @@ run_wait --pr 7; [ "$CODE" = "2" ] || fail "--pr misuse exits 2 (got $CODE)"
 run_wait 7 --bogus; [ "$CODE" = "2" ] || fail "unknown flag exits 2 (got $CODE)"
 run_wait 7 --timeout abc; [ "$CODE" = "2" ] || fail "non-numeric timeout exits 2 (got $CODE)"
 run_wait 7 --timeout; [ "$CODE" = "2" ] || fail "missing timeout value exits 2 (got $CODE)"
+run_wait 7 --since 2026-10-06T12:00:00+00:00; [ "$CODE" = "2" ] || fail "non-Z since exits 2 (got $CODE)"
+run_wait 7 --since; [ "$CODE" = "2" ] || fail "missing since value exits 2 (got $CODE)"
 
 # --- case: no subcommand and unknown subcommand print usage, exit 2
 OUT="$(bash "$GHCI" 2>"$T/stderr.txt")"; CODE=$?

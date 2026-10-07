@@ -5,10 +5,13 @@
 #        open and its head branch is checked out clean in --worktree; run --gate in
 #        the worktree on that head, once, before any rebase or push; rebase onto
 #        origin/main (see below); compare the PR diff's `git patch-id --stable` with
-#        <sha>'s; push a rebased branch with
-#        --force-with-lease and `gh-ci wait` (--timeout, default 1800); run
-#        pr-closes; mark a draft ready and squash-merge pinned to the checked head;
-#        wait for MERGED; remove the worktree and the local and remote branch.
+#        <sha>'s; push a rebased branch with --force-with-lease; mark a draft
+#        ready (once, before the first CI wait); `gh-ci wait` (--timeout, default
+#        1800); run pr-closes; squash-merge pinned to the checked head; wait for
+#        MERGED; remove the worktree and the local and remote branch.
+#        When the PR has a ready_for_review event (just made, or from an earlier
+#        run), the CI wait passes its latest time as `gh-ci wait --since`, so a
+#        check that started while the PR was a draft never counts.
 #        Each --body-has <prefix> (repeatable) requires a PR body line that starts
 #        with <prefix>, literally and case-sensitively; it is checked after step 1,
 #        before the rebase, and each missing one prints `missing body line: <prefix>`.
@@ -152,6 +155,16 @@ if [ "$strict" = 0 ]; then
   fi
 fi
 
+# The time GitHub recorded the PR's latest ready_for_review event, if any.
+ready_time() {
+  gh api --paginate "repos/$repo/issues/$pr/events" \
+    --jq '.[] | select(.event=="ready_for_review") | .created_at' | tail -n 1
+}
+since=""
+if [ "$draft" != "true" ]; then
+  since="$(ready_time 2>/dev/null)" || { say "cannot read the ready_for_review time; waiting on every check"; since=""; }
+fi
+
 # Steps 3-5 repeat when origin/main moves during the CI wait (strict only), at most 3 times.
 # lease is the branch SHA last known on the remote: head0, then each pushed pin.
 lease="$head0" retries=0
@@ -175,9 +188,17 @@ while :; do
       || die 1 "push of rebased $branch failed"
     lease="$pin"
   fi
+  if [ "$draft" = "true" ]; then
+    say "marking PR $pr ready"
+    gh pr ready "$pr" --repo "$repo" >&2 || die 1 "gh pr ready failed"
+    draft=false
+    since="$(ready_time)" && [ -n "$since" ] || die 1 "cannot read the ready_for_review time"
+  fi
+  ci_args=(wait "$pr" --timeout "$timeout")
+  [ -z "$since" ] || ci_args+=(--since "$since")
   say "waiting for CI"
   rc=0
-  ci_out="$(GH_CI_REPO="$repo" bash "$here/gh-ci" wait "$pr" --timeout "$timeout" 2>&1)" || rc=$?
+  ci_out="$(GH_CI_REPO="$repo" bash "$here/gh-ci" "${ci_args[@]}" 2>&1)" || rc=$?
   if [ "$rc" -ne 0 ]; then
     printf '%s\n' "$ci_out"
     case "$rc" in
@@ -208,10 +229,6 @@ case "$rc" in
 esac
 
 # Step 7: merge pinned to the checked head, then wait for GitHub to say MERGED.
-if [ "$draft" = "true" ]; then
-  say "marking PR $pr ready"
-  gh pr ready "$pr" --repo "$repo" >&2 || die 1 "gh pr ready failed"
-fi
 say "merging PR $pr at ${pin:0:8}"
 gh pr merge "$pr" --repo "$repo" --squash --match-head-commit "$pin" >&2 || die 1 "gh pr merge failed"
 merged="" sha=""
