@@ -482,19 +482,18 @@ cmd_collect() {
 
   # A RUNNING role job has no verdict yet: say how to wait, post nothing
   # and remove nothing, so a later collect sees the finished verdicts.
-  running_f="$tmp/running.txt"
-  : >"$running_f"
+  running=""
   for jid in ${id_list[@]+"${id_list[@]}"}; do
     rec="$jobs_dir/$jid.json"
     [ -f "$rec" ] || continue
     status="$(jq -r '.status // "MISSING"' "$rec" 2>/dev/null || echo MISSING)"
     if [ "$status" = "RUNNING" ]; then
       role="$(state_get "$state_dir/$jid" role)"
-      printf 'RUNNING %s %s: wait with delegate watch %s\n' "$role" "$jid" "$*" >>"$running_f"
+      printf 'RUNNING %s %s: wait with delegate watch %s\n' "$role" "$jid" "$*"
+      running="1"
     fi
   done
-  if [ -s "$running_f" ]; then
-    cat "$running_f"
+  if [ -n "$running" ]; then
     # Readiness, not a finished run: keep every state file, worktree and
     # run dir for the retry; only the scratch dir is removed by the trap.
     state_rm=()
