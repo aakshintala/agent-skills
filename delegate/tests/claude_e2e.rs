@@ -207,12 +207,14 @@ fn effort_suffix_runs_and_plain_resume_keeps_it() {
     assert_eq!(argv_flag(&argv, "--effort"), "low", "{argv}");
 
     // A plain resume carries the stored suffixed id, so the effort survives.
+    let n_before = argv.len();
     let next = e.ok(&["resume", &id], "again");
     assert_eq!(e.wait_terminal(&next)["status"], "DONE");
     assert_eq!(e.record(&next)["resume"]["model"], "claude-fable-5-1:low");
-    let argv = e.argv_text();
-    assert_eq!(argv_flag(&argv, "--model"), "claude-fable-5-1", "{argv}");
-    assert_eq!(argv_flag(&argv, "--effort"), "low", "{argv}");
+    let tail = &e.argv_text()[n_before..];
+    assert!(tail.contains("\n--resume\n"), "{tail}");
+    assert_eq!(argv_flag(tail, "--model"), "claude-fable-5-1", "{tail}");
+    assert_eq!(argv_flag(tail, "--effort"), "low", "{tail}");
 }
 
 #[test]
