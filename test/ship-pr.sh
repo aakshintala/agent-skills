@@ -19,7 +19,6 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 export GH_CI_INTERVAL=7 SHIP_PR_INTERVAL=1
 MERGE_SHA="1f2e3d4c5b6a79881726354433221100ffeeddcc"
-export READY_AT="2026-10-06T12:00:00Z"
 
 # --- fake gh. Reads $ST (state dir) and $ORIGIN. The PR head is origin's
 # --- feature branch, so a push is visible to gh-ci. --jq runs through jq.
@@ -39,9 +38,6 @@ gh() (
         [ ! -e "$ST/classic-fail" ] || { echo "gh: forbidden (HTTP 403)" >&2; exit 1; }
         [ -e "$ST/classic" ] || { echo "gh: Branch not protected (HTTP 404)" >&2; exit 1; }
         json="$(cat "$ST/classic")";;
-      */issues/7/events)
-        [ ! -e "$ST/events-fail" ] || { echo "gh: server error (HTTP 500)" >&2; exit 1; }
-        json="$(rd events '[]')";;
       *) echo "fake gh: unknown api $path" >&2; exit 2;;
     esac
     if [ -n "$jq" ]; then jq -r "$jq" <<<"$json"; else echo "$json"; fi
@@ -78,8 +74,7 @@ gh() (
       esac;;
     ready)
       [ ! -e "$ST/ready-fail" ] || exit 1
-      echo false >"$ST/draft"
-      echo "[{\"event\":\"ready_for_review\",\"created_at\":\"$READY_AT\"}]" >"$ST/events";;
+      echo false >"$ST/draft";;
     merge)
       [ ! -e "$ST/merge-fail" ] || exit 1
       [ -e "$ST/no-merge" ] || echo MERGED >"$ST/state"
@@ -446,8 +441,8 @@ origin_head >/dev/null && fail "origin branch deleted"
 
 setup; ship; expect 0 "non-draft happy path"
 ! grep -q '^gh pr ready' "$ST/gh.log" || fail "non-draft never marked ready"
-grep -q -- '--json name,bucket$' "$ST/gh.log" || fail "a PR that never was a draft waits as before"
-! grep -q startedAt "$ST/gh.log" || fail "a PR that never was a draft waits without --since"
+grep -q -- '--json name,bucket$' "$ST/gh.log" || fail "non-draft: checks call asks for name,bucket"
+! grep -q startedAt "$ST/gh.log" || fail "non-draft: startedAt is never requested"
 [ ! -e "$WT" ] || fail "non-draft: worktree removed"
 
 setup; touch "$ST/merge-deletes-branch"; ship; expect 0 "remote branch already deleted"
@@ -467,44 +462,27 @@ setup; touch "$ST/no-merge"; ship; expect 1 "never MERGED"
 setup; touch "$ST/merge-fail"; ship; expect 1 "merge refused"
 [ -d "$WT" ] || fail "worktree kept when the merge is refused"
 
-# ===== draft PRs: ready before the CI wait, then only checks started after it count
+# ===== draft PRs: marked ready once before the CI wait; a required check green
+# ===== on the head counts whenever it ran; an absent required check is pending
 RULES_CI='[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"ci"}]}}]'
-STALE='[{"bucket":"pass","name":"ci","startedAt":"2026-10-06T11:59:00Z"}]'
-FRESH='[{"bucket":"pass","name":"ci","startedAt":"2026-10-06T12:00:30Z"}]'
-# fresh_on_call <n>: from the nth `gh pr checks` on, the checks are FRESH.
-fresh_on_call() {
-  checks_each "n=\$((\$(cat \"\$ST/n\" 2>/dev/null || echo 0) + 1)); echo \$n >\"\$ST/n\"; [ \$n -lt $1 ] || echo '$FRESH' >\"\$ST/checks\""
-}
-
-setup; echo true >"$ST/draft"; echo "$RULES_CI" >"$ST/rules"; echo "$STALE" >"$ST/checks"; fresh_on_call 3
-ship; expect 0 "draft with a green stale run waits for the post-ready run"
-[ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 3 ] || fail "stale green does not satisfy the wait"
-grep -q -- "--json name,bucket,startedAt" "$ST/gh.log" || fail "draft wait reads startedAt"
-[ "$(grep -n '^gh pr ready' "$ST/gh.log" | cut -d: -f1)" -lt "$(grep -n -m1 '^gh pr checks' "$ST/gh.log" | cut -d: -f1)" ] \
-  || fail "ready before the first checks call"
 
 setup; echo true >"$ST/draft"; echo "$RULES_CI" >"$ST/rules"
-echo '[{"bucket":"pass","name":"lint","startedAt":"2026-10-06T12:01:00Z"}]' >"$ST/checks"
-ship --timeout 14; expect 124 "absent required check stays pending"
-grep -q '^pending: ci$' <<<"$OUT" || fail "absent check named: [$OUT]"
-! grep -q '^gh pr merge' "$ST/gh.log" || fail "absent check: no merge"
+ship; expect 0 "draft whose head already has a green required check"
+[ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 1 ] || fail "green required check before ready satisfies the wait at once"
+[ "$(grep -c '^gh pr ready' "$ST/gh.log")" -eq 1 ] || fail "draft marked ready once"
+[ "$(grep -n '^gh pr ready' "$ST/gh.log" | cut -d: -f1)" -lt "$(grep -n -m1 '^gh pr checks' "$ST/gh.log" | cut -d: -f1)" ] \
+  || fail "ready before the first checks call"
+! grep -q '/events' "$ST/gh.log" || fail "ship-pr never reads the PR's events"
+! grep -q startedAt "$ST/gh.log" || fail "draft: startedAt is never requested"
 
-# rerun after a 124: no longer a draft, but the past ready event still filters
-setup; echo "$RULES_CI" >"$ST/rules"; echo "$STALE" >"$ST/checks"
-echo "[{\"event\":\"ready_for_review\",\"created_at\":\"$READY_AT\"}]" >"$ST/events"; fresh_on_call 2
-ship; expect 0 "rerun of a readied PR"
-! grep -q '^gh pr ready' "$ST/gh.log" || fail "rerun never marks ready again"
-[ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 2 ] || fail "rerun: stale run does not satisfy the wait"
+setup; echo true >"$ST/draft"; echo "$RULES_CI" >"$ST/rules"
+echo '[{"bucket":"pass","name":"ci (draft)"}]' >"$ST/checks"
+ship --timeout 14; expect 124 "draft run under another name never satisfies the required check"
+grep -q '^pending: ci$' <<<"$OUT" || fail "absent required check named: [$OUT]"
+! grep -q '^gh pr merge' "$ST/gh.log" || fail "absent required check: no merge"
 
 setup; echo true >"$ST/draft"; touch "$ST/ready-fail"
 ship; expect 1 "gh pr ready fails"; ! grep -q '^gh pr \(checks\|merge\)' "$ST/gh.log" || fail "no CI wait or merge after ready fails"
 [ -d "$WT" ] || fail "worktree kept when ready fails"
-
-setup; echo true >"$ST/draft"; touch "$ST/events-fail"
-ship; expect 1 "events read fails after ready"; ! grep -q '^gh pr \(checks\|merge\)' "$ST/gh.log" || fail "no CI wait after the events read fails"
-grep -q 'cannot read the ready_for_review time' <<<"$ERR" || fail "events failure message: [$ERR]"
-
-setup; touch "$ST/events-fail"; ship; expect 0 "non-draft, events read fails: waits as before"
-grep -q 'cannot read the ready_for_review time; waiting on every check' <<<"$ERR" || fail "non-draft events warning: [$ERR]"
 
 echo "ship-pr: all cases passed"
