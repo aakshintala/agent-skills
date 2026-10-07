@@ -242,10 +242,31 @@ start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
   --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start exits 0"
 out="$(bash "$REVIEW" collect job-review job-overbuild 2>/dev/null)" && fail "unfinished collect exits 1"
 rec="$TMPDIR/delegate-jobs/job-review.json"
-grep -q "^UNFINISHED review ERROR gate=none $rec$" <<<"$out" || fail "unfinished names role status gate record"
+grep -q "^UNFINISHED review ERROR gate=none $rec reason: something broke mid-run$" <<<"$out" || fail "unfinished names role status gate record"
 grep -q "^CI $SHORT fail$" <<<"$out" || fail "failing CI line"
 [ "$(cat "$T/state/comment-pr.txt")" = "7" ] || fail "unfinished still posts the comment"
 [ "$(git -C "$T/clone" worktree list | grep -c 'wt-')" = "0" ] || fail "unfinished still removes worktrees"
+
+# --- case: an ERROR job's UNFINISHED line names the reason from the record
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review ERROR "$(printf 'Your authentication token has expired.\nmore')"
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
+  --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start exits 0"
+out="$(bash "$REVIEW" collect job-review job-overbuild 2>/dev/null)" && fail "error reason collect exits 1"
+printf '%s\n' "$out" | grep "UNFINISHED review ERROR" | grep -q "reason: Your authentication token has expired\." || fail "ERROR line names the record reason"
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review ERROR ""
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
+  --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start exits 0"
+out="$(bash "$REVIEW" collect job-review job-overbuild 2>/dev/null)" && fail "empty reason collect exits 1"
+grep -q "^UNFINISHED review ERROR" <<<"$out" || fail "empty error text is still UNFINISHED"
+grep -q "reason:" <<<"$out" && fail "empty error text prints no reason"
 
 # --- case: DONE without a verdict line is UNFINISHED; collect exits 1
 reset_state
