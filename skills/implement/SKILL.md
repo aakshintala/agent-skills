@@ -17,9 +17,9 @@ You are the orchestrator for one ticket. The **main orchestrator** is the sessio
 
 ## Fast path
 
-Take it when the root cause is **confirmed**: a red test, or a `diagnosing-bugs` result, names the faulty code, and the fix stays in that one file plus its test. A small diff whose cause is a guess takes the full path. The cause decides, not the size.
+Take it when the root cause is **confirmed**: a red test, or a `diagnosing-bugs` result, names the faulty code, and the fix stays in the faulty module, the call sites a signature change forces, and its test. A small diff whose cause is a guess takes the full path. The cause decides, not the size.
 
-Run step 1, skip steps 2–3, then build in a worktree cut from `origin/main`. The fence is the file and its test, and it stands in for the plan's Files in the gate. Use an existing confirming test, or add one that goes red before the fix. Make the fix inline when **Fix by churn** allows, otherwise as a gated job whose brief names the cause, the fence and the gate, and has the job push, open a draft PR with the ticket's `Resolves` line, and report its URL and head SHA. Inline, do those three yourself. Then run steps 5–9 as written. Leave the fast path for step 2 when the fix spreads past the fence or the test won't go red.
+Run step 1, skip steps 2–3, then build in a worktree cut from `origin/main`. The fence is that module, those call sites and the test, and it stands in for the plan's Files in the gate. Use an existing confirming test, or add one that goes red before the fix. Make the fix inline when **Fix by churn** allows, otherwise as a gated job whose brief names the cause, the fence and the gate, and has the job push, open a draft PR with the ticket's `Resolves` line, and report its URL and head SHA. Inline, do those three yourself. Then run steps 5–9 as written. Leave the fast path for step 2 when the fix spreads past the fence or the test won't go red.
 
 ### 1. Check setup
 
@@ -27,7 +27,9 @@ Read `docs/agents/` and the workflow doc it names; the workflow doc wins where i
 
 A main orchestrator outside a flywheel then confirms with the owner the model pool for each rung (per the `delegate` skill) and a review pool: a correctness and an over-engineering reviewer, each from a family other than the implementers', at the same rung or higher. A sub-orchestrator takes these from its brief.
 
-Done when you know the tracker, labels, workflow doc and models.
+A task with no ticket gets one opened first, so every brief has an issue number.
+
+Done when you know the tracker, labels, workflow doc and models, and the task has a ticket.
 
 ### 2. Preflight
 
