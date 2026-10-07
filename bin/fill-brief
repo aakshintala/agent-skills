@@ -14,7 +14,8 @@
 #        placeholder is left unfilled, a key matches nothing, PARENT is empty,
 #        the output cannot be written, or reading it back differs. An unknown-key
 #        error is followed by one line naming the keys the template takes.
-#        Exit 2 on bad usage, including a
+#        Exit 2 on bad usage, including a key that is not upper-case words joined
+#        by single underscores, or a
 #        relative --out path.
 set -euo pipefail
 # bash 5.2+ treats & in a ${var//pat/rep} replacement as the match; keep it literal.
@@ -76,7 +77,7 @@ for arg in ${args[@]+"${args[@]:1}"}; do
     *=*) k="${arg%%=*}"; v="${arg#*=}" ;;
     *) usage ;;
   esac
-  [ -n "$k" ] || usage
+  [[ "__${k}__" =~ ^${placeholder_re}$ ]] || { echo "fill-brief: bad key: $k (upper-case words joined by single underscores)" >&2; exit 2; }
   keys[${#keys[@]}]="$k"
   vals[${#vals[@]}]="$v"
 done

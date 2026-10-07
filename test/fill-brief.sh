@@ -76,6 +76,8 @@ err="$(bash "$FILL" "$T/adj.md" 'A=1' 'B=2' 'EXTRA=3' 2>&1 >/dev/null)" && fail 
 grep -q "takes: A B$" <<<"$err" || fail "adjacent placeholders listed as two keys: [$err]"
 err="$(bash "$FILL" "$T/adj.md" 'A=1' 2>&1 >/dev/null)" && fail "adjacent, one unfilled exits non-zero"
 grep -q "unfilled: __B__" <<<"$err" || fail "adjacent unfilled names __B__: [$err]"
+bash "$FILL" "$T/adj.md" 'A_=1' >/dev/null 2>&1; [ "$?" = "2" ] || fail "key with a trailing underscore exits 2"
+bash "$FILL" "$T/adj.md" 'a=1' >/dev/null 2>&1; [ "$?" = "2" ] || fail "lower-case key exits 2"
 
 # multi-line @file value containing & \ $ / passes through unchanged
 printf 'first __V__ last\n' >"$T/m.md"
