@@ -2,7 +2,7 @@
 # gh-ci: quiet, low-call GitHub CI helpers for agent flywheels.
 # Usage: gh-ci snapshot <pr> | failures <run> | watch-verified <run> --pr <n>
 #        gh-ci resample <pr> "<job name>" --until <regex> [--max <n>]
-#        gh-ci wait <pr> [--timeout <s>] [--since <ISO-8601 UTC>]
+#        gh-ci wait <pr> [--timeout <s>]
 # Exit codes: 0 ok, 1 failure, 2 usage, 3 merge conflict (snapshot and
 # watch-verified at once; wait after 30 s of DIRTY re-checks), 124 wait timeout.
 # GH_CI_REPO overrides the repo (default: the current checkout's origin); GH_CI_INTERVAL the watch poll seconds (default 30).
@@ -10,7 +10,7 @@ set -euo pipefail
 usage() {
   echo "usage: gh-ci snapshot <pr> | failures <run> | watch-verified <run> --pr <n>" >&2
   echo "       gh-ci resample <pr> \"<job name>\" --until <regex> [--max <n>]" >&2
-  echo "       gh-ci wait <pr> [--timeout <s>] [--since <ISO-8601 UTC>]" >&2
+  echo "       gh-ci wait <pr> [--timeout <s>]" >&2
   exit 2
 }
 
@@ -150,43 +150,36 @@ required_names() {
   printf '%s\n' "$rules" "$classic" | grep -v '^$' | sort -u || true
 }
 
-# wait <pr> [--timeout <s>] [--since <time>]: block until no required check on
-# the PR's current head is pending. Exit 0 when all green, 1 on failing checks,
+# wait <pr> [--timeout <s>]: block until no required check on the PR's
+# current head is pending. Exit 0 when all green, 1 on failing checks,
 # 2 on usage, 3 on a merge conflict, 124 on timeout. The timeout counts
 # seconds slept, not wall-clock time. A verdict is reported only for a
 # head read both before and after its checks call. A conflict is reported
 # only after the same head reads DIRTY for 30 s of 5 s polls (GitHub
 # recomputes mergeability late after a push), or once the timeout budget
 # is spent while DIRTY.
-# With --since (UTC, e.g. 2026-10-06T12:00:00Z), a check that started before
-# that time is stale and dropped, and a required name of the base branch with
-# no check left counts as pending. An empty list then passes only when the
-# required names were read and there are none.
+# A required check on the head counts whenever it ran. A required name of
+# the base branch with no check on the head counts as pending. An empty
+# list passes only when the required names were read and there are none.
 cmd_wait() {
-  local pr="" timeout=1800 since="" req="[]" empty_ok=false names
+  local pr="" timeout=1800 req="[]" empty_ok=false names
   while [ $# -gt 0 ]; do case "$1" in
     --timeout)
       [ $# -ge 2 ] || usage
       timeout="$2"; shift 2;;
-    --since)
-      [ $# -ge 2 ] || usage
-      [[ "$2" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || usage
-      since="$2"; shift 2;;
     --*) usage;;
     *) [ -z "$pr" ] || usage; pr="$1"; shift;;
   esac; done
   [ -n "$pr" ] || usage
   case "$timeout" in ''|*[!0-9]*) usage;; esac
   local interval="${GH_CI_INTERVAL:-30}"
-  local slept=0 head head2 state state2 checks_json verdict
+  local slept=0 head head2 state state2 checks_json padded verdict
   local dirty_head="" dirty_for=0
-  if [ -n "$since" ]; then
-    if names=$(required_names "$pr" 2>/dev/null); then
-      req=$(printf '%s' "$names" | jq -Rsc 'split("\n") | map(select(. != ""))')
-      empty_ok=true
-    else
-      echo "gh-ci: cannot read required checks; absent ones are not detected" >&2
-    fi
+  if names=$(required_names "$pr" 2>/dev/null); then
+    req=$(printf '%s' "$names" | jq -Rsc 'split("\n") | map(select(. != ""))')
+    empty_ok=true
+  else
+    echo "gh-ci: cannot read required checks; absent ones are not detected" >&2
   fi
   while true; do
     read -r head state < <(head_state "$pr") || return 1
@@ -202,16 +195,11 @@ cmd_wait() {
       continue
     fi
     dirty_head=""
-    if [ -z "$since" ]; then
-      checks_json=$(gh pr checks "$pr" --repo "$REPO" --required --json name,bucket 2>&1 || true)
-    else
-      # A queued check has no start time (null, empty or year 1): not stale.
-      checks_json=$(gh pr checks "$pr" --repo "$REPO" --required --json name,bucket,startedAt 2>&1 || true)
-      checks_json=$(printf '%s' "$checks_json" | jq -c --arg s "$since" --argjson req "$req" '
-        if type != "array" then . else
-          map(select((.startedAt // "") == "" or (.startedAt | startswith("0001-")) or .startedAt >= $s)) as $f
-          | $f + [$req[] | select(. as $n | all($f[]; .name != $n)) | {name: ., bucket: "pending"}] end' 2>/dev/null) || true
-    fi
+    checks_json=$(gh pr checks "$pr" --repo "$REPO" --required --json name,bucket 2>&1 || true)
+    padded=$(printf '%s' "$checks_json" | jq -c --argjson req "$req" '
+      if type != "array" then . else
+        . as $f | $f + [$req[] | select(. as $n | all($f[]; .name != $n)) | {name: ., bucket: "pending"}] end' 2>/dev/null) \
+      && checks_json="$padded"
     verdict=$(printf '%s' "$checks_json" | jq -r --argjson empty_ok "$empty_ok" '
       if type == "array" and length == 0 and $empty_ok then "pass"
       elif type != "array" or length == 0 then "pending"
