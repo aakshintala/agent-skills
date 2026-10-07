@@ -391,8 +391,11 @@ mod tests {
         for (id, expected) in [
             ("composer-2.5", vec!["standard"]),
             ("opencode-go/glm-5.3-flash", vec!["standard"]),
-            ("openai-codex/gpt-6-luna:xhigh", vec!["standard"]),
-            ("opencode-go/muse-spark-1.3-contributor", vec!["strong"]),
+            ("openai-codex/gpt-6-luna:xhigh", vec!["standard", "strong"]),
+            (
+                "opencode-go/muse-spark-1.3-contributor",
+                vec!["standard", "strong"],
+            ),
             ("claude-sonnet-5-5", vec!["strong"]),
             ("grok-4.7-high", vec!["strong"]),
             ("grok-4.7-xhigh", vec!["frontier"]),
