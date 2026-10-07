@@ -137,17 +137,23 @@ remove_state_worktree() {
   fi
 }
 
-# prune_stale_runs: remove worktrees, run dirs and state files for runs whose
-# state file was last modified more than $stale_run_mins ago and whose job is
-# not RUNNING (record missing or .status anything but RUNNING). Best-effort:
-# the call silences output and ignores failure, so nothing here silences itself.
+# prune_stale_runs: remove worktrees, run dirs and state files for runs nobody
+# collected. A run is every state file sharing one run dir; it is pruned only
+# when each of its state files was last modified more than $stale_run_mins ago
+# and none of their jobs is RUNNING (record missing or .status anything but
+# RUNNING). One live or young sibling spares the whole run. Best-effort: the
+# call silences output and ignores failure, so nothing here silences itself.
 # In collect's order: gather the stale state files, then remove every worktree,
 # then the guarded run dirs, then the state files.
 prune_stale_runs() {
-  local sf jid rec status stale_list rd
+  local sf jid rec status all_list old_list stale_list rd sib sib_rd sib_rec sib_status run_ok
   [ -d "$state_dir" ] || return 0
+  all_list="$(mktemp "${TMPDIR:-/tmp}/review-pr.prune-all.XXXXXX")"
+  old_list="$(mktemp "${TMPDIR:-/tmp}/review-pr.prune-old.XXXXXX")"
   stale_list="$(mktemp "${TMPDIR:-/tmp}/review-pr.prune.XXXXXX")"
-  find "$state_dir" -type f -mmin "+$stale_run_mins" | while IFS= read -r sf; do
+  find "$state_dir" -type f >"$all_list"
+  find "$state_dir" -type f -mmin "+$stale_run_mins" >"$old_list"
+  while IFS= read -r sf; do
     [ -n "$sf" ] || continue
     jid="${sf##*/}"
     rec="$jobs_dir/$jid.json"
@@ -156,8 +162,31 @@ prune_stale_runs() {
       status="$(jq -r '.status // "MISSING"' "$rec" || echo MISSING)"
     fi
     [ "$status" = "RUNNING" ] && continue
-    printf '%s\n' "$sf" >>"$stale_list"
-  done
+    rd="$(state_get "$sf" run_dir)"
+    if [ -z "$rd" ]; then
+      grep -Fxq "$sf" "$stale_list" || printf '%s\n' "$sf" >>"$stale_list"
+      continue
+    fi
+    run_ok=1
+    while IFS= read -r sib; do
+      [ -n "$sib" ] || continue
+      sib_rd="$(state_get "$sib" run_dir)"
+      [ "$sib_rd" = "$rd" ] || continue
+      grep -Fxq "$sib" "$old_list" || { run_ok=0; break; }
+      sib_rec="$jobs_dir/${sib##*/}.json"
+      sib_status="MISSING"
+      if [ -f "$sib_rec" ]; then
+        sib_status="$(jq -r '.status // "MISSING"' "$sib_rec" || echo MISSING)"
+      fi
+      [ "$sib_status" = "RUNNING" ] && { run_ok=0; break; }
+    done <"$all_list"
+    [ "$run_ok" -eq 1 ] || continue
+    while IFS= read -r sib; do
+      [ -n "$sib" ] || continue
+      [ "$(state_get "$sib" run_dir)" = "$rd" ] || continue
+      grep -Fxq "$sib" "$stale_list" || printf '%s\n' "$sib" >>"$stale_list"
+    done <"$all_list"
+  done <"$old_list"
   while IFS= read -r sf; do
     [ -n "$sf" ] || continue
     remove_state_worktree "$sf"
@@ -171,7 +200,7 @@ prune_stale_runs() {
     [ -n "$sf" ] || continue
     rm -f "$sf"
   done <"$stale_list"
-  rm -f "$stale_list"
+  rm -f "$stale_list" "$all_list" "$old_list"
   return 0
 }
 
