@@ -153,7 +153,7 @@ fn models_lists_every_row_with_default_marked() {
     );
     assert_eq!(
         lines[11],
-        "  opencode-go/muse-spark-1.3-contributor  Muse Spark 1.3 Contributor  pi         0.10     0.20  strong"
+        "  opencode-go/muse-spark-1.3-contributor  Muse Spark 1.3 Contributor  pi         0.10     0.20  standard,strong"
     );
     // Rows sort by backend, then by id; only the default row is starred.
     let ids: Vec<&str> = lines[1..]
