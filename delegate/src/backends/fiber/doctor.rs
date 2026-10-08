@@ -112,18 +112,8 @@ fn probe_memberships(
 }
 
 /// Parse `fiber models --json` output: one JSON object per line with a
-/// `model` field holding the `provider/model` reference. Tolerates a single
-/// JSON array as well.
+/// `model` field holding the `provider/model` reference.
 pub(crate) fn parse_models_json(stdout: &str) -> Vec<String> {
-    let trimmed = stdout.trim();
-    if trimmed.is_empty() {
-        return Vec::new();
-    }
-    if trimmed.starts_with('[')
-        && let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(trimmed)
-    {
-        return arr.iter().filter_map(model_of).collect();
-    }
     let mut out = Vec::new();
     for line in stdout.lines() {
         let line = line.trim();
@@ -144,7 +134,6 @@ fn model_of(v: &serde_json::Value) -> Option<String> {
         .and_then(|m| m.as_str())
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .or_else(|| v.as_str().filter(|s| !s.is_empty()).map(str::to_string))
 }
 
 pub(crate) fn probe_version(
@@ -155,7 +144,11 @@ pub(crate) fn probe_version(
     if !r.ok {
         return (None, Some(command_err("fiber", &r, "version")));
     }
-    let version = r.stdout.trim();
+    let raw = r.stdout.trim();
+    // `fiber version` prints `fiber 0.0.0 (hash)`: strip the leading
+    // `fiber ` so the status line (`fiber: fiber <version> (<path)>`,
+    // like pi's `pi: pi <version> (<path>)`) does not repeat it.
+    let version = raw.strip_prefix("fiber ").unwrap_or(raw);
     (
         if version.is_empty() {
             None
@@ -256,16 +249,12 @@ mod tests {
             ]
         );
         assert!(parse_models_json("").is_empty());
-        assert_eq!(
-            parse_models_json("[{\"model\":\"a/b\"}]"),
-            vec!["a/b".to_string()]
-        );
     }
 
     #[test]
     fn fill_present_model_has_no_failures() {
         let run = |_: &str, args: &[String]| match args.join(" ").as_str() {
-            "version" => ok_result("0.0.0\n"),
+            "version" => ok_result("fiber 0.0.0 (a903fb6f)\n"),
             "models --json" => ok_result(
                 "{\"model\":\"opencode-go/muse-spark-1.3-contributor\",\"context_window\":1048576,\"input\":0.1,\"output\":0.2,\"default\":false}\n",
             ),
@@ -278,7 +267,7 @@ mod tests {
         let (text, failed) = lines(&report);
         assert!(!failed);
         assert!(
-            text.contains("ok    fiber: fiber 0.0.0 (/bin/fiber)"),
+            text.contains("ok    fiber: fiber 0.0.0 (a903fb6f) (/bin/fiber)"),
             "{text}"
         );
     }

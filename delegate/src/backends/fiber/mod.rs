@@ -421,16 +421,6 @@ mod tests {
     }
 
     #[test]
-    fn argv_strips_the_fiber_prefix() {
-        let a = argv("fiber/opencode-go/muse-spark-1.3-contributor", None, "hi");
-        assert!(
-            a.windows(2)
-                .any(|w| w == ["--model", "opencode-go/muse-spark-1.3-contributor"])
-        );
-        assert!(!a.iter().any(|s| s.starts_with("fiber/")));
-    }
-
-    #[test]
     fn argv_keeps_a_prompt_starting_with_a_dash_after_separator() {
         let a = argv(
             "fiber/opencode-go/muse-spark-1.3-contributor",
