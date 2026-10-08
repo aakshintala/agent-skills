@@ -1,0 +1,1 @@
+{"kind":"fiber_exited","schema_version":1,"payload":{"error":{"code":"extension_missing","message":"The provider `nope` is not installed. Run `fiber extension install nope`."},"exit_code":1}}

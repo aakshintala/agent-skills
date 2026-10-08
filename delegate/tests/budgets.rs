@@ -65,6 +65,14 @@ case "$1" in
 esac
 "#;
 
+const FAKE_FIBER: &str = r#"#!/bin/sh
+case "$1" in
+  version) echo "0.0.0" ;;
+  models) echo '{"model":"opencode-go/muse-spark-1.3-contributor","context_window":1048576,"input":0.1,"output":0.2,"default":false}' ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#;
+
 const RUN_BUDGET_MS: u128 = 102; // measured: 34ms on M-series Mac, budget 3x
 const RESUME_BUDGET_MS: u128 = 93; // measured: 31ms on M-series Mac, budget 3x
 const CANCEL_BUDGET_MS: u128 = 192; // measured: 64ms on M-series Mac, budget 3x
@@ -99,6 +107,9 @@ impl Env {
         let claude = dir.join("claude.sh");
         std::fs::write(&claude, CLAUDE_FAKE).unwrap();
         std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let fiber = dir.join("fiber.sh");
+        std::fs::write(&fiber, FAKE_FIBER).unwrap();
+        std::fs::set_permissions(&fiber, std::fs::Permissions::from_mode(0o755)).unwrap();
         Env { dir }
     }
 
@@ -142,6 +153,7 @@ impl Env {
             .env("CURSOR_AGENT_BIN", self.dir.join("agent.sh"))
             .env("PI_BIN", self.dir.join("pi.sh"))
             .env("CLAUDE_BIN", self.dir.join("claude.sh"))
+            .env("FIBER_BIN", self.dir.join("fiber.sh"))
             .env("DELEGATE_HEARTBEAT_MS", "100");
         if args.first() == Some(&"models") || args.first() == Some(&"doctor") {
             cmd.env(

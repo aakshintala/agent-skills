@@ -1,0 +1,688 @@
+//! The fiber backend: binary, argv, spawn, and stream-json parsing.
+//!
+//! `fiber ask --model <ref> [--resume <sid>] -- <prompt>` prints one JSON
+//! envelope per line. Every line carries `session_id` (Fiber mints it;
+//! delegate cannot choose it), and the last line is always `fiber_exited`:
+//! `exit_code`, `text` (the final answer), `usage`, and `error` on failure.
+//! Unlike pi, Fiber's exit code is real and `fiber_exited.exit_code`
+//! repeats it: success is a clean exit with `exit_code == 0` and no error.
+//! A stream with no `fiber_exited` is a crash.
+
+pub(crate) mod doctor;
+
+use super::types::{BackendResult, Event, ProgressSnapshotRaw, Spawned};
+use crate::types::{JobSpec, Usage};
+use std::collections::HashMap;
+use std::sync::atomic::Ordering;
+
+const NO_RESULT: &str = "no result line";
+
+pub(crate) fn resolve_bin(r#override: Option<&str>) -> String {
+    if let Some(o) = r#override.filter(|s| !s.is_empty()) {
+        return o.to_string();
+    }
+    if let Ok(env) = std::env::var("FIBER_BIN")
+        && !env.is_empty()
+    {
+        return env;
+    }
+    if let Ok(out) = std::process::Command::new("which").arg("fiber").output()
+        && out.status.success()
+    {
+        let found = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !found.is_empty() {
+            return found;
+        }
+    }
+    crate::util::homedir()
+        .join(".local/bin/fiber")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Strip the delegate `fiber/` prefix to Fiber's own `provider/model` reference.
+pub(crate) fn model_reference(model: &str) -> &str {
+    model.strip_prefix("fiber/").unwrap_or(model)
+}
+
+/// Argv for a run. `fiber ask` takes one prompt, then an optional `-`;
+/// clap consumes a `--` delimiter, so a prompt starting with `-` is passed
+/// after `--` and never parses as a flag (verified in Fiber's
+/// `crates/main/src/cli.rs`: `AskArgs.prompt` with `num_args = 0..`).
+pub(crate) fn argv(model: &str, session: Option<&str>, prompt: &str) -> Vec<String> {
+    let reference = model_reference(model);
+    let mut args = vec!["ask".into(), "--model".into(), reference.to_string()];
+    if let Some(s) = session {
+        args.push("--resume".into());
+        args.push(s.to_string());
+    }
+    args.push("--".into());
+    args.push(prompt.to_string());
+    args
+}
+
+pub(crate) fn spawn(spec: &JobSpec) -> Spawned {
+    let started = match super::start_child(spec) {
+        Ok(s) => s,
+        Err(msg) => return super::spawn_failed(&msg),
+    };
+    // Fiber mints the session id; it arrives in the stream, never in argv.
+    let pid = started.pid;
+    let reaped = started.reaped;
+    let reaped_k = std::sync::Arc::clone(&reaped);
+    let stdout = started.stdout;
+    let stderr = started.stderr;
+    let mut child = started.child;
+    Spawned {
+        kill: super::killer(pid, reaped_k),
+        session_id: None,
+        drive: Box::new(move |on| {
+            let mut state = FiberState::default();
+            let pumped = super::pump(
+                stdout,
+                stderr,
+                on,
+                move || {
+                    let clean = child.wait().map(|s| s.success()).unwrap_or(false);
+                    reaped.store(true, Ordering::SeqCst);
+                    clean
+                },
+                |line| {
+                    if handle_line(line, &mut state) {
+                        on(Event::Progress(ProgressSnapshotRaw {
+                            last_tool: state.last_tool.clone(),
+                            tokens_so_far: state.tokens_so_far(),
+                            last_assistant: state.last_assistant.clone(),
+                            files_touched: state.files_touched.clone(),
+                            phase: state.phase.clone(),
+                            session_id: state.session_id.clone(),
+                        }));
+                    }
+                },
+            );
+            finish(state, pumped.clean_exit, &pumped.stderr)
+        }),
+    }
+}
+
+/// Pure parse of a finished `fiber ask` stdout. The spawn driver uses [`finish`] too.
+pub fn parse_stdout(stdout: &str, clean_exit: bool, stderr: &str) -> BackendResult {
+    let mut state = FiberState::default();
+    for line in stdout.split_inclusive('\n') {
+        handle_line(line.as_bytes(), &mut state);
+    }
+    finish(state, clean_exit, stderr)
+}
+
+#[derive(Debug, Default)]
+struct FiberState {
+    session_id: Option<String>,
+    last_tool: Option<String>,
+    files_touched: Vec<String>,
+    last_assistant: Option<String>,
+    phase: Option<String>,
+    usage_by_generation: HashMap<String, (f64, f64)>,
+    exited: Option<serde_json::Value>,
+    exited_session: Option<String>,
+    /// The first `notice` with `payload.code == "no_model"`: Fiber denied
+    /// every reviewed tool call for lack of a reviewer model. The run can
+    /// still exit 0 with `turn_completed` completed; the result is an error
+    /// whose text starts with this message.
+    notice_no_model: Option<String>,
+}
+
+impl FiberState {
+    fn tokens_so_far(&self) -> f64 {
+        self.usage_by_generation.values().map(|(i, o)| i + o).sum()
+    }
+}
+
+fn finite(v: Option<&serde_json::Value>) -> f64 {
+    v.and_then(|n| n.as_f64())
+        .filter(|n| n.is_finite())
+        .unwrap_or(0.0)
+}
+
+fn cache_write_tokens(tokens: Option<&serde_json::Value>) -> f64 {
+    let Some(cw) = tokens.and_then(|t| t.get("cache_write")) else {
+        return 0.0;
+    };
+    if let Some(n) = cw.as_f64().filter(|n| n.is_finite()) {
+        return n;
+    }
+    if let Some(obj) = cw.as_object() {
+        return obj
+            .values()
+            .filter_map(|v| v.as_f64())
+            .filter(|n| n.is_finite())
+            .sum();
+    }
+    0.0
+}
+
+/// Fold one stdout line into the state. Unparseable lines are ignored.
+/// Returns whether a progress event should fire.
+fn handle_line(line: &[u8], state: &mut FiberState) -> bool {
+    let trimmed = String::from_utf8_lossy(line).trim().to_string();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let ev: serde_json::Value = match serde_json::from_str(&trimmed) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let Some(kind) = ev.get("kind").and_then(|k| k.as_str()) else {
+        return false;
+    };
+    let mut changed = false;
+    if state.session_id.is_none()
+        && let Some(sid) = ev.get("session_id").and_then(|s| s.as_str())
+        && !sid.is_empty()
+    {
+        state.session_id = Some(sid.to_string());
+        changed = true;
+    }
+    let payload = ev.get("payload");
+    match kind {
+        "tool_call_requested" => {
+            if let Some(name) = payload.and_then(|p| p.get("name")).and_then(|n| n.as_str())
+                && !name.is_empty()
+            {
+                state.last_tool = Some(name.to_string());
+            }
+            state.phase = Some("running_tool".into());
+            if (state.last_tool.as_deref() == Some("edit")
+                || state.last_tool.as_deref() == Some("write"))
+                && let Some(path) = tool_path(payload.and_then(|p| p.get("arguments")))
+                && !state.files_touched.contains(&path)
+            {
+                state.files_touched.push(path);
+            }
+            true
+        }
+        "text_completed" => {
+            if let Some(text) = payload.and_then(|p| p.get("text")).and_then(|t| t.as_str()) {
+                let truncated: String = text.chars().take(200).collect();
+                state.last_assistant = Some(truncated);
+                state.phase = Some("responding".into());
+                return true;
+            }
+            changed
+        }
+        "assistant_message_delta" => changed,
+        "usage_recorded" => {
+            let generation = payload
+                .and_then(|p| p.get("generation_id"))
+                .and_then(|g| g.as_str())
+                .unwrap_or("");
+            if generation.is_empty() {
+                return changed;
+            }
+            let tokens = payload.and_then(|p| p.get("tokens"));
+            let input = finite(tokens.and_then(|t| t.get("input")));
+            let output = finite(tokens.and_then(|t| t.get("output")));
+            let prev = state.usage_by_generation.get(generation).copied();
+            if prev != Some((input, output)) {
+                state
+                    .usage_by_generation
+                    .insert(generation.to_string(), (input, output));
+                return true;
+            }
+            changed
+        }
+        "turn_completed" => changed,
+        "notice" => {
+            if state.notice_no_model.is_none()
+                && payload.and_then(|p| p.get("code")).and_then(|c| c.as_str()) == Some("no_model")
+                && let Some(message) = payload
+                    .and_then(|p| p.get("message"))
+                    .and_then(|m| m.as_str())
+            {
+                state.notice_no_model = Some(message.to_string());
+            }
+            changed
+        }
+        "fiber_exited" => {
+            state.exited = Some(ev.clone());
+            state.exited_session = ev
+                .get("session_id")
+                .and_then(|s| s.as_str())
+                .map(str::to_string);
+            changed
+        }
+        _ => changed,
+    }
+}
+
+/// The `path` argument of an `edit` or `write` call. `arguments` is an
+/// object, or a string holding raw text when it was not JSON.
+fn tool_path(arguments: Option<&serde_json::Value>) -> Option<String> {
+    match arguments {
+        Some(serde_json::Value::Object(obj)) => obj
+            .get("path")
+            .and_then(|p| p.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        Some(serde_json::Value::String(raw)) => serde_json::from_str::<serde_json::Value>(raw)
+            .ok()
+            .and_then(|v| tool_path(Some(&v))),
+        _ => None,
+    }
+}
+
+/// Turn the terminal `fiber_exited` (or the lack of one) into the normalized result.
+fn finish(state: FiberState, clean_exit: bool, stderr: &str) -> BackendResult {
+    let session_id = state.session_id.or(state.exited_session);
+    let notice_no_model = state.notice_no_model;
+    let Some(exited) = state.exited else {
+        // No `fiber_exited`: the process died before finishing. The stderr
+        // tail is the text; without stderr it is still an error with no text.
+        let text = if stderr.is_empty() {
+            NO_RESULT.to_string()
+        } else {
+            stderr.to_string()
+        };
+        return BackendResult {
+            text: prefix_notice(text, notice_no_model.as_deref()),
+            session_id,
+            is_error: Some(true),
+            clean_exit,
+            stderr: stderr.to_string(),
+            ..Default::default()
+        };
+    };
+    let payload = exited.get("payload").cloned().unwrap_or_default();
+    let exit_code = payload
+        .get("exit_code")
+        .and_then(|c| c.as_i64())
+        .unwrap_or(1);
+    let has_error = payload.get("error").is_some() || notice_no_model.is_some();
+    let is_error = Some(!(clean_exit && exit_code == 0 && !has_error));
+    let text = payload
+        .get("text")
+        .and_then(|t| t.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            payload
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    let text = prefix_notice(text, notice_no_model.as_deref());
+    let (usage, cost_usd) = usage_and_cost(&payload);
+    let provider_status = payload
+        .get("error")
+        .and_then(|e| e.get("provider"))
+        .and_then(|p| p.get("status"))
+        .and_then(|s| s.as_u64())
+        .and_then(|s| u16::try_from(s).ok());
+    BackendResult {
+        text,
+        session_id,
+        usage,
+        cost_usd,
+        is_error,
+        duration_ms: None,
+        clean_exit,
+        stderr: stderr.to_string(),
+        permission_denials: Vec::new(),
+        provider_status,
+    }
+}
+
+/// Put a `no_model` notice message first: the result text starts with it,
+/// followed by the run's own text when there is any.
+fn prefix_notice(text: String, notice: Option<&str>) -> String {
+    match notice {
+        None => text,
+        Some(message) if text.is_empty() || text == message => message.to_string(),
+        Some(message) => format!("{message}\n{text}"),
+    }
+}
+
+fn usage_and_cost(payload: &serde_json::Value) -> (Option<Usage>, Option<f64>) {
+    let Some(usage) = payload.get("usage") else {
+        return (None, None);
+    };
+    let Some(tokens) = usage.get("tokens") else {
+        return (None, None);
+    };
+    let input = finite(tokens.get("input"));
+    let output = finite(tokens.get("output"));
+    let cache_read = finite(tokens.get("cache_read"));
+    let cache_write = cache_write_tokens(Some(tokens));
+    let cost = usage
+        .get("cost")
+        .and_then(|c| c.as_f64())
+        .filter(|n| n.is_finite())
+        .unwrap_or(0.0);
+    let subscription = usage
+        .get("subscription_cost")
+        .and_then(|c| c.as_f64())
+        .filter(|n| n.is_finite())
+        .unwrap_or(0.0);
+    (
+        Some(Usage {
+            input_tokens: input,
+            output_tokens: output,
+            cache_read_tokens: cache_read,
+            cache_write_tokens: cache_write,
+        }),
+        Some(cost + subscription),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn recorded(name: &str) -> (String, String) {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/recorded/fiber");
+        let stdout = std::fs::read_to_string(dir.join(format!("{name}.jsonl")))
+            .unwrap_or_else(|e| panic!("{name}.jsonl: {e}"));
+        let stderr =
+            std::fs::read_to_string(dir.join(format!("{name}.stderr"))).unwrap_or_default();
+        (stdout, stderr)
+    }
+
+    #[test]
+    fn fresh_run_has_no_resume_and_resume_reuses_the_session() {
+        let fresh = argv("fiber/opencode-go/muse-spark-1.3-contributor", None, "hi");
+        assert_eq!(
+            fresh,
+            vec![
+                "ask",
+                "--model",
+                "opencode-go/muse-spark-1.3-contributor",
+                "--",
+                "hi",
+            ]
+        );
+        let resume = argv(
+            "fiber/opencode-go/muse-spark-1.3-contributor",
+            Some("s_36e63d22c39750e1"),
+            "go",
+        );
+        assert_eq!(
+            resume,
+            vec![
+                "ask",
+                "--model",
+                "opencode-go/muse-spark-1.3-contributor",
+                "--resume",
+                "s_36e63d22c39750e1",
+                "--",
+                "go",
+            ]
+        );
+    }
+
+    #[test]
+    fn argv_strips_the_fiber_prefix() {
+        let a = argv("fiber/opencode-go/muse-spark-1.3-contributor", None, "hi");
+        assert!(
+            a.windows(2)
+                .any(|w| w == ["--model", "opencode-go/muse-spark-1.3-contributor"])
+        );
+        assert!(!a.iter().any(|s| s.starts_with("fiber/")));
+    }
+
+    #[test]
+    fn argv_keeps_a_prompt_starting_with_a_dash_after_separator() {
+        let a = argv(
+            "fiber/opencode-go/muse-spark-1.3-contributor",
+            None,
+            "-fix it",
+        );
+        let dash = a.iter().position(|s| s == "--").expect("separator");
+        assert_eq!(&a[dash + 1..], ["-fix it"]);
+        let r = argv(
+            "fiber/opencode-go/muse-spark-1.3-contributor",
+            Some("s_abc"),
+            "-x",
+        );
+        let dash = r.iter().position(|s| s == "--").expect("separator");
+        assert_eq!(&r[dash + 1..], ["-x"]);
+        assert!(r.windows(2).any(|w| w == ["--resume", "s_abc"]));
+    }
+
+    #[test]
+    fn explicit_override_wins() {
+        assert_eq!(resolve_bin(Some("/custom/fiber")), "/custom/fiber");
+    }
+
+    #[test]
+    fn env_used_when_no_override() {
+        let prev = std::env::var("FIBER_BIN").ok();
+        unsafe { std::env::set_var("FIBER_BIN", "/env/fiber") };
+        assert_eq!(resolve_bin(None), "/env/fiber");
+        match prev {
+            Some(v) => unsafe { std::env::set_var("FIBER_BIN", v) },
+            None => unsafe { std::env::remove_var("FIBER_BIN") },
+        }
+    }
+
+    #[test]
+    fn model_reference_strips_only_the_fiber_prefix() {
+        assert_eq!(
+            model_reference("fiber/opencode-go/muse-spark-1.3-contributor"),
+            "opencode-go/muse-spark-1.3-contributor"
+        );
+        assert_eq!(
+            model_reference("opencode-go/muse-spark-1.3-contributor"),
+            "opencode-go/muse-spark-1.3-contributor"
+        );
+    }
+
+    #[test]
+    fn echo_fixture_parses_to_done() {
+        let (stdout, stderr) = recorded("echo");
+        let res = parse_stdout(&stdout, true, &stderr);
+        assert_eq!(res.text, "DONE");
+        assert_eq!(res.session_id.as_deref(), Some("s_36e63d22c39750e1"));
+        assert_eq!(res.is_error, Some(false));
+        assert!(res.clean_exit);
+        assert_eq!(res.provider_status, None);
+        let usage = res.usage.as_ref().expect("usage");
+        assert_eq!(usage.input_tokens, 5712.0);
+        assert_eq!(usage.output_tokens, 106.0);
+        assert_eq!(usage.cache_read_tokens, 5489.0);
+        assert_eq!(usage.cache_write_tokens, 0.0);
+        let cost = res.cost_usd.expect("cost");
+        assert!((cost - 0.000603378).abs() < 1e-12, "{cost}");
+    }
+
+    #[test]
+    fn echo_fixture_reports_tool_and_tokens_progress() {
+        let (stdout, _) = recorded("echo");
+        let mut state = FiberState::default();
+        for line in stdout.split_inclusive('\n') {
+            handle_line(line.as_bytes(), &mut state);
+        }
+        assert_eq!(state.last_tool.as_deref(), Some("shell"));
+        assert_eq!(state.phase.as_deref(), Some("responding"));
+        assert_eq!(state.last_assistant.as_deref(), Some("DONE"));
+        assert!(
+            (state.tokens_so_far() - 5818.0).abs() < 1e-9,
+            "{}",
+            state.tokens_so_far()
+        );
+        assert_eq!(state.session_id.as_deref(), Some("s_36e63d22c39750e1"));
+        // A shell call carries no path: nothing touched.
+        assert!(state.files_touched.is_empty());
+    }
+
+    #[test]
+    fn resume_fixture_answers_again() {
+        let (stdout, stderr) = recorded("resume");
+        let res = parse_stdout(&stdout, true, &stderr);
+        assert_eq!(res.text, "AGAIN");
+        assert_eq!(res.session_id.as_deref(), Some("s_36e63d22c39750e1"));
+        assert_eq!(res.is_error, Some(false));
+        let usage = res.usage.as_ref().expect("usage");
+        assert_eq!(usage.input_tokens, 73.0);
+        assert_eq!(usage.output_tokens, 25.0);
+        assert_eq!(usage.cache_read_tokens, 5617.0);
+        assert!((res.cost_usd.unwrap() - 0.000023534).abs() < 1e-12);
+    }
+
+    #[test]
+    fn badmodel_fixture_is_an_error_without_usage() {
+        let (stdout, stderr) = recorded("badmodel");
+        assert!(!stdout.is_empty());
+        let res = parse_stdout(&stdout, false, &stderr);
+        assert_eq!(res.is_error, Some(true));
+        assert!(!res.clean_exit);
+        assert!(res.usage.is_none());
+        assert_eq!(res.cost_usd, None);
+        assert_eq!(res.provider_status, None);
+        assert!(res.text.contains("nope"), "{}", res.text);
+        assert_eq!(res.stderr, stderr);
+    }
+
+    #[test]
+    fn provider_status_comes_from_fiber_exited_error() {
+        let line = serde_json::json!({
+            "kind": "fiber_exited",
+            "session_id": "s_abc",
+            "ts": 1,
+            "schema_version": 1,
+            "seq": 2,
+            "payload": {
+                "exit_code": 1,
+                "error": {
+                    "code": "provider_failed",
+                    "message": "upstream",
+                    "provider": {"name": "opencode-go", "status": 503, "message": "unavailable"}
+                }
+            }
+        })
+        .to_string();
+        let res = parse_stdout(&line, false, "boom");
+        assert_eq!(res.is_error, Some(true));
+        assert_eq!(res.provider_status, Some(503));
+        assert_eq!(res.text, "upstream");
+    }
+
+    #[test]
+    fn usage_recorded_with_the_same_generation_id_replaces_the_earlier() {
+        let first = serde_json::json!({
+            "kind": "usage_recorded",
+            "session_id": "s_1",
+            "ts": 1,
+            "schema_version": 1,
+            "seq": 1,
+            "payload": {
+                "generation_id": "g1",
+                "model": "opencode-go/muse-spark-1.3-contributor",
+                "tokens": {"input": 100, "output": 10, "cache_read": 0, "cache_write": {}},
+                "cost": 0.0,
+                "input_bytes": 1
+            }
+        })
+        .to_string();
+        let correction = serde_json::json!({
+            "kind": "usage_recorded",
+            "session_id": "s_1",
+            "ts": 2,
+            "schema_version": 1,
+            "seq": 2,
+            "payload": {
+                "generation_id": "g1",
+                "model": "opencode-go/muse-spark-1.3-contributor",
+                "tokens": {"input": 120, "output": 20, "cache_read": 0, "cache_write": {}},
+                "cost": 0.0,
+                "input_bytes": 1
+            }
+        })
+        .to_string();
+        let mut state = FiberState::default();
+        assert!(handle_line(first.as_bytes(), &mut state));
+        assert_eq!(state.tokens_so_far(), 110.0);
+        assert!(handle_line(correction.as_bytes(), &mut state));
+        assert_eq!(state.tokens_so_far(), 140.0);
+    }
+
+    #[test]
+    fn edit_and_write_calls_record_their_path() {
+        let mut state = FiberState::default();
+        for (name, path) in [("edit", "src/a.ts"), ("write", "src/b.ts"), ("shell", "x")] {
+            let line = serde_json::json!({
+                "kind": "tool_call_requested",
+                "session_id": "s_1",
+                "ts": 1,
+                "schema_version": 1,
+                "seq": 1,
+                "payload": {"name": name, "arguments": {"path": path}}
+            })
+            .to_string();
+            handle_line(line.as_bytes(), &mut state);
+        }
+        assert_eq!(state.last_tool.as_deref(), Some("shell"));
+        assert_eq!(state.files_touched, vec!["src/a.ts", "src/b.ts"]);
+    }
+
+    #[test]
+    fn stream_without_fiber_exited_is_a_crash_with_stderr_as_text() {
+        let (stdout, _) = recorded("echo");
+        let truncated: String = stdout
+            .lines()
+            .filter(|l| !l.contains("\"fiber_exited\""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!truncated.is_empty());
+        assert_ne!(truncated.len(), stdout.len());
+        let res = parse_stdout(&truncated, false, "killed");
+        assert_eq!(res.is_error, Some(true));
+        assert_eq!(res.text, "killed");
+        assert_eq!(res.session_id.as_deref(), Some("s_36e63d22c39750e1"));
+        assert!(res.usage.is_none());
+        assert!(!res.clean_exit);
+    }
+
+    #[test]
+    fn session_id_arrives_in_progress_before_the_end() {
+        let mut state = FiberState::default();
+        let line = r#"{"kind":"session_started","session_id":"s_new","ts":1,"schema_version":1,"seq":0,"payload":{}}"#;
+        assert!(handle_line(line.as_bytes(), &mut state));
+        assert_eq!(state.session_id.as_deref(), Some("s_new"));
+    }
+
+    #[test]
+    fn no_model_notice_is_an_error_despite_a_clean_exit() {
+        // The run exited 0 with `turn_completed` completed, but Fiber
+        // denied every reviewed tool call for lack of a reviewer model.
+        let (stdout, _) = recorded("echo");
+        let message = "Fiber denied every reviewed tool call: no reviewer model is configured.";
+        let notice = serde_json::json!({
+            "kind": "notice",
+            "session_id": "s_36e63d22c39750e1",
+            "ts": 1791485249434i64,
+            "schema_version": 1,
+            "payload": {"code": "no_model", "message": message}
+        })
+        .to_string();
+        let with_notice: String = stdout
+            .lines()
+            .flat_map(|l| {
+                if l.contains("\"fiber_exited\"") {
+                    vec![notice.as_str(), l]
+                } else {
+                    vec![l]
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_ne!(with_notice.len(), stdout.len());
+        let res = parse_stdout(&with_notice, true, "");
+        assert_eq!(res.is_error, Some(true));
+        assert!(res.clean_exit);
+        assert!(res.text.starts_with(message), "{}", res.text);
+        assert_eq!(res.session_id.as_deref(), Some("s_36e63d22c39750e1"));
+        // The run's own answer is kept after the notice message.
+        assert!(res.text.contains("DONE"), "{}", res.text);
+    }
+}

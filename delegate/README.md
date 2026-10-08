@@ -1,6 +1,6 @@
 # delegate
 
-A small CLI that runs coding and research tasks on Cursor, pi, or Claude Code models by driving the local `cursor-agent` binary in headless mode. Jobs are detached supervisors; you poll status from JSON files on disk.
+A small CLI that runs coding and research tasks on Cursor, pi, Claude Code, or Fiber models by driving the local `cursor-agent` binary in headless mode. Jobs are detached supervisors; you poll status from JSON files on disk.
 
 ## Install
 
@@ -31,12 +31,15 @@ Every job runs with writes enabled. A read task says "do not edit" in its brief;
 
 | Backend | Status |
 | --- | --- |
-| `cursor` | Implemented (`cursor-agent`). |
-| `pi` | Implemented (`pi`). |
-| `claude` | Implemented (`claude`). |
+| `cursor` | Implemented (`cursor-agent`, `CURSOR_AGENT_BIN`). |
+| `pi` | Implemented (`pi`, `PI_BIN`). |
+| `claude` | Implemented (`claude`, `CLAUDE_BIN`). |
+| `fiber` | Implemented (`fiber ask`, `FIBER_BIN`). |
 
 Model ids and prices come from bundled `config/models.json`, merged with your host profile.
 A Claude model id may carry a trailing `:<level>` (`low|medium|high|xhigh|max`), run as `claude --model <base> --effort <level>` (e.g. `claude-opus-5-5:high`); ids without a suffix are unchanged, and pi ids with a thinking suffix such as `openai-codex/gpt-6-luna:xhigh` stay their own ids.
+
+A fiber model id is `fiber/` plus Fiber's own `provider/model` reference (e.g. `fiber/opencode-go/muse-spark-1.3-contributor`), run as `fiber ask --model <reference>` with resume via `--resume`; it carries no tiers so the ladder never picks it, and `delegate doctor` checks `fiber version` plus membership in `fiber models --json`.
 
 ## Status records
 
