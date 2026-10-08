@@ -13,7 +13,10 @@ First run `implement` step 1 (check setup). Then, with the owner, at start (a ty
 
 - Repo, work source (a list of tickets, or a stack of PRs for PR-stack mode), base commit.
 - Models: the pool for each rung (per the `delegate` skill), a review pool (a correctness and an over-engineering reviewer, each from a family other than the implementers', at the same rung or higher), and the lane budget (2 works).
-- Merge terms: the cases that need the owner's call beyond the workflow doc's merge rule. Terms only add cases; the workflow doc's merge rule always holds. CI-boundary changes (workflows, rulesets) need the owner's call unless the terms include them.
+- Merge terms: the cases that need the owner's call beyond the workflow doc's merge rule. Terms only add cases; the workflow doc's merge rule always holds. CI-boundary changes (workflows, rulesets) need the owner's call unless the terms include them. When the terms include them, these still need the owner's call (owner, 2026-10-08):
+  - ruleset or branch-protection changes;
+  - `secrets.*`, `permissions:`, `pull_request_target`, and release or publish workflows;
+  - weakening the gate: a job left out of the required aggregate job's `needs` (removed, or a new job never added), the required check renamed, `continue-on-error`, or an `if:` or path filter that can skip a gating job, including the same done through the repo's own job-selection code (fiber's `xtask` verdict and select).
 - `gh auth status` shows the `workflow` scope; without it, PRs touching `.github/workflows/*` fail to merge.
 - Whether the owner will be around for rulings (see `implement`).
 
