@@ -16,7 +16,7 @@ Done when every red leg has its failing test or step named.
 One class per red leg, and the one action it allows:
 
 - **Merge conflict**: GitHub runs no CI on a conflicting PR. Rebase onto `origin/main` and resolve with `resolving-merge-conflicts`.
-- **Stale base**: the failure is in code the diff never touched, and `origin/main` has moved past the merge-base. Rebase onto `origin/main`. Check this before calling anything a flake.
+- **Stale base**: the failure is in code the diff never touched, and `origin/main` has moved past the merge-base. Rebase onto `origin/main`. Check this before calling anything a flake. A timeout counts too: a job whose work scales with the diff (mutation testing, affected-test selection) can time out on a PR behind `origin/main` when its diff picks up main's own commits: rebase onto `origin/main` before rerunning it.
 - **Infrastructure**: a runner, network or quota outage, with no test failing. Report it with the run id and head SHA; change no code.
 - **Flake**: the same test passes elsewhere on the same platform, and nothing in the diff links to it. One fresh build (an empty commit), never a job retry. An identical second failure means it isn't a flake: reclassify as real. File the flake as an issue in the `test-only` category (per `docs/agents/triage-labels.md`), never `bug`: test name, signature, run link, suspected cause. A fixed test passes on the base commit by construction, so its PR states the root cause and the evidence (runs under load) in place of a test that fails on base.
 - **Real failure**: the diff causes it. Fix it in a new commit.
