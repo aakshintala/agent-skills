@@ -33,7 +33,6 @@ pub(crate) fn fill(report: &mut DoctorReport, opts: &RunDoctorOpts<'_>) {
     configured_ids.sort();
 
     if !bin_exists(&path) {
-        report.failures.push(format!("fiber not found at {path}"));
         report.sections.push(DoctorBackendSection {
             backend: "fiber".into(),
             found: false,
@@ -66,8 +65,11 @@ pub(crate) fn lines(report: &DoctorReport) -> (String, bool) {
     let mut text = String::new();
     let mut failed = false;
     if !sec.found {
-        text += &status_line("fail", "fiber: fiber not found");
-        return (text, true);
+        text += &status_line(
+            "warn",
+            "fiber: fiber not found (optional; set FIBER_BIN or put fiber on PATH)",
+        );
+        return (text, false);
     }
     let path = sec.path.as_deref().unwrap_or("?");
     match sec.version.as_deref() {
@@ -335,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn fill_missing_binary_is_a_failure() {
+    fn fill_missing_binary_is_a_warning() {
         let config = config_with_fiber_ids(&["fiber/opencode-go/muse-spark-1.3-contributor"]);
         let mut report = DoctorReport::default();
         let opts = RunDoctorOpts {
@@ -346,9 +348,15 @@ mod tests {
             read_package_version: None,
         };
         fill(&mut report, &opts);
-        assert!(report.failures.iter().any(|f| f.contains("not found")));
+        assert!(
+            report.failures.iter().all(|f| !f.contains("fiber")),
+            "{}",
+            report.failures.join("\n")
+        );
+        report.ok = report.failures.is_empty();
+        assert!(report.ok);
         let (text, failed) = lines(&report);
-        assert!(failed);
-        assert!(text.contains("fail  fiber: fiber not found"), "{text}");
+        assert!(!failed);
+        assert!(text.starts_with("warn  fiber: fiber not found"), "{text}");
     }
 }
