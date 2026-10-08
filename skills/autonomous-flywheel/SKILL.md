@@ -41,7 +41,7 @@ Done when every reported PR is merged, or waits on the owner with the exact acti
 
 ### 4. Keep the state file
 
-Keep `~/.cache/agents/<repo>-flywheel-state.md` (durable: a reboot clears `/tmp`): the session config, each lane's ticket, branch, worktree and status, open escalations, rulings made, and the next steps. Update it after every merge, ruling and lane change. A fresh session continues from this file alone; `/handoff` is not involved.
+Keep `~/.cache/agents/<repo>-flywheel-state.md` (durable: a reboot clears `/tmp`): the session config, each lane's ticket, branch, worktree and status, open escalations, rulings made, and the next steps. Update it after every merge, ruling and lane change, and stamp each entry with the time `date` prints, since a recalled time drifts. A fresh session continues from this file alone; `/handoff` is not involved.
 
 Done when, after each update, the file alone would let a fresh session continue.
 
