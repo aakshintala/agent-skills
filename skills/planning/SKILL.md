@@ -54,9 +54,9 @@ Done when the Verifier says `PLAN OK`, or every line it returned is answered in 
 
 ### 4. Post
 
-Post the plan as a comment on the ticket. When the plan changes, edit that comment in place; GitHub keeps its history.
+Post the plan with `~/.agents/bin/post-plan <issue> <plan file> --repo <owner/name>`. It splits a plan over GitHub's comment limit at its `## ` headings into several comments, and prints one URL per part. When the plan changes, run it again: it edits its own comments in place (GitHub keeps their history), adds or deletes parts as the size needs. A section over the limit exits 1 and posts nothing: split that section.
 
-Done when the ticket's plan comment holds the current plan.
+Done when `post-plan` exits 0 with the current plan.
 
 ### 5. Brief the lane
 
