@@ -320,6 +320,8 @@ fn composer_only() -> Config {
 fn run_doctor_happy_path() {
     let mut t = HashMap::new();
     t.insert("--version".into(), ok_cmd("2026.06.01-abc\n"));
+    // The fiber backend joins the same full-doctor run and probes `version`.
+    t.insert("version".into(), ok_cmd("0.0.0\n"));
     t.insert("about".into(), ok_cmd(&format!("{ABOUT_FIXTURE}\n")));
     t.insert("models".into(), ok_cmd(&format!("{MODELS_FIXTURE}\n")));
     t.insert(
@@ -372,6 +374,8 @@ fn run_doctor_happy_path() {
 fn run_doctor_checks_pi_auth_and_ignores_claude() {
     let mut t = HashMap::new();
     t.insert("--version".into(), ok_cmd("2026.06.01-abc\n"));
+    // The fiber backend joins the same full-doctor run and probes `version`.
+    t.insert("version".into(), ok_cmd("0.0.0\n"));
     t.insert("about".into(), ok_cmd(&format!("{ABOUT_FIXTURE}\n")));
     t.insert("models".into(), ok_cmd("composer-2.5 - Composer 2.5\n"));
     t.insert(
@@ -451,6 +455,8 @@ fn run_doctor_not_logged_in() {
 fn run_doctor_model_list_warning() {
     let mut t = HashMap::new();
     t.insert("--version".into(), ok_cmd("1.0.0\n"));
+    // The fiber backend joins the same full-doctor run and probes `version`.
+    t.insert("version".into(), ok_cmd("0.0.0\n"));
     t.insert("about".into(), ok_cmd(&format!("{ABOUT_FIXTURE}\n")));
     t.insert("models".into(), fail_cmd("exit 1"));
     t.insert("--list-models".into(), fail_cmd("exit 2"));
@@ -477,6 +483,8 @@ fn run_doctor_model_list_warning() {
 fn run_doctor_without_deep() {
     let mut t = HashMap::new();
     t.insert("--version".into(), ok_cmd("1.0.0\n"));
+    // The fiber backend joins the same full-doctor run and probes `version`.
+    t.insert("version".into(), ok_cmd("0.0.0\n"));
     t.insert("about".into(), ok_cmd(&format!("{ABOUT_FIXTURE}\n")));
     t.insert("models".into(), ok_cmd("composer-2.5 - Composer 2.5\n"));
     let run = stub_run(t);

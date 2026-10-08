@@ -1,5 +1,6 @@
 pub mod claude;
 pub mod cursor;
+pub mod fiber;
 pub mod pi;
 pub mod types;
 
@@ -17,6 +18,7 @@ pub enum Backend {
     Cursor,
     Pi,
     Claude,
+    Fiber,
 }
 
 impl Backend {
@@ -26,6 +28,7 @@ impl Backend {
             "cursor" => Some(Self::Cursor),
             "pi" => Some(Self::Pi),
             "claude" => Some(Self::Claude),
+            "fiber" => Some(Self::Fiber),
             _ => None,
         }
     }
@@ -35,11 +38,12 @@ impl Backend {
             Self::Cursor => "cursor",
             Self::Pi => "pi",
             Self::Claude => "claude",
+            Self::Fiber => "fiber",
         }
     }
 
     /// Implemented backends, in doctor order.
-    pub const ALL: [Backend; 3] = [Self::Cursor, Self::Pi, Self::Claude];
+    pub const ALL: [Backend; 4] = [Self::Cursor, Self::Pi, Self::Claude, Self::Fiber];
 
     /// Resolved binary path (env override, then PATH, then ~/.local/bin).
     pub fn bin(self) -> String {
@@ -47,6 +51,7 @@ impl Backend {
             Self::Cursor => cursor::resolve_bin(None),
             Self::Pi => pi::resolve_bin(None),
             Self::Claude => claude::resolve_bin(None),
+            Self::Fiber => fiber::resolve_bin(None),
         }
     }
 
@@ -56,6 +61,7 @@ impl Backend {
             Self::Cursor => cursor::argv(model, session, prompt),
             Self::Pi => pi::argv(model, session, prompt),
             Self::Claude => claude::argv(model, session, prompt),
+            Self::Fiber => fiber::argv(model, session, prompt),
         }
     }
 
@@ -65,6 +71,7 @@ impl Backend {
             Self::Cursor => cursor::spawn(spec),
             Self::Pi => pi::spawn(spec),
             Self::Claude => claude::spawn(spec),
+            Self::Fiber => fiber::spawn(spec),
         }
     }
 
@@ -77,6 +84,7 @@ impl Backend {
             Self::Cursor => cursor::doctor::fill(report, opts),
             Self::Pi => pi::doctor::fill(report, opts),
             Self::Claude => claude::doctor::fill(report, opts),
+            Self::Fiber => fiber::doctor::fill(report, opts),
         }
     }
 
@@ -85,6 +93,7 @@ impl Backend {
             Self::Cursor => cursor::doctor::lines(report),
             Self::Pi => pi::doctor::lines(report),
             Self::Claude => claude::doctor::lines(report),
+            Self::Fiber => fiber::doctor::lines(report),
         }
     }
 }
@@ -236,6 +245,8 @@ mod tests {
         assert_eq!(Backend::Pi.name(), "pi");
         assert_eq!(Backend::from_name("claude"), Some(Backend::Claude));
         assert_eq!(Backend::Claude.name(), "claude");
+        assert_eq!(Backend::from_name("fiber"), Some(Backend::Fiber));
+        assert_eq!(Backend::Fiber.name(), "fiber");
         assert!(Backend::from_name("nope").is_none());
     }
 

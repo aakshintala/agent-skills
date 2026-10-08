@@ -54,6 +54,17 @@ esac
 
 const CLAUDE_FAKE: &str = include_str!("support/claude_fake.sh");
 
+fn fiber_script() -> String {
+    r#"#!/bin/sh
+case "$1" in
+  version) echo "0.0.0" ;;
+  models) echo '{"model":"opencode-go/muse-spark-1.3-contributor","context_window":1048576,"input":0.1,"output":0.2,"default":false}' ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#
+    .into()
+}
+
 struct Env {
     dir: PathBuf,
 }
@@ -76,6 +87,9 @@ impl Env {
         let claude = dir.join("claude.sh");
         std::fs::write(&claude, CLAUDE_FAKE).unwrap();
         std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let fiber = dir.join("fiber.sh");
+        std::fs::write(&fiber, fiber_script()).unwrap();
+        std::fs::set_permissions(&fiber, std::fs::Permissions::from_mode(0o755)).unwrap();
         Env { dir }
     }
 
@@ -91,6 +105,7 @@ impl Env {
             .env("CURSOR_AGENT_BIN", bin)
             .env("PI_BIN", self.dir.join("pi.sh"))
             .env("CLAUDE_BIN", self.dir.join("claude.sh"))
+            .env("FIBER_BIN", self.dir.join("fiber.sh"))
             // Isolate from the developer machine's real host profile: exact
             // table assertions need the bundled models only.
             .env(
@@ -117,7 +132,7 @@ impl Drop for Env {
     }
 }
 
-const SORTED_IDS: [&str; 12] = [
+const SORTED_IDS: [&str; 13] = [
     "claude-fable-5-1",
     "claude-haiku-5-5",
     "claude-opus-5-5",
@@ -125,6 +140,7 @@ const SORTED_IDS: [&str; 12] = [
     "composer-2.5",
     "grok-4.7-high",
     "grok-4.7-xhigh",
+    "fiber/opencode-go/muse-spark-1.3-contributor",
     "openai-codex/gpt-6-astra",
     "openai-codex/gpt-6-luna:xhigh",
     "openai-codex/gpt-6.1-sol",
@@ -171,18 +187,23 @@ fn models_lists_every_row_with_default_marked() {
     );
     let stdout = String::from_utf8(out.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines.len(), 13, "{stdout}");
+    assert_eq!(lines.len(), 14, "{stdout}");
+    // Compare with spaces shown as · so a width mismatch is debuggable.
     assert_eq!(
-        lines[0],
-        "  ID                                      LABEL                       BACKEND  $IN/1M  $OUT/1M  TIERS"
+        lines[0].replace(' ', "·"),
+        "··ID············································LABEL·······························BACKEND··$IN/1M··$OUT/1M··TIERS"
     );
     assert_eq!(
-        lines[5],
-        "* composer-2.5                            Composer 2.5                cursor     0.50     2.50  standard"
+        lines[5].replace(' ', "·"),
+        "*·composer-2.5··································Composer·2.5························cursor·····0.50·····2.50··standard"
     );
     assert_eq!(
-        lines[12],
-        "  opencode-go/muse-spark-1.3-contributor  Muse Spark 1.3 Contributor  pi         0.10     0.20  standard,strong"
+        lines[8].replace(' ', "·"),
+        "··fiber/opencode-go/muse-spark-1.3-contributor··Muse·Spark·1.3·Contributor·(fiber)··fiber······0.10·····0.20"
+    );
+    assert_eq!(
+        lines[13].replace(' ', "·"),
+        "··opencode-go/muse-spark-1.3-contributor········Muse·Spark·1.3·Contributor··········pi·········0.10·····0.20··standard,strong"
     );
     // Rows sort by backend, then by id; only the default row is starred.
     let ids: Vec<&str> = lines[1..]
@@ -217,6 +238,7 @@ fn doctor_passes_against_full_fake() {
         "{stdout}"
     );
     assert!(stdout.contains("ok    claude: logged in"), "{stdout}");
+    assert!(stdout.contains("ok    fiber: fiber 0.0.0 ("), "{stdout}");
     assert!(!stdout.contains("skip  claude"), "{stdout}");
     assert!(!stdout.contains("warn"), "{stdout}");
     assert!(!stdout.contains("fail"), "{stdout}");
