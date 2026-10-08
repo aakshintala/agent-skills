@@ -348,13 +348,7 @@ mod tests {
             read_package_version: None,
         };
         fill(&mut report, &opts);
-        assert!(
-            report.failures.iter().all(|f| !f.contains("fiber")),
-            "{}",
-            report.failures.join("\n")
-        );
-        report.ok = report.failures.is_empty();
-        assert!(report.ok);
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
         let (text, failed) = lines(&report);
         assert!(!failed);
         assert!(text.starts_with("warn  fiber: fiber not found"), "{text}");
