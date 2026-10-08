@@ -33,7 +33,7 @@ Done when the fix round covers every open finding: dispatched as a gated job, or
 
 ### 3. Verify
 
-Judge the repair by its diff (`git range-diff origin/main <reviewed head> <new head>`; after a rebase, a plain diff counts the base's own merges) and gate output, never the fix worker's report. Then start the scoped verify (it returns its job id at once), wait as in step 1, and collect it:
+Judge the repair by its diff (`git range-diff origin/main <reviewed head> <new head>`; after a rebase, a plain diff counts the base's own merges) and gate output, never the fix worker's report. A finding the worker refuted has no fix in the diff: copy its `refuted: <evidence>` line under that finding in the findings file, so the verify checks the evidence against the code. Then start the scoped verify (it returns its job id at once), wait as in step 1, and collect it:
 
 ```
 ~/.agents/bin/review-pr start <pr> --repo <owner/name> --cwd <clone> --head <pushed sha> --model <correctness> --verify <findings file> --since <reviewed head>
