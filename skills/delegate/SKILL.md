@@ -21,6 +21,8 @@ Pick the lowest rung whose definition covers the job:
 
 The current pool is in the `delegate models` Tiers column. Use a model with no rung only when the owner names it. Within a rung, pick the cheapest model with headroom (the `$OUT/1M` column); on a price tie, pick the provider with more headroom.
 
+When the pick is a Claude model and you run in a Claude Code session, start it as a local `claude-worker` subagent with that model and effort (`model: haiku` for `claude-haiku-5-5`), and run the gate yourself on its result. A script with no session to host a subagent, such as `review-pr`, passes the Claude model to `delegate run`. A session started before Claude Code learned of a model may resolve its alias to the older one (`haiku` to Haiku 4.5), so check the model id the subagent reports.
+
 At session start, propose a pool per rung from `delegate models` and `~/.agents/bin/quota`, showing each provider's headroom. The owner confirms it. When the owner is unavailable, use the last confirmed pool, step down within the rung when a provider runs low, and report the switch.
 
 A provider's headroom is its remaining quota on its tightest window (session, weekly or monthly): the lowest percent on its line from `~/.agents/bin/quota`. Map providers by backend or prefix: the `cursor` backend, `opencode-go/*`, `claude-*`, and `openai-codex/*`.
