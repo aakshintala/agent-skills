@@ -41,7 +41,40 @@ gh() (
     esac
     jq -r "$jq" <<<"$json"; exit 0
   fi
-  [ "$1" = "pr" ] || { echo "fake gh: only pr and api supported" >&2; exit 2; }
+  if [ "$1" = "run" ]; then
+    shift
+    case "${1:-}" in
+      list)
+        [ ! -e "$T/state/runs-fail" ] || { echo "fake gh: cannot list runs" >&2; exit 1; }
+        cat "$T/state/runs.json"
+        exit 0;;
+      view)
+        shift
+        _rv_run="${1:-}"; shift || true
+        _rv_job=""; _prev=""
+        for _a in "$@"; do
+          if [ "$_prev" = "--job" ]; then _rv_job="$_a"; fi
+          _prev="$_a"
+        done
+        case " $* " in
+          *" --log-failed "*)
+            cat "$T/state/log-$_rv_job.txt"
+            exit 0;;
+          *" --json jobs "*)
+            [ ! -e "$T/state/jobs-fail" ] || { echo "fake gh: cannot read jobs" >&2; exit 1; }
+            cat "$T/state/jobs-$_rv_run.json"
+            exit 0;;
+          *" --json name "*)
+            cat "$T/state/run-name-$_rv_run.txt" 2>/dev/null || printf '%s\n' "wf-$_rv_run"
+            exit 0;;
+          *)
+            echo "fake gh: unknown run view args: $*" >&2; exit 2;;
+        esac;;
+      *)
+        echo "fake gh: unknown run $1" >&2; exit 2;;
+    esac
+  fi
+  [ "$1" = "pr" ] || { echo "fake gh: only pr, run and api supported" >&2; exit 2; }
   shift
   advance() {
     local f="$1"
@@ -81,6 +114,8 @@ export -f gh sleep
 reset_state() {
   rm -f "$T/state/sleeps.txt" "$T/state/gh-args.txt" "$T/state/merge-state.txt" "$T/state/view-fail"
   rm -f "$T/state/heads.txt" "$T/state/checks.txt" "$T/state/rules" "$T/state/rules-fail" "$T/state/classic" "$T/state/draft"
+  rm -f "$T/state/runs.json" "$T/state/runs-fail" "$T/state/jobs-fail"
+  rm -f "$T/state"/jobs-*.json "$T/state"/run-name-*.txt "$T/state"/log-*.txt
   : >"$T/state/gh-args.txt"
 }
 
@@ -399,5 +434,101 @@ grep -q '^usage: gh-ci' "$T/stderr.txt" || fail "unknown subcommand prints usage
     grep -q '^usage: gh-ci' "$T/stderr.txt" || fail "usage without repo lookup for [$a]"
   done
 ) || exit 1
+
+# --- cases: failures prints a cleaned digest of the failed and cancelled jobs ---
+run_failures() {
+  OUT="$(bash "$GHCI" failures "$@" 2>"$T/stderr.txt")"; CODE=$?
+}
+set_runs() { printf '%s' "$1" >"$T/state/runs.json"; }
+set_jobs() { printf '%s' "$2" >"$T/state/jobs-$1.json"; }
+make_rust_log() { # 100 ANSI/timestamp/prefixed lines with Rust failures inside
+  local jid="$1" i msg
+  {
+    for i in $(seq 1 100); do
+      case "$i" in
+        90) msg="test foo::bar ... FAILED";;
+        95) msg="error[E0308]: mismatched types";;
+        *) msg="line $i content";;
+      esac
+      printf 'myjob\tmystep\t2026-10-07T12:00:%02dZ \033[31m%s\033[0m\n' "$((i % 60))" "$msg"
+    done
+  } >"$T/state/log-$jid.txt"
+}
+ESC_BYTES="$(printf '\033')"
+
+# a 100-line coloured, timestamped, prefixed log digests to its last 60
+# cleaned lines, Rust failure lines included
+reset_state
+set_jobs 123 '{"jobs":[{"databaseId":111,"name":"build","conclusion":"failure"}]}'
+make_rust_log 111
+run_failures 123
+[ "$CODE" = "0" ] || fail "failures digest exits 0 (got $CODE): [$OUT]"
+grep -q "=== wf-123 / build (111): failure" <<<"$OUT" || fail "failure header: [$OUT]"
+grep -q "test foo::bar ... FAILED" <<<"$OUT" || fail "Rust FAILED line in digest"
+grep -q "error\[E0308\]: mismatched types" <<<"$OUT" || fail "Rust error line in digest"
+LINES="$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
+[ "$LINES" = "61" ] || fail "header plus exactly 60 lines (got $LINES)"
+grep -q "$ESC_BYTES" <<<"$OUT" && fail "no escape bytes in digest"
+grep -q "2026-10-07" <<<"$OUT" && fail "no timestamps in digest"
+grep -q "myjob" <<<"$OUT" && fail "no job/step prefix in digest"
+grep -q "line 41 content" <<<"$OUT" || fail "keeps the last 60 (line 41 present)"
+grep -q "line 40 content" <<<"$OUT" && fail "drops lines before the last 60"
+
+# --pr with one failed and one passed run on the head: only the failed run
+reset_state
+set_heads "$A"
+set_runs '[{"databaseId":11,"name":"ci","conclusion":"failure"},{"databaseId":22,"name":"lint","conclusion":"success"}]'
+set_jobs 11 '{"jobs":[{"databaseId":111,"name":"build","conclusion":"failure"}]}'
+set_jobs 22 '{"jobs":[{"databaseId":222,"name":"ok-job","conclusion":"success"}]}'
+make_rust_log 111
+run_failures --pr 7
+[ "$CODE" = "0" ] || fail "--pr digest exits 0 (got $CODE): [$OUT]"
+grep -q "=== ci / build (111): failure" <<<"$OUT" || fail "--pr failed run header: [$OUT]"
+grep -q "ok-job" <<<"$OUT" && fail "passed run jobs never appear: [$OUT]"
+grep -q "lint" <<<"$OUT" && fail "passed run name never appears: [$OUT]"
+grep -q -- "run list .*--limit 100" "$T/state/gh-args.txt" || fail "--pr lists runs with --limit 100: [$(cat "$T/state/gh-args.txt")]"
+
+# a cancelled job prints one line and triggers no log call
+reset_state
+set_jobs 123 '{"jobs":[{"databaseId":222,"name":"flaky","conclusion":"cancelled"},{"databaseId":111,"name":"build","conclusion":"failure"}]}'
+make_rust_log 111
+run_failures 123
+[ "$CODE" = "0" ] || fail "cancelled digest exits 0 (got $CODE): [$OUT]"
+grep -q "=== wf-123 / flaky: cancelled" <<<"$OUT" || fail "cancelled line: [$OUT]"
+grep -q -- "--job 222" "$T/state/gh-args.txt" && fail "no log call for cancelled jobs"
+grep -q -- "--job 111" "$T/state/gh-args.txt" || fail "log call for failed jobs"
+
+# nothing failed: names the run, or the PR head short SHA, and exits 0
+reset_state
+set_jobs 123 '{"jobs":[{"databaseId":111,"name":"build","conclusion":"success"}]}'
+run_failures 123
+[ "$CODE" = "0" ] || fail "no failures exits 0 (got $CODE): [$OUT]"
+grep -q "no failed jobs" <<<"$OUT" || fail "no-failures line: [$OUT]"
+grep -q "123" <<<"$OUT" || fail "no-failures names the run: [$OUT]"
+reset_state
+set_heads "$A"
+set_runs '[]'
+run_failures --pr 7
+[ "$CODE" = "0" ] || fail "--pr no failures exits 0 (got $CODE): [$OUT]"
+grep -q "no failed jobs" <<<"$OUT" || fail "--pr no-failures line: [$OUT]"
+grep -q "${A:0:8}" <<<"$OUT" || fail "--pr no-failures names the short SHA: [$OUT]"
+
+# GH_CI_LOG_LINES=5 keeps 5 lines
+reset_state
+set_jobs 123 '{"jobs":[{"databaseId":111,"name":"build","conclusion":"failure"}]}'
+make_rust_log 111
+OUT="$(GH_CI_LOG_LINES=5 bash "$GHCI" failures 123 2>"$T/stderr.txt")"; CODE=$?
+[ "$CODE" = "0" ] || fail "log-lines=5 exits 0 (got $CODE): [$OUT]"
+LINES="$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
+[ "$LINES" = "6" ] || fail "5 lines kept (got $LINES)"
+
+# failures usage errors exit 2
+reset_state
+run_failures; [ "$CODE" = "2" ] || fail "failures with no argument exits 2 (got $CODE)"
+run_failures --pr; [ "$CODE" = "2" ] || fail "failures --pr with no number exits 2 (got $CODE)"
+run_failures --pr abc; [ "$CODE" = "2" ] || fail "failures --pr abc exits 2 (got $CODE)"
+reset_state
+run_failures abc; [ "$CODE" = "2" ] || fail "failures abc exits 2 (got $CODE)"
+[ ! -s "$T/state/gh-args.txt" ] || fail "failures abc makes no gh call: [$(cat "$T/state/gh-args.txt")]"
 
 echo "gh-ci: all cases passed"

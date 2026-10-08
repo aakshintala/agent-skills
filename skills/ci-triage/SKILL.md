@@ -7,7 +7,7 @@ Failed CI is evidence. Classify it before touching code or rerunning anything. T
 
 ### 1. Read
 
-`gh-ci snapshot <pr>` for the head SHA and status, `gh-ci failures <run>` for the red legs and their failing tests.
+`gh-ci snapshot <pr>` for the head SHA and status, then `gh-ci failures --pr <pr>` for every failed or cancelled job on that head, each failed job with the tail of its failed-step log. Read the digest before opening any raw log. A cancelled job has no log: a newer push or run superseded it, or it hit its job timeout; check which before calling it red.
 
 Done when every red leg has its failing test or step named.
 
