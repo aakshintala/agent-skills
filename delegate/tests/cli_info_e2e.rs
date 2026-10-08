@@ -117,8 +117,9 @@ impl Drop for Env {
     }
 }
 
-const SORTED_IDS: [&str; 11] = [
+const SORTED_IDS: [&str; 12] = [
     "claude-fable-5-1",
+    "claude-haiku-5-5",
     "claude-opus-5-5",
     "claude-sonnet-5-5",
     "composer-2.5",
@@ -170,17 +171,17 @@ fn models_lists_every_row_with_default_marked() {
     );
     let stdout = String::from_utf8(out.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines.len(), 12, "{stdout}");
+    assert_eq!(lines.len(), 13, "{stdout}");
     assert_eq!(
         lines[0],
         "  ID                                      LABEL                       BACKEND  $IN/1M  $OUT/1M  TIERS"
     );
     assert_eq!(
-        lines[4],
+        lines[5],
         "* composer-2.5                            Composer 2.5                cursor     0.50     2.50  standard"
     );
     assert_eq!(
-        lines[11],
+        lines[12],
         "  opencode-go/muse-spark-1.3-contributor  Muse Spark 1.3 Contributor  pi         0.10     0.20  standard,strong"
     );
     // Rows sort by backend, then by id; only the default row is starred.
