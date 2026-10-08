@@ -19,7 +19,7 @@ Pick the lowest rung whose definition covers the job:
 - `strong`: under-specified tickets. Makes local design calls, and stops and flags a plan that's wrong instead of following it. Writes a lane brief from an approved plan. Checks a plan as the Verifier.
 - `frontier`: long-horizon planning, cross-cutting design, sub-orchestrating a ticket, and the last escalation before the owner.
 
-The current pool is in the `delegate models` Tiers column. Use a model with no rung only when the owner names it. Within a rung, pick the cheapest model with headroom (the `$OUT/1M` column).
+The current pool is in the `delegate models` Tiers column. Use a model with no rung only when the owner names it. Within a rung, pick the cheapest model with headroom (the `$OUT/1M` column); on a price tie, pick the provider with more headroom.
 
 At session start, propose a pool per rung from `delegate models` and `~/.agents/bin/quota`, showing each provider's headroom. The owner confirms it. When the owner is unavailable, use the last confirmed pool, step down within the rung when a provider runs low, and report the switch.
 
