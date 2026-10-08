@@ -461,6 +461,16 @@ run_wait 7
 [ "$CODE" = "0" ] || fail "replaced required cancel passes (got $CODE): [$OUT]"
 grep -q "head: ${A:0:8} CI: pass" <<<"$OUT" || fail "replaced required pass line: [$OUT]"
 
+# required names unreadable: the newest-run map still uses every check, so a
+# cancelled required check from a superseded run is pending, not failing
+reset_state
+set_heads "$A"; touch "$T/state/rules-fail"
+printf 'ci\n' >"$T/state/required-filter"
+set_checks '[{"name":"ci","bucket":"cancel","workflow":"CI","event":"pull_request","link":"https://github.com/O/N/actions/runs/1/job/11"},{"name":"setup","bucket":"pending","workflow":"CI","event":"pull_request","link":"https://github.com/O/N/actions/runs/2/job/21"}]'
+run_wait 7 --timeout 0
+[ "$CODE" = "124" ] || fail "superseded required cancel with unreadable names is pending (got $CODE): [$OUT]"
+grep -q "head: ${A:0:8} timeout after 0s" <<<"$OUT" || fail "superseded unreadable-names timeout header: [$OUT]"
+
 # a draft with no checks yet stays pending to timeout
 reset_state
 set_heads "$A"; echo true >"$T/state/draft"; echo "$RULES_CI" >"$T/state/rules"

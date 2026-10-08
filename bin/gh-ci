@@ -267,11 +267,11 @@ cmd_wait() {
       checks_json=$(gh pr checks "$pr" --repo "$REPO" --required --json name,bucket,workflow,event,link 2>&1 || true)
     fi
     # The server's --required set hides runs whose required jobs have not
-    # appeared yet, so when the required names were read, build the
+    # appeared yet, so whenever the checks call used --required, build the
     # newest-run map from every check on the head (one extra call) and apply
     # it to the required set. Otherwise the single fetch already holds every
     # check the map may see (draft), or the map stays empty (anything else).
-    if [ "$draft" != true ] && [ "$empty_ok" = true ] && [ "$req" != "[]" ]; then
+    if [ "$draft" != true ] && { [ "$empty_ok" != true ] || [ "$req" != "[]" ]; }; then
       max_src=$(gh pr checks "$pr" --repo "$REPO" --json name,bucket,workflow,event,link 2>&1 || true)
     else
       max_src="$checks_json"
