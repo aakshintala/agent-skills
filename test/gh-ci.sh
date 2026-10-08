@@ -332,7 +332,7 @@ set_heads "$A"; set_checks "$PASS"; echo "$RULES_CI" >"$T/state/rules"
 run_wait 7
 [ "$CODE" = "0" ] || fail "green required check exits 0 (got $CODE): [$OUT]"
 [ ! -e "$T/state/sleeps.txt" ] || fail "green required check never sleeps"
-grep -q -- '--json name,bucket$' "$T/state/gh-args.txt" || fail "checks call asks for name,bucket"
+grep -q -- '--json name,bucket,workflow,event,link$' "$T/state/gh-args.txt" || fail "checks call asks for name,bucket,workflow,event,link"
 ! grep -q startedAt "$T/state/gh-args.txt" || fail "startedAt is never requested"
 
 # only a differently named (draft) check ran: --required lists nothing, ci is pending
@@ -398,6 +398,34 @@ run_wait 7
 [ "$CODE" = "1" ] || fail "draft failure exits 1 (got $CODE): [$OUT]"
 grep -q "head: ${A:0:8} CI: fail" <<<"$OUT" || fail "draft fail header: [$OUT]"
 grep -q '^failing: CI (draft)$' <<<"$OUT" || fail "draft failing job named: [$OUT]"
+
+# --- cases: wait ignores checks from a superseded workflow run
+# a stale fail from run 1 next to passes from run 2 of the same workflow passes
+reset_state
+set_heads "$A"; echo true >"$T/state/draft"; echo "$RULES_CI" >"$T/state/rules"
+set_checks '[{"name":"CI (draft)","bucket":"fail","workflow":"CI","event":"pull_request","link":"https://github.com/O/N/actions/runs/1/job/11"},{"name":"CI","bucket":"pass","workflow":"CI","event":"pull_request","link":"https://github.com/O/N/actions/runs/2/job/21"},{"name":"lint","bucket":"pass","workflow":"CI","event":"pull_request","link":"https://github.com/O/N/actions/runs/2/job/22"}]'
+run_wait 7 --timeout 7
+[ "$CODE" = "0" ] || fail "superseded draft fail exits 0 (got $CODE): [$OUT]"
+grep -q "head: ${A:0:8} CI: pass (draft: required checks run once ready)" <<<"$OUT" \
+  || fail "superseded draft pass line: [$OUT]"
+grep -q -- '--json name,bucket,workflow,event,link$' "$T/state/gh-args.txt" \
+  || fail "draft checks call asks for workflow,event,link"
+
+# a failing check from the current run still fails
+reset_state
+set_heads "$A"; echo true >"$T/state/draft"; echo "$RULES_CI" >"$T/state/rules"
+set_checks '[{"name":"CI (draft)","bucket":"pass","workflow":"CI","event":"pull_request","link":"https://github.com/O/N/actions/runs/1/job/11"},{"name":"CI","bucket":"fail","workflow":"CI","event":"pull_request","link":"https://github.com/O/N/actions/runs/2/job/21"}]'
+run_wait 7
+[ "$CODE" = "1" ] || fail "current-run failure exits 1 (got $CODE): [$OUT]"
+grep -q "^failing: CI$" <<<"$OUT" || fail "current failing job named: [$OUT]"
+
+# a failing status context with a non-Actions link is kept
+reset_state
+set_heads "$A"; echo true >"$T/state/draft"; echo "$RULES_CI" >"$T/state/rules"
+set_checks '[{"name":"third-party","bucket":"fail","link":"https://example.com/status/1"},{"name":"CI","bucket":"pass","workflow":"CI","event":"pull_request","link":"https://github.com/O/N/actions/runs/2/job/21"}]'
+run_wait 7
+[ "$CODE" = "1" ] || fail "status-context failure exits 1 (got $CODE): [$OUT]"
+grep -q "^failing: third-party$" <<<"$OUT" || fail "status context named: [$OUT]"
 
 # a draft with no checks yet stays pending to timeout
 reset_state
@@ -487,6 +515,28 @@ grep -q "=== ci / build (111): failure" <<<"$OUT" || fail "--pr failed run heade
 grep -q "ok-job" <<<"$OUT" && fail "passed run jobs never appear: [$OUT]"
 grep -q "lint" <<<"$OUT" && fail "passed run name never appears: [$OUT]"
 grep -q -- "run list .*--limit 100" "$T/state/gh-args.txt" || fail "--pr lists runs with --limit 100: [$(cat "$T/state/gh-args.txt")]"
+
+# --pr ignores a superseded run: cancelled run 1 replaced by a successful
+# run 2 of the same workflow reports no failed jobs
+reset_state
+set_heads "$A"
+set_runs '[{"databaseId":1,"name":"CI","workflowName":"CI","event":"pull_request","conclusion":"cancelled"},{"databaseId":2,"name":"CI","workflowName":"CI","event":"pull_request","conclusion":"success"}]'
+set_jobs 2 '{"jobs":[{"databaseId":222,"name":"ok-job","conclusion":"success"}]}'
+run_failures --pr 7
+[ "$CODE" = "0" ] || fail "superseded cancel exits 0 (got $CODE): [$OUT]"
+grep -q "no failed jobs on ${A:0:8}" <<<"$OUT" || fail "superseded cancel line: [$OUT]"
+grep -q -- "run list .*databaseId,name,event,conclusion,workflowName" "$T/state/gh-args.txt" \
+  || fail "run list asks for event,workflowName: [$(cat "$T/state/gh-args.txt")]"
+
+# --pr still reports a cancelled run of another workflow
+reset_state
+set_heads "$A"
+set_runs '[{"databaseId":1,"name":"A","workflowName":"A","event":"pull_request","conclusion":"cancelled"},{"databaseId":2,"name":"B","workflowName":"B","event":"pull_request","conclusion":"success"}]'
+set_jobs 1 '{"jobs":[{"databaseId":111,"name":"old-job","conclusion":"cancelled"}]}'
+set_jobs 2 '{"jobs":[{"databaseId":222,"name":"ok-job","conclusion":"success"}]}'
+run_failures --pr 7
+[ "$CODE" = "0" ] || fail "other-workflow cancel exits 0 (got $CODE): [$OUT]"
+grep -q "=== A / old-job: cancelled" <<<"$OUT" || fail "other-workflow cancelled line: [$OUT]"
 
 # a cancelled job prints one line and triggers no log call
 reset_state

@@ -447,7 +447,7 @@ origin_head >/dev/null && fail "origin branch deleted"
 
 setup; ship; expect 0 "non-draft happy path"
 ! grep -q '^gh pr ready' "$ST/gh.log" || fail "non-draft never marked ready"
-grep -q -- '--json name,bucket$' "$ST/gh.log" || fail "non-draft: checks call asks for name,bucket"
+grep -q -- '--json name,bucket,workflow,event,link$' "$ST/gh.log" || fail "non-draft: checks call asks for name,bucket,workflow,event,link"
 ! grep -q startedAt "$ST/gh.log" || fail "non-draft: startedAt is never requested"
 [ ! -e "$WT" ] || fail "non-draft: worktree removed"
 
