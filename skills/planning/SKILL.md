@@ -28,6 +28,7 @@ A plan is a sketch of contracts and invariants, never code: a function body in a
 ## Rulings              each contradiction found and the default chosen, tagged core or non-blocking
 ## Files                each file touched and what changes; this is the lane's fence. Sweep for it: search the repo for every changed symbol, signature, type, listed value and behaviour, and list every caller, test, rules or lint file, doc and dependency manifest the change reaches
 ## Tasks                in order; each: behaviour, test first, gate command, done-when
+## Gate                 the lane's gate as one literal command line: format, lint and tests for every package Files touches, plus the checks the workflow doc requires before a push
 ## Interfaces           signatures, invariants, one literal example per line on the wire; no bodies
 ## Review Focus         where reviewers look: input classes and failure modes the tests may not cover
 ## Rung                 the lane's rung (per the `delegate` skill) and the reason
@@ -44,7 +45,7 @@ Estimate tests from the testing rules the workflow doc states (every case, every
 
 Size each task as the smallest unit that carries its own test cycle. Tasks run in order in one lane, under one `review-loop` for the PR. A migration may break the callers it lists under Rulings instead of paying for interim compatibility.
 
-Done when every section is filled, every hit of the Files sweep is listed or ruled out, the size is estimated with any split it calls for, every ruling is tagged, and every known hazard is a ruling or an invariant.
+Done when every section is filled, every hit of the Files sweep is listed or ruled out, the Gate covers every package in Files, the size is estimated with any split it calls for, every ruling is tagged, and every known hazard is a ruling or an invariant.
 
 ### 3. Verify
 
@@ -60,6 +61,6 @@ Done when `post-plan` exits 0 with the current plan.
 
 ### 5. Brief the lane
 
-Fill `briefs/lane.md` with `PLAN=@<plan file>`, the base, worktree, branch, gate command and `CLOSING`: `Resolves #<n>` for a PR that finishes the ticket, `Part of #<n>` for one part of a split. The brief's stop limits are structural: they catch a change of scope, and a large change inside scope is review's to judge.
+Fill `briefs/lane.md` with `PLAN=@<plan file>`, the base, worktree, branch, `GATE` (the plan's Gate line, verbatim) and `CLOSING`: `Resolves #<n>` for a PR that finishes the ticket, `Part of #<n>` for one part of a split. The brief's stop limits are structural: they catch a change of scope, and a large change inside scope is review's to judge.
 
 Done when `fill-brief` exits 0.

@@ -16,6 +16,6 @@ Max 300 words, one line each: what, where, the smallest fix.
 5. Each invariant under Interfaces: construct an input that breaks it. Report the breaking input, or the strongest input you tried and why the invariant holds against it.
 6. An open design choice in Review Focus: a hazard the plan names without a ruling or an invariant.
 7. A Rung lower than the plan's own Interfaces and Review Focus call for: `strong` for state carried across calls, concurrency or timing, replay, or a rule with several cases; `frontier` for cross-cutting design.
-8. A file the change reaches that Files leaves out: search the repo for each changed symbol, signature, type, listed value and behaviour, and name each caller, test, rules or lint file, doc or dependency manifest missing from Files.
+8. A file the change reaches that Files leaves out: search the repo for each changed symbol, signature, type, listed value and behaviour, and name each caller, test, rules or lint file, doc or dependency manifest missing from Files. Also name each package in Files that the Gate line doesn't format, lint or test.
 
 `PLAN OK` when items 1–4 and 6–8 find nothing and every invariant held under item 5; list the item 5 attempts above it. End with a STATUS line.
