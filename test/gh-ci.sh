@@ -486,6 +486,7 @@ run_failures --pr 7
 grep -q "=== ci / build (111): failure" <<<"$OUT" || fail "--pr failed run header: [$OUT]"
 grep -q "ok-job" <<<"$OUT" && fail "passed run jobs never appear: [$OUT]"
 grep -q "lint" <<<"$OUT" && fail "passed run name never appears: [$OUT]"
+grep -q -- "run list .*--limit 100" "$T/state/gh-args.txt" || fail "--pr lists runs with --limit 100: [$(cat "$T/state/gh-args.txt")]"
 
 # a cancelled job prints one line and triggers no log call
 reset_state
@@ -526,5 +527,8 @@ reset_state
 run_failures; [ "$CODE" = "2" ] || fail "failures with no argument exits 2 (got $CODE)"
 run_failures --pr; [ "$CODE" = "2" ] || fail "failures --pr with no number exits 2 (got $CODE)"
 run_failures --pr abc; [ "$CODE" = "2" ] || fail "failures --pr abc exits 2 (got $CODE)"
+reset_state
+run_failures abc; [ "$CODE" = "2" ] || fail "failures abc exits 2 (got $CODE)"
+[ ! -s "$T/state/gh-args.txt" ] || fail "failures abc makes no gh call: [$(cat "$T/state/gh-args.txt")]"
 
 echo "gh-ci: all cases passed"

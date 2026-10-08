@@ -80,7 +80,7 @@ cmd_failures() {
     head=$(pr_head "$pr") || return 1
     short="${head:0:8}"
     local runs_json runs
-    runs_json=$(gh run list --repo "$REPO" --commit "$head" --json databaseId,name,conclusion) \
+    runs_json=$(gh run list --repo "$REPO" --commit "$head" --limit 100 --json databaseId,name,conclusion) \
       || { echo "could not list runs for PR $pr head $short" >&2; return 1; }
     runs=$(printf '%s' "$runs_json" | jq -r '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | "\(.databaseId)\t\(.name)"') \
       || { echo "could not parse runs for PR $pr head $short" >&2; return 1; }
@@ -89,10 +89,9 @@ cmd_failures() {
     label="on $short"
   else
     [ $# -eq 1 ] || usage
-    case "${1:-}" in ''|--*) usage;; esac
+    case "${1:-}" in ''|*[!0-9]*) usage;; esac
     local run="$1" run_name
     run_name=$(gh run view "$run" --repo "$REPO" --json name --jq .name 2>/dev/null) || run_name="$run"
-    case "$run_name" in ''|null) run_name="$run";; esac
     runs_list=$(printf '%s\t%s' "$run" "$run_name")
     label="in run $run"
   fi
