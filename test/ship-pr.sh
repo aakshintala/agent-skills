@@ -254,7 +254,7 @@ grep -q 'origin/main moved during CI; rebasing again (retry 1 of 3)' <<<"$ERR" |
 PIN="$(sed -n 's/.*--match-head-commit //p' "$ST/gh.log")"
 [ -n "$PIN" ] && git --git-dir="$ORIGIN" merge-base --is-ancestor refs/heads/main "$PIN" \
   || fail "merge pinned to a head that descends from the moved main: [$PIN]"
-[ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 2 ] || fail "two CI waits"
+[ "$(grep -c '^gh pr checks.*--required' "$ST/gh.log")" -eq 2 ] || fail "two CI waits"
 
 # the second push leases against the first pushed head, not the PR head read at the start
 setup; advance_main other.txt o; checks_hook "$BUMP_MAIN"
@@ -266,7 +266,7 @@ ship; expect 1 "main moves on every CI wait"; no_merge "main moves every wait"
 grep -q 'origin/main moved during CI after 3 retries; rerun ship-pr' <<<"$ERR" || fail "exhaustion message: [$ERR]"
 for k in 1 2 3; do grep -q "retry $k of 3" <<<"$ERR" || fail "retry $k line: [$ERR]"; done
 ! grep -q 'retry 4' <<<"$ERR" || fail "no fourth retry: [$ERR]"
-[ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 4 ] || fail "exactly 4 CI waits"
+[ "$(grep -c '^gh pr checks.*--required' "$ST/gh.log")" -eq 4 ] || fail "exactly 4 CI waits"
 [ -d "$WT" ] || fail "worktree kept when main keeps moving"
 
 setup
@@ -289,7 +289,7 @@ ship; expect 4 "main moves during CI with a clean rebase that changes the patch"
 setup; checks_hook 'echo n >"$C/newfile.txt"; git -C "$C" add .; git -C "$C" commit -qm m; git -C "$C" push -q origin main'
 ship --gate 'test ! -e newfile.txt && echo x >>"$ST/gates"'; expect 0 "gate runs once, not again after a rebase"
 [ "$(wc -l <"$ST/gates")" -eq 1 ] || fail "gate ran exactly once"
-[ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 2 ] || fail "2 CI waits"
+[ "$(grep -c '^gh pr checks.*--required' "$ST/gh.log")" -eq 2 ] || fail "2 CI waits"
 mh="$(grep -o 'match-head-commit [0-9a-f]*' "$ST/gh.log" | awk '{print $2}')"
 git --git-dir="$ORIGIN" merge-base --is-ancestor main "$mh" || fail "merge pinned to a head descending from the moved main"
 
@@ -322,13 +322,13 @@ ship; expect 0 "not strict, main moved before ship"
 grep -q 'rebasing feature' <<<"$ERR" && fail "no rebase: [$ERR]"
 ! grep -q 'pushing rebased' <<<"$ERR" || fail "no push: [$ERR]"
 grep -q "^gh pr merge 7 --repo O/N --squash --match-head-commit $HEAD0\$" "$ST/gh.log" || fail "merge pinned to HEAD0"
-[ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 1 ] || fail "one CI wait"
+[ "$(grep -c '^gh pr checks.*--required' "$ST/gh.log")" -eq 1 ] || fail "one CI wait"
 
 setup; echo "$NOSTRICT" >"$ST/rules"; checks_hook "$BUMP_MAIN"
 ship; expect 0 "not strict, main moves during CI"
 grep -q 'retry' <<<"$ERR" && fail "no retry: [$ERR]"
 grep -q "^gh pr merge 7 --repo O/N --squash --match-head-commit $HEAD0\$" "$ST/gh.log" || fail "merge pinned to HEAD0 after a main move"
-[ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 1 ] || fail "one CI wait despite the main move"
+[ "$(grep -c '^gh pr checks.*--required' "$ST/gh.log")" -eq 1 ] || fail "one CI wait despite the main move"
 
 # not strict: a reported conflict rebases, before the first push
 setup; echo "$NOSTRICT" >"$ST/rules"; echo CONFLICTING >"$ST/mergeable"; advance_main other.txt o
@@ -336,7 +336,7 @@ ship --gate 'test ! -e other.txt && echo x >>"$ST/gates"'; expect 0 "not strict,
 [ "$(wc -l <"$ST/gates")" -eq 1 ] || fail "gate ran once, on the pre-rebase head"
 mh="$(grep -o 'match-head-commit [0-9a-f]*' "$ST/gh.log" | awk '{print $2}')"
 [ "$mh" != "$HEAD0" ] && git --git-dir="$ORIGIN" merge-base --is-ancestor main "$mh" || fail "merge pinned to the rebased head"
-[ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 1 ] || fail "one CI wait after the rebase"
+[ "$(grep -c '^gh pr checks.*--required' "$ST/gh.log")" -eq 1 ] || fail "one CI wait after the rebase"
 
 setup; echo "$NOSTRICT" >"$ST/rules"; echo CONFLICTING >"$ST/mergeable"; advance_main other.txt o
 run 7 --repo O/N --reviewed "$(git -C "$C" rev-parse HEAD)" --worktree "$WT"; expect 4 "not strict, rebase checks the patch-id"
@@ -447,7 +447,7 @@ origin_head >/dev/null && fail "origin branch deleted"
 
 setup; ship; expect 0 "non-draft happy path"
 ! grep -q '^gh pr ready' "$ST/gh.log" || fail "non-draft never marked ready"
-grep -q -- '--json name,bucket$' "$ST/gh.log" || fail "non-draft: checks call asks for name,bucket"
+grep -q -- '--json name,bucket,workflow,event,link$' "$ST/gh.log" || fail "non-draft: checks call asks for name,bucket,workflow,event,link"
 ! grep -q startedAt "$ST/gh.log" || fail "non-draft: startedAt is never requested"
 [ ! -e "$WT" ] || fail "non-draft: worktree removed"
 
@@ -496,7 +496,7 @@ RULES_CI='[{"type":"required_status_checks","parameters":{"strict_required_statu
 
 setup; echo true >"$ST/draft"; echo "$RULES_CI" >"$ST/rules"
 ship; expect 0 "draft whose head already has a green required check"
-[ "$(grep -c '^gh pr checks' "$ST/gh.log")" -eq 1 ] || fail "green required check before ready satisfies the wait at once"
+[ "$(grep -c '^gh pr checks.*--required' "$ST/gh.log")" -eq 1 ] || fail "green required check before ready satisfies the wait at once"
 [ "$(grep -c '^gh pr ready' "$ST/gh.log")" -eq 1 ] || fail "draft marked ready once"
 [ "$(grep -n '^gh pr ready' "$ST/gh.log" | cut -d: -f1)" -lt "$(grep -n -m1 '^gh pr checks' "$ST/gh.log" | cut -d: -f1)" ] \
   || fail "ready before the first checks call"
