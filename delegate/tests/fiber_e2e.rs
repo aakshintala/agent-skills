@@ -39,8 +39,31 @@ impl Env {
     }
 
     fn fixture_path(&self, name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join(format!("tests/fixtures/recorded/fiber/{name}"))
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        if name.contains('/') {
+            base.join(name)
+        } else {
+            base.join(format!("recorded/fiber/{name}"))
+        }
+    }
+
+    /// The appended argv log, split into one invocation per leading `ask` line.
+    /// (The prompt itself spans several lines and contains its own `---`, so the
+    /// fake's `---` separator cannot delimit invocations.)
+    fn invocations(&self) -> Vec<Vec<String>> {
+        let mut calls: Vec<Vec<String>> = Vec::new();
+        for line in std::fs::read_to_string(self.dir.join("argv.txt"))
+            .unwrap()
+            .lines()
+        {
+            if line == "ask" {
+                calls.push(Vec::new());
+            }
+            if let Some(last) = calls.last_mut() {
+                last.push(line.to_string());
+            }
+        }
+        calls
     }
 
     /// Every recorded argv line across all invocations.
@@ -98,6 +121,27 @@ impl Env {
         assert_eq!(out.status.code(), Some(0));
         serde_json::from_slice(&out.stdout).unwrap()
     }
+
+    fn resume_ok(
+        &self,
+        id: &str,
+        extra: &[&str],
+        stdin: &str,
+        fixture: &str,
+        exit: &str,
+    ) -> String {
+        let mut args: Vec<&str> = vec!["resume", id];
+        args.extend(extra);
+        let out = self.delegate(&args, Some(stdin), fixture, exit);
+        assert!(
+            out.status.success(),
+            "exit {:?}\nstderr: {}\nstdout: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr),
+            String::from_utf8_lossy(&out.stdout)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
 }
 
 impl Drop for Env {
@@ -152,4 +196,79 @@ fn fiber_badmodel_is_an_error() {
     assert_eq!(done["result"]["model"], MODEL);
     let text = done["result"]["text"].as_str().unwrap_or("");
     assert!(text.contains("nope"), "{text}");
+}
+
+#[test]
+fn fiber_needs_context_resume_continues_the_session() {
+    let nc = "contract/fiber/needs-context.jsonl";
+    let e = Env::new("nc-resume", nc, "0");
+    let id = e.run_write("Which codeword should I use?", nc, "0");
+    let first = e.wait_terminal(&id, nc, "0");
+    assert_eq!(first["status"], "NEEDS_CONTEXT");
+    assert_eq!(first["resume"]["sessionId"], "s_36e63d22c39750e1");
+
+    let b = e.resume_ok(&id, &[], "the answer", "resume.jsonl", "0");
+    assert_eq!(b.len(), 36);
+    let done = e.wait_terminal(&b, "resume.jsonl", "0");
+    assert_eq!(done["status"], "DONE");
+    assert_eq!(done["resume"]["sessionId"], first["resume"]["sessionId"]);
+    assert_eq!(done["resumedFrom"], id.as_str());
+
+    let calls = e.invocations();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(!calls[0].iter().any(|a| a == "--resume"), "{calls:?}");
+    assert!(
+        calls[1]
+            .windows(2)
+            .any(|w| w == ["--resume", "s_36e63d22c39750e1"]),
+        "{calls:?}"
+    );
+    let dash = calls[1].iter().position(|a| a == "--").expect("separator");
+    assert!(
+        calls[1][dash + 1..]
+            .iter()
+            .any(|a| a.contains("the answer")),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn fiber_gate_failure_resume_repairs_in_the_session() {
+    let e = Env::new("gate-resume", "echo.jsonl", "0");
+    let gate = "grep -q -- --resume argv.txt";
+    let out = e.delegate(
+        &["run", "--model", MODEL, "--gate", gate],
+        Some("Reply with the word DONE."),
+        "echo.jsonl",
+        "0",
+    );
+    assert!(
+        out.status.success(),
+        "exit {:?}\nstderr: {}\nstdout: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let id = String::from_utf8(out.stdout).unwrap().trim().to_string();
+    let first = e.wait_terminal(&id, "echo.jsonl", "0");
+    assert_eq!(first["status"], "DONE_WITH_CONCERNS");
+    assert_eq!(first["result"]["gateResult"]["passed"], false);
+
+    // No `--gate` flag: resume inherits the stored gate and reruns it.
+    let b = e.resume_ok(&id, &[], "Reply with the word AGAIN.", "resume.jsonl", "0");
+    let done = e.wait_terminal(&b, "resume.jsonl", "0");
+    assert_eq!(done["status"], "DONE");
+    assert_eq!(done["result"]["gateResult"]["passed"], true);
+    assert_eq!(done["result"]["gateResult"]["command"], gate);
+    assert_eq!(done["resume"]["sessionId"], first["resume"]["sessionId"]);
+    assert_eq!(done["resumedFrom"], id.as_str());
+
+    let calls = e.invocations();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(
+        calls[1]
+            .windows(2)
+            .any(|w| w == ["--resume", "s_36e63d22c39750e1"]),
+        "{calls:?}"
+    );
 }
