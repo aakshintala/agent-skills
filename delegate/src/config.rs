@@ -397,6 +397,7 @@ mod tests {
                 vec!["standard", "strong"],
             ),
             ("claude-sonnet-5-5", vec!["strong"]),
+            ("claude-haiku-5-5", vec!["standard", "strong"]),
             ("grok-4.7-high", vec!["strong"]),
             ("grok-4.7-xhigh", vec!["frontier"]),
             ("claude-opus-5-5", vec!["frontier"]),
