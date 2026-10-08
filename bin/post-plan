@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# post-plan: post a plan file to an issue as one comment per part.
+# Usage: post-plan <issue> <plan-file> [--repo OWNER/NAME]
+#        post-plan -h | --help
+#        Splits the plan into parts of at most MAX_PART (60000) characters
+#        each, including the part's `<!-- post-plan i/n -->` header line.
+#        Cuts only before lines starting with `## ` and packs as many whole
+#        sections as fit into each part, in order; text before the first
+#        `## ` belongs to the first part. A section that alone exceeds the
+#        limit names its heading on stderr and nothing is posted. Comments
+#        on the issue whose body starts with `<!-- post-plan ` and whose
+#        author is the current user are reused oldest-first: part i edits
+#        the i-th in place, each extra part creates a comment, and each
+#        leftover marked comment is deleted. Prints one comment URL
+#        (html_url) per part. Without --repo, the repo comes from
+#        `gh repo view`. Exits 0 on success, 1 on an oversized section or a
+#        failed `gh` call, 2 on bad usage or an unreadable plan file.
+set -euo pipefail
+
+# GitHub rejects an issue comment over 65536 characters; stay below it.
+MAX_PART=60000
+
+usage_text() {
+  echo "usage: post-plan <issue> <plan-file> [--repo OWNER/NAME]"
+  echo "       post-plan -h | --help"
+}
+
+usage() {
+  usage_text >&2
+  exit 2
+}
+
+help() {
+  usage_text
+  cat <<'EOF'
+
+Post PLAN-FILE to ISSUE as one comment per part, reusing this script's own
+prior comments oldest-first: edit in place, create the extras, delete the
+leftovers. Each part holds at most 60000 characters including its
+<!-- post-plan i/n --> header line, cut only before ## headings.
+Exits 0 on success, 1 on an oversized section or a failed gh call, 2 on
+bad usage or an unreadable plan file.
+EOF
+}
+
+[ $# -ge 1 ] || usage
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+  [ $# -eq 1 ] || usage
+  help
+  exit 0
+fi
+[ $# -ge 2 ] || usage
+issue="$1"; plan="$2"; shift 2
+case "$issue" in ''|*[!0-9]*) usage ;; esac
+repo=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo) [ $# -ge 2 ] || usage; repo="$2"; shift 2 ;;
+    *) usage ;;
+  esac
+done
+[ -f "$plan" ] && [ -r "$plan" ] \
+  || { echo "post-plan: cannot read plan file $plan" >&2; exit 2; }
+
+tmp=""
+cleanup() { [ -n "$tmp" ] && rm -rf "$tmp"; }
+trap cleanup EXIT
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/post-plan.XXXXXX")" \
+  || { echo "post-plan: cannot make a temporary directory" >&2; exit 1; }
+mkdir -p "$tmp/sec" "$tmp/parts"
+
+# Split the plan into one file per section: a new section starts at each
+# line beginning with `## ` (text before the first belongs to section 1).
+count="$(awk -v dir="$tmp/sec" '
+  BEGIN { n = 1; empty = 1 }
+  /^## / && !empty { close(out); n++; empty = 1 }
+  { out = dir "/sec-" sprintf("%04d", n); print > out; empty = 0 }
+  END { if (empty && n == 1) print 0; else print n }
+' "$plan")"
+# awk always ends lines with a newline; drop it back when the plan has none.
+if [ -n "$(tail -c 1 "$plan")" ]; then
+  last="$tmp/sec/sec-$(printf '%04d' "$count")"
+  head -c $(( $(wc -c <"$last" | tr -d ' ') - 1 )) "$last" >"$last.tmp"
+  mv "$last.tmp" "$last"
+fi
+
+secfile() { printf '%s/sec/sec-%04d' "$tmp" "$1"; }
+partfile() { printf '%s/parts/part-%04d' "$tmp" "$1"; }
+
+# pack BUDGET: greedy-pack the sections into part files, echo the count.
+# A section longer than the budget names its heading; nothing is posted.
+pack() {
+  budget="$1"
+  rm -rf "$tmp/parts"; mkdir -p "$tmp/parts"
+  nparts=0; curlen=0; curfile=""
+  i=1
+  while [ "$i" -le "$count" ]; do
+    sec="$(secfile "$i")"
+    len="$(wc -m <"$sec" | tr -d ' ')"
+    if [ "$len" -gt "$budget" ]; then
+      heading="$(sed -n '1p' "$sec")"
+      case "$heading" in
+        '## '*) ;;
+        *) heading="(text before the first \`## \` heading)";;
+      esac
+      echo "post-plan: section over the $MAX_PART-character limit, posting nothing: $heading" >&2
+      exit 1
+    fi
+    if [ -z "$curfile" ] || [ "$((curlen + len))" -gt "$budget" ]; then
+      nparts=$((nparts + 1))
+      curfile="$(partfile "$nparts")"
+      : >"$curfile"
+      curlen=0
+    fi
+    cat "$sec" >>"$curfile"
+    curlen=$((curlen + len))
+    i=$((i + 1))
+  done
+  if [ "$nparts" -eq 0 ]; then
+    nparts=1
+    : >"$(partfile 1)"
+  fi
+  echo "$nparts"
+}
+
+# The header grows with the part count, so re-pack until it settles.
+n=1
+while :; do
+  marker="$(printf '<!-- post-plan %d/%d -->' "$n" "$n")"
+  budget=$((MAX_PART - ${#marker} - 1))
+  newn="$(pack "$budget")"
+  if [ "$newn" -eq "$n" ]; then break; fi
+  n="$newn"
+done
+
+if [ -z "$repo" ]; then
+  repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" \
+    || { echo "post-plan: cannot find the repo; pass --repo OWNER/NAME" >&2; exit 1; }
+fi
+me="$(gh api user --jq .login)" \
+  || { echo "post-plan: cannot read the current GitHub user" >&2; exit 1; }
+[ -n "$me" ] || { echo "post-plan: cannot read the current GitHub user" >&2; exit 1; }
+comments="$(gh api "repos/$repo/issues/$issue/comments" --paginate)" \
+  || { echo "post-plan: cannot list comments on $repo issue $issue" >&2; exit 1; }
+jq -r --arg me "$me" \
+  '[sort_by(.id)[] | select(((.body // "") | startswith("<!-- post-plan ")) and (.user.login == $me)) | .id] | .[]' \
+  <<<"$comments" >"$tmp/ids.txt" \
+  || { echo "post-plan: cannot read the issue comments" >&2; exit 1; }
+total_ids="$(wc -l <"$tmp/ids.txt" | tr -d ' ')"
+
+i=1
+while [ "$i" -le "$n" ]; do
+  body="$tmp/body-$i.md"
+  printf '%s\n' "<!-- post-plan $i/$n -->" >"$body"
+  cat "$(partfile "$i")" >>"$body"
+  if [ "$i" -le "$total_ids" ]; then
+    id="$(sed -n "${i}p" "$tmp/ids.txt")"
+    resp="$(gh api -X PATCH "repos/$repo/issues/comments/$id" -F "body=@$body")" \
+      || { echo "post-plan: cannot edit comment $id" >&2; exit 1; }
+  else
+    resp="$(gh api "repos/$repo/issues/$issue/comments" -F "body=@$body")" \
+      || { echo "post-plan: cannot post part $i of $n" >&2; exit 1; }
+  fi
+  url="$(jq -r '.html_url // empty' <<<"$resp")" \
+    || { echo "post-plan: cannot read the comment URL" >&2; exit 1; }
+  [ -n "$url" ] || { echo "post-plan: the API returned no comment URL" >&2; exit 1; }
+  printf '%s\n' "$url"
+  i=$((i + 1))
+done
+k="$i"
+while [ "$k" -le "$total_ids" ]; do
+  id="$(sed -n "${k}p" "$tmp/ids.txt")"
+  gh api -X DELETE "repos/$repo/issues/comments/$id" >/dev/null \
+    || { echo "post-plan: cannot delete comment $id" >&2; exit 1; }
+  k=$((k + 1))
+done
