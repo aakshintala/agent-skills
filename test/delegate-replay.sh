@@ -177,7 +177,7 @@ done
 grep -q "STATUS: DONE" "$OUT/jobs/muse-str/prompt.md" && fail "prompt snapshot strips the status block"
 grep -q "String brief" "$OUT/jobs/muse-str/prompt.md" || fail "prompt snapshot keeps the brief"
 [ -f "$OUT/jobs/muse-str/briefs/1-shared.md" ] || fail "select copies brief files"
-grep -q $'^'"$BRIEFS"'/shared.md\t1-shared.md' "$OUT/jobs/muse-str/briefs/map.tsv" || fail "brief map records original path"
+grep -q $'^'"$BRIEFS"'/shared.md'$'\t''1-shared.md' "$OUT/jobs/muse-str/briefs/map.tsv" || fail "brief map records original path"
 
 # --- rerun without --force refuses; with --force reproduces ---
 cp "$OUT/manifest.tsv" "$T/manifest-first.tsv"
