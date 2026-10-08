@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # gh-ci: quiet, low-call GitHub CI helpers for agent flywheels.
-# Usage: gh-ci snapshot <pr> | failures <run> | watch-verified <run> --pr <n>
+# Usage: gh-ci snapshot <pr> | failures <run> | failures --pr <n> | watch-verified <run> --pr <n>
 #        gh-ci resample <pr> "<job name>" --until <regex> [--max <n>]
 #        gh-ci wait <pr> [--timeout <s>]
 # Exit codes: 0 ok, 1 failure, 2 usage, 3 merge conflict (snapshot and
@@ -8,7 +8,7 @@
 # GH_CI_REPO overrides the repo (default: the current checkout's origin); GH_CI_INTERVAL the watch poll seconds (default 30).
 set -euo pipefail
 usage() {
-  echo "usage: gh-ci snapshot <pr> | failures <run> | watch-verified <run> --pr <n>" >&2
+  echo "usage: gh-ci snapshot <pr> | failures <run> | failures --pr <n> | watch-verified <run> --pr <n>" >&2
   echo "       gh-ci resample <pr> \"<job name>\" --until <regex> [--max <n>]" >&2
   echo "       gh-ci wait <pr> [--timeout <s>]" >&2
   exit 2
@@ -59,18 +59,72 @@ cmd_snapshot() {
   echo "pending: $pending failing: $fails"
 }
 
-# failures <run>: failed jobs, then their (fail) test lines only.
+# failures <run> | failures --pr <n>: cleaned digest of the failed and
+# cancelled jobs. With --pr, every failure/cancelled run on the PR head;
+# with <run>, that run only. A cancelled job prints one line and no log;
+# a failed job prints its header then the last GH_CI_LOG_LINES cleaned
+# log lines (job/step columns, ISO timestamps, ANSI colours and blank
+# lines removed). A report, so exit 0 after printing; exit 1 when gh
+# cannot read the PR, runs or jobs.
 cmd_failures() {
-  local run="${1:?missing run id}"
-  local jobs
-  jobs=$(gh run view "$run" --repo "$REPO" --json jobs --jq '.jobs[] | select(.conclusion=="failure") | "\(.databaseId) \(.name)"')
-  if [ -z "$jobs" ]; then echo "no failed jobs in run $run"; return 0; fi
-  echo "$jobs"
-  echo "$jobs" | while read -r jid _; do
-    echo "--- $jid failing tests ---"
-    gh run view "$run" --repo "$REPO" --job "$jid" --log-failed 2>&1 \
-      | grep -E "\(fail\)" | sed 's/^[^Z]*Z //' | sort -u | sed -n '1,10p'
-  done
+  local log_lines="${GH_CI_LOG_LINES:-60}"
+  case "$log_lines" in ''|*[!0-9]*) usage;; esac
+  local esc tab
+  esc=$(printf '\033')
+  tab=$(printf '\t')
+  local runs_list="" label="" head="" short="" pr=""
+  if [ "${1:-}" = "--pr" ]; then
+    [ $# -eq 2 ] || usage
+    case "${2:-}" in ''|*[!0-9]*) usage;; esac
+    pr="$2"
+    head=$(pr_head "$pr") || return 1
+    short="${head:0:8}"
+    local runs_json runs
+    runs_json=$(gh run list --repo "$REPO" --commit "$head" --json databaseId,name,conclusion) \
+      || { echo "could not list runs for PR $pr head $short" >&2; return 1; }
+    runs=$(printf '%s' "$runs_json" | jq -r '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | "\(.databaseId)\t\(.name)"') \
+      || { echo "could not parse runs for PR $pr head $short" >&2; return 1; }
+    if [ -z "$runs" ]; then echo "no failed jobs on $short"; return 0; fi
+    runs_list="$runs"
+    label="on $short"
+  else
+    [ $# -eq 1 ] || usage
+    case "${1:-}" in ''|--*) usage;; esac
+    local run="$1" run_name
+    run_name=$(gh run view "$run" --repo "$REPO" --json name --jq .name 2>/dev/null) || run_name="$run"
+    case "$run_name" in ''|null) run_name="$run";; esac
+    runs_list=$(printf '%s\t%s' "$run" "$run_name")
+    label="in run $run"
+  fi
+  local found=0 run_id run_name jobs_json jobs
+  while IFS="$tab" read -r run_id run_name || [ -n "${run_id:-}" ]; do
+    [ -n "${run_id:-}" ] || continue
+    case "$run_name" in ''|null) run_name="$run_id";; esac
+    jobs_json=$(gh run view "$run_id" --repo "$REPO" --json jobs) \
+      || { echo "could not read jobs for run $run_id" >&2; return 1; }
+    jobs=$(printf '%s' "$jobs_json" | jq -r '.jobs[] | select(.conclusion=="failure" or .conclusion=="cancelled") | "\(.conclusion)\t\(.databaseId)\t\(.name)"') \
+      || { echo "could not parse jobs for run $run_id" >&2; return 1; }
+    [ -n "$jobs" ] || continue
+    local concl jid jname
+    while IFS="$tab" read -r concl jid jname || [ -n "${concl:-}" ]; do
+      [ -n "${concl:-}" ] || continue
+      case "$concl" in
+        cancelled)
+          printf '=== %s / %s: cancelled\n' "$run_name" "$jname"
+          found=1;;
+        failure)
+          printf '=== %s / %s (%s): failure\n' "$run_name" "$jname" "$jid"
+          found=1
+          gh run view "$run_id" --repo "$REPO" --job "$jid" --log-failed 2>&1 \
+            | sed "s/^[^${tab}]*${tab}[^${tab}]*${tab}//" \
+            | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[^[:space:]]*[[:space:]]+//' \
+            | sed "s/${esc}\[[0-9;]*[A-Za-z]//g" \
+            | sed '/^[[:space:]]*$/d' \
+            | tail -n "$log_lines" || true;;
+      esac
+    done <<<"$jobs"
+  done <<<"$runs_list"
+  if [ "$found" -eq 0 ]; then echo "no failed jobs $label"; return 0; fi
 }
 
 # watch-verified <run> --pr <n>: watch, then verify via pr checks.
