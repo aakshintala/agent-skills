@@ -390,6 +390,33 @@ literal_replace() {
     && mv "$tmp" "$file"
 }
 
+# replace_cwd FILE OLD NEW: rewrite only complete path prefixes of OLD to NEW.
+# OLD must already be normalised (no trailing slash). A match counts only when
+# followed by "/", end of text, or a non-path character; sibling prefixes
+# such as /old/job-2 when OLD is /old/job are left untouched.
+replace_cwd() {
+  local file="$1" old="$2" new="$3" tmp
+  [ -n "$old" ] || return 0
+  tmp="$file.rew$$"
+  jq -Rrs --arg o "$old" --arg n "$new" '
+    def is_path_char: test("^[A-Za-z0-9_.-]$");
+    def walk($s):
+      ($s | index($o)) as $i
+      | if $i == null then $s
+        else ($s[0:$i]) as $pre
+        | ($s[$i + ($o|length):]) as $rest
+        | ($rest[0:1]) as $nx
+        | if $nx == "" or $nx == "/" or ($nx | is_path_char | not) then
+            $pre + $n + walk($rest)
+          else
+            $pre + $o + walk($rest)
+          end
+        end;
+    walk(.)
+  ' "$file" >"$tmp" \
+    && mv "$tmp" "$file"
+}
+
 # build_fiber OUT: fetch, checkout and build fiber; exports FIBER_BIN.
 build_fiber() {
   local out="$1" src bin
@@ -403,12 +430,14 @@ build_fiber() {
     return 2
   fi
   [ -d "$src/.git" ] || { err "fiber source $src is not a git checkout"; return 2; }
+  case "$out" in /*) ;; *) out="$(pwd)/$out" ;; esac
+  case "$src" in /*) ;; *) src="$(pwd)/$src" ;; esac
   git -C "$src" fetch -q origin >>"$out/fiber-build.log" 2>&1 \
     || { err "git fetch origin failed in $src"; return 1; }
   git -C "$src" checkout -q --detach origin/main >>"$out/fiber-build.log" 2>&1 \
     || { err "checkout origin/main failed in $src"; return 1; }
   : >"$out/fiber-build.log"
-  CARGO_TARGET_DIR="$out/fiber-target" cargo build --release --bin fiber \
+  CARGO_TARGET_DIR="$out/fiber-target" cargo build --manifest-path "$src/Cargo.toml" --release --bin fiber \
     >>"$out/fiber-build.log" 2>&1 || { err "fiber build failed (see $out/fiber-build.log)"; return 1; }
   bin="$out/fiber-target/release/fiber"
   [ -x "$bin" ] || { err "fiber build produced no binary at $bin"; return 1; }
@@ -503,7 +532,7 @@ row_field() {
 
 # prep_job ID FRESH: scratch clone, snapshot rewrite, seal files.
 prep_job() {
-  local id="$1" fresh="$2" row rundir mirror scratch cwd repo sha
+  local id="$1" fresh="$2" row rundir mirror scratch cwd cwd_norm repo sha
   local mapline ref copy bylen
   row="$(manifest_row "$id")"
   repo="$(row_field "$row" 5)"
@@ -533,13 +562,14 @@ prep_job() {
   cp "$RUN_OUT/jobs/$id/gate.txt" "$rundir/gate.txt"
   rm -rf "$rundir/briefs"
   cp -r "$RUN_OUT/jobs/$id/briefs" "$rundir/briefs"
-  rm -f "$rundir/briefs/"*.rew* "$rundir/prompt.md.rew"* "$rundir/gate.txt.rew"*
-  literal_replace "$rundir/prompt.md" "$cwd" "$scratch" || return 1
-  literal_replace "$rundir/gate.txt" "$cwd" "$scratch" || return 1
+  cwd_norm="$cwd"
+  while [ "${cwd_norm%/}" != "$cwd_norm" ] && [ "${#cwd_norm}" -gt 1 ]; do cwd_norm="${cwd_norm%/}"; done
+  replace_cwd "$rundir/prompt.md" "$cwd_norm" "$scratch" || return 1
+  replace_cwd "$rundir/gate.txt" "$cwd_norm" "$scratch" || return 1
   for f in "$rundir/briefs"/*; do
     [ -f "$f" ] || continue
     [ "$(basename "$f")" = "map.tsv" ] && continue
-    literal_replace "$f" "$cwd" "$scratch" || return 1
+    replace_cwd "$f" "$cwd_norm" "$scratch" || return 1
   done
   # longest original path first, so a prefix ref cannot shadow a longer one
   bylen="$rundir/briefs/.map-bylen.tsv"
@@ -794,7 +824,7 @@ pi_metrics() {
   local rec="$1" session="$2" status gate cost in out cr cw share wall
   status="$(jq -r '.status // "unknown"' "$rec" 2>/dev/null)"
   [ "$status" = "null" ] && status="unknown"
-  gate="$(jq -r '.result.gateResult.passed // "n/a"' "$rec" 2>/dev/null)"
+  gate="$(jq -r 'if .result.gateResult.passed == null then "n/a" elif .result.gateResult.passed == true then "true" elif .result.gateResult.passed == false then "false" else "n/a" end' "$rec" 2>/dev/null)"
   case "$gate" in
     true) gate="pass" ;; false) gate="fail" ;; *) gate="n/a" ;;
   esac
@@ -843,7 +873,7 @@ fiber_metrics() {
   local started ended
   status="$(jq -r '.status // "unknown"' "$rec" 2>/dev/null)"
   [ "$status" = "null" ] && status="unknown"
-  gate="$(jq -r '.result.gateResult.passed // "n/a"' "$rec" 2>/dev/null)"
+  gate="$(jq -r 'if .result.gateResult.passed == null then "n/a" elif .result.gateResult.passed == true then "true" elif .result.gateResult.passed == false then "false" else "n/a" end' "$rec" 2>/dev/null)"
   case "$gate" in
     true) gate="pass" ;; false) gate="fail" ;; *) gate="n/a" ;;
   esac
@@ -867,7 +897,7 @@ fiber_metrics() {
       fi
     fi
   fi
-  if [ "$has_usage" = "no" ]; then
+  if [ "$has_usage" != "yes" ]; then
     cost=""; in=""; out=""; cr=""; cw=""
   fi
   share=""

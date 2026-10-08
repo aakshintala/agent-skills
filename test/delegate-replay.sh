@@ -148,10 +148,10 @@ bash "$REPLAY" select --out "$OUT" >"$T/select-out.txt" || fail "select exits 0"
 [ "$(grep -c 'openai-codex/gpt-6-luna:xhigh' "$OUT/manifest.tsv")" -eq 3 ] || fail "manifest has 3 luna rows"
 [ "$(grep -c 'muse-spark' "$OUT/manifest.tsv")" -eq 9 ] || fail "manifest has 9 muse rows"
 # quota cut: oldest sol rows (sol-00, sol-01) and oldest muse/luna rows are out
-grep -q '^sol-00\t' "$OUT/manifest.tsv" && fail "quota cuts oldest sol-00"
-grep -q '^sol-01\t' "$OUT/manifest.tsv" && fail "quota cuts oldest sol-01"
-grep -q '^sol-19\t' "$OUT/manifest.tsv" || fail "manifest keeps newest sol-19"
-grep -q '^muse-str\t' "$OUT/manifest.tsv" || fail "manifest keeps newest muse-str"
+grep -q $'^sol-00\t' "$OUT/manifest.tsv" && fail "quota cuts oldest sol-00"
+grep -q $'^sol-01\t' "$OUT/manifest.tsv" && fail "quota cuts oldest sol-01"
+grep -q $'^sol-19\t' "$OUT/manifest.tsv" || fail "manifest keeps newest sol-19"
+grep -q $'^muse-str\t' "$OUT/manifest.tsv" || fail "manifest keeps newest muse-str"
 # newest-first within a model: first sol row is sol-19
 first_sol="$(awk -F'\t' '$3=="openai-codex/gpt-6.1-sol"{print $1; exit}' "$OUT/manifest.tsv")"
 [ "$first_sol" = "sol-19" ] || fail "sol rows newest-first (got $first_sol)"
@@ -392,13 +392,16 @@ bash "$REPLAY" run --out "$OUT2" --share muse --batch 3 >/dev/null || fail "run 
 [ -x "$OUT2/fiber-target/release/fiber" ] || fail "fiber binary built"
 [ -f "$OUT2/fiber-build.log" ] || fail "fiber build log written"
 [ "$(git -C "$T/fiber-src" rev-parse HEAD)" = "$(git -C "$T/fiber-src" rev-parse origin/main)" ] || fail "fiber src at origin/main"
-grep -q "cargo argv: build --release --bin fiber" "$FLOG/cargo.log" || fail "cargo build invoked"
+grep -q "cargo argv: build --manifest-path" "$FLOG/cargo.log" || fail "cargo build uses manifest-path"
+grep -qF "$T/fiber-src/Cargo.toml" "$FLOG/cargo.log" || fail "cargo builds the fiber source clone"
+grep -q "cargo argv:.*--release --bin fiber" "$FLOG/cargo.log" || fail "cargo build invoked"
 grep -qF "CARGO_TARGET_DIR=$OUT2/fiber-target" "$FLOG/cargo.log" || fail "fiber target under OUT"
 for id in job-ts job-eq job-hr; do [ -d "$OUT2/runs/$id" ] || fail "$id ran"; done
 [ ! -e "$OUT2/runs/job-space" ] || fail "batch stops at 3"
 [ "$(git -C "$OUT2/runs/job-hr/scratch" rev-parse HEAD)" = "$SHA" ] || fail "scratch at base commit"
 [ -z "$(git -C "$OUT2/runs/job-hr/scratch" remote)" ] || fail "scratch has no remote"
 grep -qF "$OUT2/runs/job-ts/scratch" "$OUT2/runs/job-ts/prompt.md" || fail "prompt rewritten to scratch"
+grep -qF "$OUT2/runs/job-ts/scratch/NOTES.md" "$OUT2/runs/job-ts/prompt.md" || fail "trailing-slash cwd keeps the path separator"
 grep -qF "$T/wt/jobts" "$OUT2/runs/job-ts/prompt.md" && fail "original cwd gone from prompt"
 [ "$(ls "$FLOG"/run-fake-*.env 2>/dev/null | wc -l | tr -d ' ')" -eq 3 ] || fail "3 delegate runs"
 HRENV="$(grep -lF "cwd=$OUT2/runs/job-hr/scratch" "$FLOG"/run-fake-*.env | head -1)"
@@ -423,7 +426,8 @@ grep -qF "${TMPDIR:-/tmp}/delegate-jobs" "$OUT2/runs/job-hr/seal.sb" || fail "se
 "$OUT2/runs/job-hr/shim/gh" >/dev/null 2>&1 && fail "shim gh exits 1"
 grep -q "fiber 0.0.0 (testhash)" "$OUT2/runs/job-hr/version.txt" || fail "fiber version recorded"
 [ -f "$OUT2/fiber-home/config.json" ] || fail "fiber home copied"
-[ "$(stat -f %Lp "$OUT2/fiber-home")" = "700" ] || fail "fiber home mode 700"
+if [ "$(uname)" = "Darwin" ]; then fibhome_mode="$(stat -f %Lp "$OUT2/fiber-home")"; else fibhome_mode="$(stat -c %a "$OUT2/fiber-home")"; fi
+[ "$fibhome_mode" = "700" ] || fail "fiber home mode 700"
 grep -q "events missing" "$OUT2/runs/job-hr/notes.txt" || fail "missing events noted"
 
 # live brief edited after select has no effect; events plant outward notes
@@ -463,7 +467,11 @@ make_session "sid-sol1" "2026-10-03T00:00:00.000Z" "$T/wt/sol1" "Sol brief.\\n\\
 make_record "sol-only" "openai-codex/gpt-6.1-sol" DONE "true" "$SHA" "sid-sol1" "$T/wt/sol1"
 SESS="$SESS_SAVED"; JOBS="$JOBS_SAVED"
 REPLAY_JOBS_DIR="$JOBS4" REPLAY_PI_SESSIONS="$SESS4" bash "$REPLAY" select --out "$OUT4" --total 30 >/dev/null || fail "select codex tree"
-bash "$REPLAY" run --out "$OUT4" --share codex --batch 3 >/dev/null || fail "codex run exits 0"
+# cargo runs in the fiber source clone even when the caller is elsewhere
+mkdir -p "$T/other-cwd"
+(cd "$T/other-cwd" && bash "$REPLAY" run --out "$OUT4" --share codex --batch 3 >/dev/null) || fail "codex run exits 0"
+grep -qF "$T/fiber-src/Cargo.toml" "$FLOG/cargo.log" || fail "cargo builds the fiber source from another cwd"
+grep -qF "CARGO_TARGET_DIR=$OUT4/fiber-target" "$FLOG/cargo.log" || fail "cargo target stays under OUT from another cwd"
 grep -q "no fiber model" "$OUT4/runs/sol-only/pending.txt" || fail "codex row pending"
 [ ! -d "$OUT4/runs/sol-only/scratch" ] || fail "pending row never runs"
 [ "$(ls "$FLOG"/run-fake-*.env | wc -l | tr -d ' ')" -eq 5 ] || fail "no delegate run for pending"
@@ -506,6 +514,22 @@ else
 fi
 [ "$(ls "$FLOG"/run-fake-*.env 2>/dev/null | wc -l | tr -d ' ')" = "$before" ] || fail "no replay with open seal"
 [ ! -e "$HOME/.replay-seal-probe" ] || fail "seal probe cleaned up"
+
+# sibling-prefix paths survive the cwd rewrite; in-cwd paths keep their separator
+JOBS7="$T/jobs7"; SESS7="$T/sessions7"; OUT7="$T/out7"
+mkdir -p "$JOBS7" "$SESS7" "$T/wt/job-2"
+printf '# sibling brief\n' >"$T/wt/job-2/other.md"
+touch -d '2026-09-01T00:00:00Z' "$T/wt/job-2/other.md"
+SESS_SAVED="$SESS"; SESS="$SESS7"; JOBS_SAVED="$JOBS"; JOBS="$JOBS7"
+make_session "sid-sib" "2026-10-02T00:04:00.000Z" "$T/wt/job" "See $T/wt/job/NOTES.md and $T/wt/job-2/other.md.\\n\\n---\\n\\nEnd STATUS: DONE" >/dev/null
+make_record "job-sib" "$MUSE_ID" DONE "true" "$SHA" "sid-sib" "$T/wt/job"
+SESS="$SESS_SAVED"; JOBS="$JOBS_SAVED"
+REPLAY_JOBS_DIR="$JOBS7" REPLAY_PI_SESSIONS="$SESS7" bash "$REPLAY" select --out "$OUT7" --total 30 >/dev/null || fail "select sibling tree"
+bash "$REPLAY" run --out "$OUT7" --share muse --batch 3 >/dev/null || fail "sibling run exits 0"
+grep -qF "$OUT7/runs/job-sib/scratch/NOTES.md" "$OUT7/runs/job-sib/prompt.md" || fail "in-cwd path keeps separator"
+grep -qF "$OUT7/runs/job-sib/briefs/1-other.md" "$OUT7/runs/job-sib/prompt.md" || fail "sibling ref re-pointed at run brief"
+grep -q "scratch-2" "$OUT7/runs/job-sib/prompt.md" && fail "sibling prefix corrupted"
+grep -qF "$T/wt/job-2/other.md" "$OUT7/runs/job-sib/prompt.md" && fail "sibling ref original gone from prompt"
 
 echo "run cases passed"
 
@@ -649,12 +673,44 @@ grep -q '\- sx1: some reason' "$R" || fail "skip log renders"
 grep -q 'pending: no fiber model' "$R" || fail "pending renders"
 grep -q 'not run' "$R" || fail "unrun renders"
 grep -q 'fiber 0.0.0 (abc)' "$R" || fail "fiber versions render"
+# a genuine false gate renders as fail, never n/a
+[ "$(awk -F'|' '$2==" jobC "{gsub(/ /,"",$5); print $5}' "$R")" = "fail" ] || fail "pi false gate renders fail"
+[ "$(awk -F'|' '$2==" jobB "{gsub(/ /,"",$11); print $11}' "$R")" = "fail" ] || fail "fiber false gate renders fail"
+[ "$(awk -F'|' '$2==" jobC "{gsub(/ /,"",$11); print $11}' "$R")" = "n/a" ] || fail "missing fiber gate renders n/a"
+# tokens and cost are unknown without a usage_recorded event
+[ "$(awk -F'|' '$2==" jobC "{gsub(/ /,"",$12); print $12}' "$R")" = "unknown" ] || fail "fiber cost unknown without usage_recorded"
 # without verdicts the failure and denial criteria are unread
 REPLAY_JOBS_DIR="$RJOBS" bash "$REPLAY" report --out "$ROUT" >"$T/report-bare.txt" || fail "bare report exits 0"
 RB="$T/report-bare.txt"
 grep -q '2 unread: not met' "$RB" || fail "unread failures block the bar"
 grep -q 'unread: not met' "$RB" || fail "unread denials block the bar"
 grep -q 'verdict: unread' "$RB" || fail "unread verdicts render"
+
+# missing or ambiguous events leave fiber tokens and cost unknown
+RJOBSH="$T/rjobsh"; RSESH="$T/rsesh"; ROUTH="$T/rout-h"
+mkdir -p "$RJOBSH" "$RSESH" "$ROUTH" "$ROUTH/runs/jobH1" "$ROUTH/runs/jobH2"
+OLD_RJOBS="$RJOBS"; OLD_ROUT="$ROUT"; OLD_RSESS="$RSESS"
+RJOBS="$RJOBSH"; ROUT="$ROUTH"; RSESS="$RSESH"
+SAH1="$(mk_rsession rs-jobH1 2026-10-04T00:00:00.000Z high 2000)"
+SAH2="$(mk_rsession rs-jobH2 2026-10-04T00:01:00.000Z high 2000)"
+mk_pirec jobH1 DONE true 0.01 100 10 50 0 null
+mk_pirec jobH2 DONE true 0.01 100 10 50 0 null
+mk_frec jobH1 DONE true 0.05 100 10 50 null fs-H1
+mk_frec jobH2 DONE true 0.05 100 10 50 null fs-H2
+RJOBS="$OLD_RJOBS"; ROUT="$OLD_ROUT"; RSESS="$OLD_RSESS"
+{
+  printf 'jobH1\tmuse\tm\t%s\tr/ac\taaa\t%s\t/repo\t2026-10-04T00:00:00.000Z\n' "$FM" "$SAH1"
+  printf 'jobH2\tmuse\tm\t%s\tr/ac\taaa\t%s\t/repo\t2026-10-04T00:01:00.000Z\n' "$FM" "$SAH2"
+} >"$ROUTH/manifest.tsv"
+: >"$ROUTH/skipped.tsv"
+mkdir -p "$ROUTH/fiber-home/projects/p1/sessions/fs-H2" "$ROUTH/fiber-home/projects/p2/sessions/fs-H2"
+printf '%s' '{"kind":"usage_recorded","session_id":"fs-H2","ts":1,"schema_version":1,"payload":{}}' >"$ROUTH/fiber-home/projects/p1/sessions/fs-H2/events.jsonl"
+printf '%s' '{"kind":"usage_recorded","session_id":"fs-H2","ts":1,"schema_version":1,"payload":{}}' >"$ROUTH/fiber-home/projects/p2/sessions/fs-H2/events.jsonl"
+REPLAY_JOBS_DIR="$RJOBSH" bash "$REPLAY" report --out "$ROUTH" >"$T/report-h.txt" || fail "unknown-usage report exits 0"
+[ "$(awk -F'|' '$2==" jobH1 "{gsub(/ /,"",$12); print $12}' "$T/report-h.txt")" = "unknown" ] || fail "missing events leave fiber cost unknown"
+[ "$(awk -F'|' '$2==" jobH1 "{gsub(/ /,"",$13); print $13}' "$T/report-h.txt")" = "unknown/unknown/unknown" ] || fail "missing events leave fiber tokens unknown"
+[ "$(awk -F'|' '$2==" jobH2 "{gsub(/ /,"",$12); print $12}' "$T/report-h.txt")" = "unknown" ] || fail "ambiguous events leave fiber cost unknown"
+[ "$(awk -F'|' '$2==" jobH2 "{gsub(/ /,"",$13); print $13}' "$T/report-h.txt")" = "unknown/unknown/unknown" ] || fail "ambiguous events leave fiber tokens unknown"
 
 # single-row median
 ROUT8="$T/rout8"
