@@ -4,4 +4,4 @@ Follow the scoped-verify mode of `__SKILLS__/code-review/SKILL.md`. Your working
 
 __FINDINGS__
 
-Max 150 words. End with exactly `FIX-OK` when every finding is fixed, else `FIX-INCOMPLETE` followed by every still-open and every new finding in the finding format, then a STATUS line.
+Max 150 words. End with exactly `FIX-OK` when every finding is fixed or refuted, else `FIX-INCOMPLETE` followed by every still-open and every new finding in the finding format, then a STATUS line.
