@@ -392,27 +392,20 @@ literal_replace() {
 
 # replace_cwd FILE OLD NEW: rewrite only complete path prefixes of OLD to NEW.
 # OLD must already be normalised (no trailing slash). A match counts only when
-# followed by "/", end of text, or a non-path character; sibling prefixes
-# such as /old/job-2 when OLD is /old/job are left untouched.
+# followed by "/", end of text, whitespace, a quote or backtick, one of )]}>,;:
+# or a "." that ends a sentence. Anything else continues a sibling name
+# (/old/job-2, /old/job+2, /old/jobé when OLD is /old/job) and is left alone:
+# an unrewritten reference stays sealed, a wrong rewrite corrupts the brief.
 replace_cwd() {
   local file="$1" old="$2" new="$3" tmp
   [ -n "$old" ] || return 0
   tmp="$file.rew$$"
   jq -Rrs --arg o "$old" --arg n "$new" '
-    def is_path_char: test("^[A-Za-z0-9_.-]$");
-    def walk($s):
-      ($s | index($o)) as $i
-      | if $i == null then $s
-        else ($s[0:$i]) as $pre
-        | ($s[$i + ($o|length):]) as $rest
-        | ($rest[0:1]) as $nx
-        | if $nx == "" or $nx == "/" or ($nx | is_path_char | not) then
-            $pre + $n + walk($rest)
-          else
-            $pre + $o + walk($rest)
-          end
-        end;
-    walk(.)
+    def bound: . == "" or startswith("/")
+      or test("^[\\s\"'"'"'`)\\]}>,;:]") or test("^\\.(\\s|$)");
+    split($o) as $p
+    | reduce range(1; $p | length) as $k
+        ($p[0]; . + (if ($p[$k] | bound) then $n else $o end) + $p[$k])
   ' "$file" >"$tmp" \
     && mv "$tmp" "$file"
 }
