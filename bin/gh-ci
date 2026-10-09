@@ -234,7 +234,7 @@ required_names() {
 # calling gh pr checks. Checks from superseded workflow runs are ignored; the newest-run
 # map comes from every check on the head (an extra unfiltered call once required names are known).
 cmd_wait() {
-  local pr="" timeout=1800 req="[]" empty_ok=false names
+  local pr="" timeout=7200 req="[]" empty_ok=false names
   while [ $# -gt 0 ]; do case "$1" in
     --timeout)
       [ $# -ge 2 ] || usage
