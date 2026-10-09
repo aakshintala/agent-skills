@@ -1,0 +1,2 @@
+2026-10-09T17:30:01Z TIMEOUT fiber-core:12:34 some mutant timed out
+2026-10-09T17:30:01Z Process completed with exit code 3

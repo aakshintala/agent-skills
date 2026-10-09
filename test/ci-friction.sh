@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# Tests for bin/ci-friction, using a stand-in gh serving fixture files
+# (no network). Fake gh maps the api path to test/fixtures/ci-friction,
+# logs its args, and fails paths with a $T/fail-<key> flag file.
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+FRICTION="$SCRIPT_DIR/../bin/ci-friction"
+FIX="$SCRIPT_DIR/fixtures/ci-friction"
+
+fail() {
+  echo "FAIL: $1" >&2
+  exit 1
+}
+
+T="$(mktemp -d "${TMPDIR:-/tmp}/test-ci-friction.XXXXXX")"
+export T
+trap 'rm -rf "$T"' EXIT
+mkdir -p "$T/bin"
+export CI_FRICTION_NOW="2026-10-09T18:30:00Z"
+
+# --- fake gh ---
+cat >"$T/bin/gh" <<'FAKEGH'
+#!/usr/bin/env bash
+echo "gh $*" >>"$FAKE_GH_LOG"
+path=""
+for a in "$@"; do
+  case "$a" in
+    api|--allow-escape-sequences) continue;;
+    -*) continue;;
+    *) path="$a";;
+  esac
+done
+[ -n "$path" ] || { echo "fake gh: no path" >&2; exit 2; }
+scen="$FAKE_SCEN"
+serve() { # serve <file> <key>: cat it, or fail when flagged
+  local f="$1" key="$2"
+  if [ -e "$T/fail-$key" ]; then
+    cat "$T/fail-$key" >&2
+    exit 1
+  fi
+  if [ -e "$scen/$f" ]; then cat "$scen/$f"; return 0; fi
+  echo "fake gh: no fixture $f for $path" >&2
+  exit 2
+}
+case "$path" in
+  *actions/runs\?created=*)
+    if [ -e "$T/fail-runs" ]; then cat "$T/fail-runs" >&2; exit 1; fi
+    case "$path" in *page=1*) cat "$scen/runs.json";; *) printf '{"workflow_runs":[]}';; esac;;
+  *actions/runs/*/jobs*)
+    rid="$(printf '%s' "$path" | sed -E 's/.*runs\/([0-9]+).*/\1/')"
+    if [ -e "$T/fail-jobs-$rid" ]; then cat "$T/fail-jobs-$rid" >&2; exit 1; fi
+    f="jobs-$rid.json"
+    if [ -e "$scen/$f" ]; then cat "$scen/$f"; else printf '{"total_count":0,"jobs":[]}'; fi;;
+  *actions/jobs/*/logs)
+    jid="$(printf '%s' "$path" | sed -E 's/.*jobs\/([0-9]+).*/\1/')"
+    if [ -e "$T/fail-log-$jid" ]; then cat "$T/fail-log-$jid" >&2; exit 1; fi
+    serve "logs/$jid.txt" "log-$jid";;
+  search/issues*)
+    q="$(printf '%s' "$path" | sed -E 's/.*"([^"]+)"[^"]*$/\1/')"
+    key="$(printf '%s' "$q" | sed -E 's/[^A-Za-z0-9]+/-/g')"
+    f="search/$key.json"
+    if [ -e "$scen/$f" ]; then cat "$scen/$f"; else printf '{"total_count":0,"items":[]}'; fi;;
+  *repos/*/issues/*)
+    n="$(printf '%s' "$path" | sed -E 's/.*issues\/([0-9]+).*/\1/')"
+    serve "issues/$n.json" "issues-$n";;
+  *pulls\?*)
+    br="$(printf '%s' "$path" | sed -E 's/.*head=[^:]+:([^&]+).*/\1/')"
+    key="$(printf '%s' "$br" | sed -E 's/[^A-Za-z0-9]+/-/g')"
+    f="pulls-$key.json"
+    if [ -e "$scen/$f" ]; then cat "$scen/$f"; else printf '[]'; fi;;
+  *) echo "fake gh: unknown path $path" >&2; exit 2;;
+esac
+FAKEGH
+chmod +x "$T/bin/gh"
+export PATH="$T/bin:$PATH"
+
+export HOME="$T/home"
+export TMPDIR="$T/tmp"
+mkdir -p "$HOME" "$TMPDIR"
+
+OUT=""; CODE=0
+setup() { # setup <scenario>: fresh HOME, scenario fixtures
+  export FAKE_SCEN="$FIX/$1"
+  export FAKE_GH_LOG="$T/gh-args-$1.txt"
+  : >"$FAKE_GH_LOG"
+  rm -rf "$HOME" "$TMPDIR" "$T"/fail-*
+  mkdir -p "$HOME" "$TMPDIR"
+}
+run_friction() {
+  OUT="$(python3 "$FRICTION" --repo O/N "$@" 2>"$T/stderr.txt")"; CODE=$?
+}
+jget() {
+  python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print('"$1"')' "$OUT"
+}
+
+# --- classifier: every class from one log fixture each ---
+setup classes
+run_friction --min-lanes 1 --json
+[ "$CODE" = "1" ] || fail "classes exits 1 (got $CODE): [$OUT] [$(cat "$T/stderr.txt")]"
+[ "$(jget "sorted(r['test'] for r in d['repeats'])")" = \
+  "['compile fiber-core: error[E0308]: mismatched types', 'compile tui: error[E0277]: the trait bound is not satisfied', 'fiber-core base::works', 'fiber-core doors::watch']" ] \
+  || fail "repeat tests: [$OUT]"
+[ "$(jget "sorted(c['cause'] for c in d['design'])")" = \
+  "['bench-artifact-missing', 'bench-budget', 'bug-red', 'ci-script-missing-at-base', 'fmt', 'infra', 'mutant-timeout', 'mutants-baseline', 'size-budget', 'timeout']" ] \
+  || fail "design causes: [$OUT]"
+[ "$(jget "d['design'][0]['count']")" = "1" ] || fail "design counts per job: [$OUT]"
+[ "$(jget "d['design'][0]['lanes']")" = "['#1401']" ] || fail "design lanes: [$OUT]"
+# the duplicated FAIL line counts once: one search for the name
+[ "$(grep -c 'search/issues.*doors' "$FAKE_GH_LOG")" = "1" ] \
+  || fail "one search per test name: [$(cat "$FAKE_GH_LOG")]"
+# recurrence after a closed issue
+[ "$(jget "len(d['recurred_after_close'])")" = "1" ] || fail "one recurrence: [$OUT]"
+[ "$(jget "d['recurred_after_close'][0]['issue']")" = "1465" ] || fail "recur issue: [$OUT]"
+[ "$(jget "d['recurred_after_close'][0]['lanes']")" = "['#1401']" ] || fail "recur lanes: [$OUT]"
+# excluded classes never appear anywhere
+grep -q "missed-mutant" <<<"$OUT" && fail "missed-mutant excluded: [$OUT]"
+grep -q '"cause": "other"' <<<"$OUT" && fail "other excluded: [$OUT]"
+grep -q '"cause": "compile"' <<<"$OUT" && fail "compile excluded from design: [$OUT]"
+
+# --- grouping: same test in a PR lane and main is a repeat ---
+setup repeat
+run_friction
+[ "$CODE" = "1" ] || fail "repeat exits 1 (got $CODE): [$OUT]"
+grep -q "^repeat: fiber-core doors::watch lanes #1385,main os linux-x64,macOS issue #1386 open$" <<<"$OUT" \
+  || fail "summary line: [$OUT]"
+setup repeat
+run_friction --json
+[ "$(jget "d['repeats'][0]['lanes']")" = "['#1385', 'main']" ] || fail "repeat lanes: [$OUT]"
+[ "$(jget "d['repeats'][0]['os']")" = "['linux-x64', 'macOS']" ] || fail "repeat os: [$OUT]"
+[ "$(jget "d['repeats'][0]['issue']")" = "1386" ] || fail "repeat issue: [$OUT]"
+[ "$(jget "d['repeats'][0]['issue_state']")" = "open" ] || fail "issue state: [$OUT]"
+[ "$(jget "d['recurred_after_close']")" = "[]" ] || fail "open issue never recurs: [$OUT]"
+
+# --- one lane twice: not a repeat at 2, a repeat at 1 ---
+setup onelane
+run_friction
+[ "$CODE" = "0" ] || fail "one lane exits 0 (got $CODE): [$OUT]"
+grep -q "no repeats" <<<"$OUT" || fail "quiet line: [$OUT]"
+setup onelane
+run_friction --min-lanes 1
+[ "$CODE" = "1" ] || fail "min-lanes 1 exits 1 (got $CODE): [$OUT]"
+
+# --- lanes from the branch lookup and the branch-name fallback ---
+setup lanes
+run_friction --json
+[ "$CODE" = "1" ] || fail "lanes exits 1 (got $CODE): [$OUT]"
+[ "$(jget "d['repeats'][0]['lanes']")" = "['#1402', 'sched/nightly']" ] \
+  || fail "lookup and fallback lanes: [$OUT]"
+grep -c 'pulls?state=all' "$FAKE_GH_LOG" | grep -q "^2$" \
+  || fail "one lookup per branch: [$(cat "$FAKE_GH_LOG")]"
+
+# --- logs and searches fetched once; open issues re-read ---
+setup repeat
+run_friction --json >/dev/null
+run_friction --json >/dev/null
+[ "$(grep -c 'actions/jobs/801/logs' "$FAKE_GH_LOG")" = "1" ] \
+  || fail "log fetched once: [$(cat "$FAKE_GH_LOG")]"
+[ "$(grep -c 'search/issues' "$FAKE_GH_LOG")" = "1" ] \
+  || fail "search once per name: [$(cat "$FAKE_GH_LOG")]"
+[ "$(grep -c 'issues/1386' "$FAKE_GH_LOG")" = "1" ] \
+  || fail "cached open issue re-read: [$(cat "$FAKE_GH_LOG")]"
+[ "$(grep -c 'actions/runs/601/jobs' "$FAKE_GH_LOG")" = "2" ] \
+  || fail "runs re-listed each invocation: [$(cat "$FAKE_GH_LOG")]"
+
+# --- --since pruning drops old state entries ---
+setup repeat
+mkdir -p "$HOME/.cache/switchyard"
+python3 -c "import json; json.dump({'jobs': {'999': {'class': 'test-fail', 'detail': 'x', 'tests': ['old crate'], 'lane': '#1', 'os': 'linux-x64', 'completed_at': '2026-10-01T00:00:00Z'}}, 'issues': {}, 'branches': {}}, open('$HOME/.cache/switchyard/ci-friction.json', 'w'))"
+run_friction --json >/dev/null
+[ "$CODE" = "1" ] || fail "prune run exits 1 (got $CODE)"
+python3 -c "import json; d=json.load(open('$HOME/.cache/switchyard/ci-friction.json')); assert '999' not in d['jobs'], d['jobs']" \
+  || fail "old job pruned"
+# corrupt state warns and still runs
+echo "not json" >"$HOME/.cache/switchyard/ci-friction.json"
+run_friction --json >/dev/null
+grep -qi "state unreadable" "$T/stderr.txt" || fail "corrupt warning: [$(cat "$T/stderr.txt")]"
+
+# --- no-log on 404: design cause, cached, exit 0 when alone ---
+setup onelane
+echo "HTTP 404 not found" >"$T/fail-log-811"
+echo "HTTP 404 not found" >"$T/fail-log-812"
+run_friction --json
+[ "$CODE" = "0" ] || fail "no-log exits 0 (got $CODE): [$OUT]"
+[ "$(jget "d['design']")" = "[{'cause': 'no-log', 'count': 2, 'lanes': ['#1405']}]" ] \
+  || fail "no-log design: [$OUT]"
+
+# --- exits: 2 on usage and on listing failures, state still written ---
+OUT="$(python3 "$FRICTION" --since 24h 2>"$T/stderr.txt")"; CODE=$?
+[ "$CODE" = "2" ] || fail "missing repo exits 2 (got $CODE)"
+OUT="$(python3 "$FRICTION" --repo O/N --min-lanes 0 2>"$T/stderr.txt")"; CODE=$?
+[ "$CODE" = "2" ] || fail "min-lanes 0 exits 2 (got $CODE)"
+OUT="$(python3 "$FRICTION" --repo O/N --since 5x 2>"$T/stderr.txt")"; CODE=$?
+[ "$CODE" = "2" ] || fail "bad since exits 2 (got $CODE)"
+setup repeat
+echo "HTTP 401 Unauthorized" >"$T/fail-runs"
+run_friction
+[ "$CODE" = "2" ] || fail "runs 401 exits 2 (got $CODE): [$OUT]"
+setup repeat
+echo "HTTP 500 boom" >"$T/fail-jobs-601"
+run_friction --json
+[ "$CODE" = "2" ] || fail "jobs failure exits 2 (got $CODE): [$OUT]"
+[ -e "$HOME/.cache/switchyard/ci-friction.json" ] || fail "state written before exit 2"
+setup repeat
+echo "HTTP 500 boom" >"$T/fail-log-801"
+run_friction --json
+[ "$CODE" = "2" ] || fail "log failure exits 2 (got $CODE): [$OUT]"
+
+echo "ci-friction: all cases passed"

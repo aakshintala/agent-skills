@@ -1,0 +1,1 @@
+2026-10-09T17:30:01Z bug-red: Bug fix fails at the red commit

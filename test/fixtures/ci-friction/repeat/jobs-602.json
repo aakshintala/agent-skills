@@ -1,0 +1,1 @@
+{"total_count": 1, "jobs": [{"id": 802, "run_id": 602, "name": "Tests (macos-26)", "labels": ["macos-26"], "runner_name": "GitHub Actions 1", "status": "completed", "conclusion": "failure", "created_at": "2026-10-09T17:20:00Z", "started_at": "2026-10-09T17:20:10Z", "completed_at": "2026-10-09T17:40:00Z", "steps": []}]}

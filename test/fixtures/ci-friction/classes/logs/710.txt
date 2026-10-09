@@ -1,0 +1,3 @@
+2026-10-09T17:30:01Z [31merror[E0277]: the trait bound is not satisfied[0m
+2026-10-09T17:30:01Z ^[[2m--> src/hub.rs:44:9^[[0m
+2026-10-09T17:30:01Z could not compile `tui` due to previous error

@@ -1,0 +1,2 @@
+2026-10-09T17:40:01Z FAIL [   8.500s] (2/12) fiber-core doors::watch
+2026-10-09T17:40:02Z FAIL [   1.100s] (3/12) fiber-core doors::open

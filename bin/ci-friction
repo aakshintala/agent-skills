@@ -1,0 +1,464 @@
+#!/usr/bin/env python3
+# ci-friction --repo owner/name [--since 24h] [--state ~/.cache/switchyard/ci-friction.json]
+#              [--min-lanes 2] [--json]
+#
+# Cross-lane CI failure classifier: the same test or cause failing in >=2
+# lanes (a PR or main) within --since, and flakes recurring after their issue
+# closed. Companion to ci-health. Reads `gh api` plus a state file caching
+# each failed job's classification (never the raw log), branch->lane
+# lookups, and per-test issue matches. Writes only its state file.
+#
+# Classification follows classify.py's names and order. Repeats key on test
+# names (test-*, mutants-baseline-test jobs) and, for compile and
+# mutants-baseline-compile jobs, on `compile <crates>: <first error line>`.
+# design[] counts every other class except missed-mutant and other.
+#
+# An issue search runs once per new test name; a cached open issue is re-read
+# when its test is sighted again. Exit codes: 0 none, 1 a repeat or a
+# recurrence after close, 2 error. With --json only JSON is printed.
+# CI_FRICTION_NOW (ISO UTC) pins "now"; it exists for tests only.
+import json, os, re, subprocess, sys
+from datetime import datetime, timedelta, timezone
+
+BOUND = {"Selection": 5, "Linux x86_64 checks": 5, "Tests macos": 15,
+         "Tests linux-x64": 10, "Tests linux-arm": 10, "Mutants": 20,
+         "Release build and size (Linux x86_64)": 15,
+         "Bug fix fails at the red commit": 10, "Benchmark comment": 5,
+         "CI verdict": 5, "Report a failed backstop": 5}
+ANSI = re.compile(r"(\x1b|\^\[)\[[0-9;]*[A-Za-z]")
+TS = re.compile(r"^\S+Z ")
+NX = re.compile(r"^\s*(FAIL|TIMEOUT|SIGABRT|SIGSEGV|SIGKILL|SIGTERM) \[\s*[\d.]+s\]\s+"
+                r"(?:\(\s*\d+/\d+\)\s+)?(\S+)\s+(\S+)", re.M)
+USAGE = ("usage: ci-friction --repo owner/name [--since 24h] [--state PATH] "
+         "[--min-lanes 2] [--json]")
+
+
+class Fatal(Exception):
+    pass
+
+
+def fail(msg):
+    raise Fatal(msg)
+
+
+def parse_ts(s):
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def iso(dt):
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def dur(s, what):
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)(m|h)?", s or "")
+    if not m:
+        fail("bad --%s %r (want <n>m or <n>h)" % (what, s))
+    return float(m.group(1)) * (60 if m.group(2) == "h" else 1)
+
+
+def group(name):
+    name = name or ""
+    if name.startswith("Mutants"):
+        return "Mutants"
+    if name.startswith("Tests ("):
+        inner = name[7:-1] if name.endswith(")") else name[7:]
+        return {"ubuntu-24.04": "Tests linux-x64",
+                "ubuntu-24.04-arm": "Tests linux-arm",
+                "macos-26": "Tests macos"}.get(inner, name)
+    if name.startswith("CI"):
+        return "CI verdict"
+    return name
+
+
+def osof(labels):
+    s = " ".join(labels or [])
+    if "macos" in s:
+        return "macOS"
+    if "arm" in s:
+        return "linux-arm"
+    return "linux-x64"
+
+
+def is_timeout(job):
+    g = group(job.get("name"))
+    if g not in BOUND or not job.get("runner_name"):
+        return False
+    if job.get("conclusion") != "cancelled":
+        return False
+    s, e = parse_ts(job.get("started_at")), parse_ts(job.get("completed_at"))
+    if not s or not e:
+        return False
+    return (e - s).total_seconds() >= BOUND[g] * 60 - 30
+
+
+def clean(text):
+    return [TS.sub("", ANSI.sub("", l)) for l in text.splitlines()]
+
+
+def classify(name, steps, text):
+    """Port of classify.py. Returns (class, detail, tests[])."""
+    step = next((s.get("name", "") for s in steps or []
+                 if s.get("conclusion") == "failure"), "")
+    lines = clean(text)
+    body = "\n".join(lines)
+    comp = [l for l in lines if re.match(r"\s*error(\[E\d+\])?: ", l)
+            and "aborting" not in l and "could not compile" not in l and "warning" not in l]
+    crates = re.findall(r"could not compile `([^`]+)`", body)
+    nx = NX.findall(body)
+    missed = re.findall(r"^MISSED\s+(\S+)", body, re.M)
+    mtimeout = re.findall(r"^TIMEOUT\s+(\S+:\d+:\d+.*)$", body, re.M)
+    bench = ([l for l in lines if l.startswith("bench-report:")
+              and (" over " in l or "fail" in l.lower())]
+             or [l for l in lines if l.startswith("bench-report:")])
+    steptimeout = [l for l in lines if "has timed out after" in l]
+    size = [l for l in lines if l.startswith("release-size:") and ("over" in l or "exceed" in l)]
+    install = [l for l in lines if l.startswith("##[error]install-action")
+               or ("::error::install-action" in l and not l.lstrip().startswith("printf"))]
+    errs = [l for l in lines if l.startswith("##[error]")]
+    exitc = re.findall(r"Process completed with exit code (\d+)", body)
+    nofile = [l for l in lines if "No such file or directory" in l and "scripts/" in l]
+    bugred = [l for l in lines if l.startswith("bug-red:")]
+    artifact = [l for l in lines if "Artifact not found" in l]
+
+    def tests_of(found):
+        return sorted({"%s %s" % (b, c) for _, b, c in found})
+
+    if (name or "").startswith("Mutants") and exitc and not steptimeout:
+        code = exitc[-1]
+        if code == "2" and missed:
+            return ("missed-mutant", "%d missed, first %s" % (len(missed), missed[0]), [])
+        if code == "3":
+            det = "%d mutant timeouts" % len(mtimeout)
+            if mtimeout:
+                det += ", first %s" % mtimeout[0][:90]
+            return ("mutant-timeout", det, [])
+        if code == "4":
+            if crates and comp:
+                first = re.sub(r"\s*-->\s*.*$", "", comp[0].strip())
+                key = "compile %s: %s" % (",".join(sorted(set(crates))), first[:120])
+                return ("mutants-baseline-compile", "%s: %s" % (
+                    ",".join(sorted(set(crates))), comp[0].strip()[:120]), [key])
+            names = tests_of(re.findall(
+                r"^\s*(FAIL|TIMEOUT|SIGABRT|SIGSEGV|SIGKILL|SIGTERM) \[\s*[\d.]+s\]\s+"
+                r"(?:\(\s*\d+/\d+\)\s+)?(\S+)\s+(\S+)", body, re.M))
+            return ("mutants-baseline-test", "%d: %s" % (len(names), "; ".join(names[:3])), names)
+    if nofile and "127" in exitc:
+        return ("ci-script-missing-at-base", nofile[0].split(": ", 1)[-1][:120], [])
+    if artifact:
+        return ("bench-artifact-missing", "benchmarks artifact not found", [])
+    if bugred:
+        return ("bug-red", bugred[-1][:140], [])
+    if any(l.startswith("Diff in ") for l in lines) or (
+            (name or "").startswith("Linux x86_64 checks")
+            and any(l.startswith("+") for l in lines) and "scripts/check: FAIL" in body):
+        return ("fmt", "cargo fmt --check diff", [])
+    if steptimeout:
+        return ("infra", steptimeout[0][:140], [])
+    if step == "Set up job" or not lines:
+        return ("infra", "runner setup failed", [])
+    if crates and comp:
+        first = re.sub(r"\s*-->\s*.*$", "", comp[0].strip())
+        key = "compile %s: %s" % (",".join(sorted(set(crates))), first[:140])
+        return ("compile", "%s: %s" % (",".join(sorted(set(crates))), comp[0].strip()[:140]), [key])
+    if missed:
+        return ("missed-mutant", "%d missed, first %s" % (len(missed), missed[0]), [])
+    if nx:
+        names = tests_of(nx)
+        kinds = sorted({a for a, _, _ in nx})
+        return ("test-" + "/".join(k.lower() for k in kinds),
+                "%d: %s" % (len(names), "; ".join(names[:3])), names)
+    if mtimeout:
+        return ("mutant-timeout", "%d timeouts, first %s" % (len(mtimeout), mtimeout[0][:100]), [])
+    if bench:
+        return ("bench-budget", bench[0][:160], [])
+    if size:
+        return ("size-budget", size[0][:160], [])
+    if "baseline" in body.lower() and re.search(
+            r"Unmutated baseline.*FAILED|baseline (test|build) failed", body, re.I):
+        return ("mutants-baseline", "unmutated baseline failed", [])
+    if install:
+        return ("infra", install[0][:140], [])
+    if any("The operation was canceled" in l or "has exceeded the maximum execution time" in l
+           for l in lines):
+        return ("timeout", "job hit timeout-minutes", [])
+    return ("other", (errs[-1] if errs else (lines[-1] if lines else ""))[:160], [])
+
+
+def gh_api(path, escape=False):
+    cmd = ["gh", "api"] + (["--allow-escape-sequences"] if escape else []) + [path]
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0:
+        err = (p.stderr or "").strip().splitlines()
+        msg = "\n".join(err[-3:])
+        raise Fatal("gh api %s failed: %s" % (path.split("?")[0], msg))
+    return p.stdout
+
+
+def load_state(path):
+    try:
+        with open(path) as fh:
+            st = json.load(fh)
+        assert isinstance(st, dict)
+        return st
+    except (OSError, ValueError, AssertionError) as e:
+        print("ci-friction: state unreadable (%s), starting empty" % e, file=sys.stderr)
+        return {}
+
+
+def save_state(path, st):
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = path + ".tmp-%d" % os.getpid()
+    with open(tmp, "w") as fh:
+        json.dump(st, fh)
+    os.replace(tmp, path)
+
+
+def main(argv):
+    repo = since = state_path = lanes = None
+    want_json = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--json":
+            want_json = True
+            i += 1
+        elif a in ("--repo", "--since", "--state", "--min-lanes") and i + 1 < len(argv):
+            i += 1
+            if a == "--repo":
+                repo = argv[i]
+            elif a == "--since":
+                since = argv[i]
+            elif a == "--state":
+                state_path = argv[i]
+            elif a == "--min-lanes":
+                lanes = argv[i]
+            i += 1
+        else:
+            fail("unknown or incomplete flag %r\n%s" % (a, USAGE))
+    if not repo or not re.fullmatch(r"[^/\s]+/[^/\s]+", repo):
+        fail("missing --repo owner/name\n%s" % USAGE)
+    since_min = dur(since or "24h", "since")
+    if not since_min > 0:
+        fail("bad --since (want > 0)")
+    try:
+        min_lanes = int(lanes or "2")
+    except (ValueError, TypeError):
+        fail("bad --min-lanes %r" % (lanes,))
+    if min_lanes < 1:
+        fail("bad --min-lanes %r (want >= 1)" % (lanes,))
+    if not state_path:
+        state_path = os.path.join(os.path.expanduser("~"), ".cache", "switchyard",
+                                  "ci-friction.json")
+    try:
+        now = parse_ts(os.environ.get("CI_FRICTION_NOW") or "") or datetime.now(timezone.utc)
+    except ValueError:
+        fail("bad CI_FRICTION_NOW")
+    cutoff = now - timedelta(minutes=since_min)
+
+    st = load_state(state_path)
+    jobs_st = st.get("jobs") if isinstance(st.get("jobs"), dict) else {}
+    issues_st = st.get("issues") if isinstance(st.get("issues"), dict) else {}
+    branches_st = st.get("branches") if isinstance(st.get("branches"), dict) else {}
+    owner = repo.split("/")[0]
+    ok = True  # becomes exit 2 after state is written
+
+    try:
+        runs = []
+        for page in range(1, 11):
+            out = gh_api("repos/%s/actions/runs?created=>=%s&per_page=100&page=%d"
+                         % (repo, iso(cutoff), page))
+            batch = json.loads(out).get("workflow_runs", [])
+            runs.extend(batch)
+            if len(batch) < 100:
+                break
+    except Fatal as e:
+        fail(str(e))
+    runs = [r for r in runs if (r.get("conclusion") in ("failure", "cancelled")
+                                and parse_ts(r.get("created_at") or "")
+                                and parse_ts(r["created_at"]) >= cutoff)]
+
+    def lane_of(r):
+        prs = r.get("pull_requests") or []
+        if r.get("event") == "push" and r.get("head_branch") == "main":
+            return "main"
+        if prs:
+            first = prs[0]
+            n = first.get("number") if isinstance(first, dict) else first
+            return "#%s" % n
+        br = r.get("head_branch") or ""
+        if br in branches_st:
+            return branches_st[br]
+        out = gh_api("repos/%s/pulls?state=all&head=%s:%s&per_page=1" % (repo, owner, br))
+        items = json.loads(out)
+        items = items if isinstance(items, list) else items.get("items", items)
+        lane = "#%s" % items[0]["number"] if items else br
+        branches_st[br] = lane
+        return lane
+
+    # sightings per repeat key: {key: [(lane, os, seen_iso)]}
+    seen = {}
+    # design counts per class: {class: (count, set(lanes))}
+    design = {}
+    resight = set()  # test keys sighted again (for open-issue re-read)
+
+    try:
+        for r in sorted(runs, key=lambda r: r.get("created_at") or ""):
+            lane = lane_of(r)
+            try:
+                out = gh_api("repos/%s/actions/runs/%s/jobs?per_page=100&page=1" % (repo, r.get("id")))
+                jobs = json.loads(out).get("jobs", [])
+            except Fatal as e:
+                print("ci-friction: %s" % e, file=sys.stderr)
+                ok = False
+                continue
+            for j in jobs:
+                if j.get("conclusion") != "failure" and not is_timeout(j):
+                    continue
+                if group(j.get("name")) in ("CI verdict", "Report a failed backstop"):
+                    continue
+                jid = str(j.get("id"))
+                done_at = j.get("completed_at") or r.get("created_at")
+                ent = jobs_st.get(jid)
+                if isinstance(ent, dict) and ent.get("class"):
+                    cls, det, tests = ent["class"], ent.get("detail", ""), ent.get("tests", [])
+                else:
+                    try:
+                        log = gh_api("repos/%s/actions/jobs/%s/logs" % (repo, jid), escape=True)
+                    except Fatal as e:
+                        if "HTTP 404" in str(e):
+                            cls, det, tests = "no-log", "log not found (404)", []
+                        else:
+                            print("ci-friction: %s" % e, file=sys.stderr)
+                            ok = False
+                            continue
+                    else:
+                        cls, det, tests = classify(j.get("name"), j.get("steps"), log)
+                    jobs_st[jid] = {"class": cls, "detail": det, "tests": tests,
+                                    "lane": lane, "os": osof(j.get("labels")),
+                                    "completed_at": done_at}
+                ent = jobs_st[jid]
+                if cls.startswith("test-") or cls in ("mutants-baseline-test", "compile",
+                                                      "mutants-baseline-compile"):
+                    keys = tests if cls in ("compile", "mutants-baseline-compile") \
+                        else [t for t in tests if t]
+                    if cls in ("compile", "mutants-baseline-compile") and not keys:
+                        keys = [det]
+                    for key in keys:
+                        seen.setdefault(key, []).append(
+                            (ent.get("lane", lane), ent.get("os", osof(j.get("labels"))),
+                             ent.get("completed_at", done_at)))
+                        resight.add(key)
+                elif cls not in ("missed-mutant", "other"):
+                    c, laneset = design.get(cls, (0, set()))
+                    laneset.add(ent.get("lane", lane))
+                    design[cls] = (c + 1, laneset)
+    except Fatal as e:
+        print("ci-friction: %s" % e, file=sys.stderr)
+        ok = False
+
+    # issue lookup per new test name; re-read cached open issues sighted again
+    for key in sorted(seen):
+        ent = issues_st.get(key)
+        if not isinstance(ent, dict) or "issue" not in ent:
+            last = key.split()[-1]
+            try:
+                out = gh_api("search/issues?q=repo:%s+is:issue+\"%s\""
+                             % (repo, last))
+                items = json.loads(out).get("items", [])
+            except Fatal as e:
+                print("ci-friction: %s" % e, file=sys.stderr)
+                ok = False
+                continue
+            items.sort(key=lambda it: it.get("updated_at") or "", reverse=True)
+            if items:
+                it = items[0]
+                issues_st[key] = {"issue": it.get("number"), "issue_state": it.get("state"),
+                                  "closed_at": it.get("closed_at"),
+                                  "updated_at": it.get("updated_at")}
+            else:
+                issues_st[key] = {"issue": None, "issue_state": None,
+                                  "closed_at": None, "updated_at": None}
+        elif ent.get("issue_state") == "open" and key in resight and ent.get("issue"):
+            try:
+                it = json.loads(gh_api("repos/%s/issues/%s" % (repo, ent["issue"])))
+                ent.update({"issue_state": it.get("state"), "closed_at": it.get("closed_at"),
+                            "updated_at": it.get("updated_at")})
+            except Fatal as e:
+                print("ci-friction: %s" % e, file=sys.stderr)
+                ok = False
+
+    repeats, recurred = [], []
+    for key in sorted(seen):
+        sight = seen[key]
+        laneset = sorted({s[0] for s in sight})
+        if len(laneset) < min_lanes:
+            continue
+        ent = issues_st.get(key, {})
+        first = min(s[2] for s in sight)
+        last = max(s[2] for s in sight)
+        repeats.append({"test": key, "lanes": laneset,
+                        "os": sorted({s[1] for s in sight}),
+                        "first_seen": first, "last_seen": last,
+                        "issue": ent.get("issue"), "issue_state": ent.get("issue_state")})
+        closed = ent.get("closed_at")
+        if ent.get("issue") and closed:
+            after = sorted({s[0] for s in sight if s[2] > closed})
+            if after:
+                recurred.append({"test": key, "issue": ent["issue"],
+                                 "closed_at": closed, "lanes": after, "last_seen": last})
+    # recurrences for keys under min_lanes still count
+    for key in sorted(seen):
+        if any(r["test"] == key for r in recurred) or any(r["test"] == key for r in repeats):
+            continue
+        ent = issues_st.get(key, {})
+        closed = ent.get("closed_at")
+        if ent.get("issue") and closed:
+            after = sorted({s[0] for s in seen[key] if s[2] > closed})
+            if after:
+                recurred.append({"test": key, "issue": ent["issue"], "closed_at": closed,
+                                 "lanes": after,
+                                 "last_seen": max(s[2] for s in seen[key])})
+
+    design_out = [{"cause": c, "count": n, "lanes": sorted(ls)}
+                  for c, (n, ls) in sorted(design.items(), key=lambda kv: (-kv[1][0], kv[0]))]
+
+    # prune jobs older than --since, then write state
+    for jid in [k for k, v in jobs_st.items()
+                if not (isinstance(v, dict) and parse_ts(v.get("completed_at") or "")
+                        and parse_ts(v["completed_at"]) >= cutoff)]:
+        jobs_st.pop(jid, None)
+    st.update({"jobs": jobs_st, "issues": issues_st, "branches": branches_st})
+    save_state(state_path, st)
+
+    if not ok:
+        return 2
+    if want_json:
+        print(json.dumps({"since": iso(cutoff), "repeats": repeats,
+                          "recurred_after_close": recurred, "design": design_out}))
+        return 1 if (repeats or recurred) else 0
+    if not repeats and not recurred:
+        print("ci-friction %s: no repeats in the last %s" % (repo, since or "24h"))
+        return 0
+    for rp in repeats:
+        iss = ("issue #%s %s" % (rp["issue"], rp["issue_state"]) if rp["issue"]
+               else "no issue")
+        print("repeat: %s lanes %s os %s %s" % (
+            rp["test"], ",".join(rp["lanes"]), ",".join(rp["os"]), iss))
+    for rc in recurred:
+        if not any(r["test"] == rc["test"] for r in repeats):
+            print("recurred: %s after #%s closed %s lanes %s" % (
+                rc["test"], rc["issue"], rc["closed_at"], ",".join(rc["lanes"])))
+    return 1
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Fatal as e:
+        print("ci-friction: %s" % e, file=sys.stderr)
+        sys.exit(2)
