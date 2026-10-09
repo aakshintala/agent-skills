@@ -18,6 +18,7 @@ export T
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin"
 export CI_FRICTION_NOW="2026-10-09T18:30:00Z"
+export CI_FRICTION_RETRY_SLEEP=0
 
 # --- fake gh ---
 cat >"$T/bin/gh" <<'FAKEGH'
@@ -61,6 +62,7 @@ case "$path" in
     page="$(printf '%s' "$path" | sed -nE 's/.*[?&]page=([0-9]+).*/\1/p')"
     [ -n "$page" ] || page=1
     if [ -e "$T/fail-jobs-$rid" ]; then cat "$T/fail-jobs-$rid" >&2; exit 1; fi
+    if [ -e "$T/once-jobs-$rid" ]; then rm -f "$T/once-jobs-$rid"; echo "HTTP 502: Bad Gateway" >&2; exit 1; fi
     if [ -e "$scen/jobs-$rid-p$page.json" ]; then cat "$scen/jobs-$rid-p$page.json";
     elif [ "$page" = "1" ] && [ -e "$scen/jobs-$rid.json" ]; then cat "$scen/jobs-$rid.json";
     else printf '{"total_count":0,"jobs":[]}'; fi;;
@@ -70,6 +72,7 @@ case "$path" in
     serve "logs/$jid.txt" "log-$jid";;
   search/issues*)
     q="$(printf '%s' "$path" | sed -E 's/.*"([^"]+)"[^"]*$/\1/')"
+    if [ -e "$T/once-ratelimit" ]; then rm -f "$T/once-ratelimit"; echo "gh: API rate limit exceeded for user ID 1. If you reach out to GitHub Support for help, please include your request ID. (HTTP 403)" >&2; exit 1; fi
     key="$(printf '%s' "$q" | sed -E 's/[^A-Za-z0-9]+/-/g')"
     f="search/$key.json"
     if [ -e "$scen/$f" ]; then cat "$scen/$f"; else printf '{"total_count":0,"items":[]}'; fi;;
@@ -93,6 +96,7 @@ case "$path" in
     pair="$(printf '%s' "$path" | sed -E 's/.*compare\/([^.]+)\.\.\.(.+)/\1 \2/')"
     set -- $pair
     serve "compare-${1:0:8}-${2:0:8}.json" "compare-$1-$2";;
+  rate_limit) printf '{"resources":{"search":{"reset":0}}}';;
   *) echo "fake gh: unknown path $path" >&2; exit 2;;
 esac
 FAKEGH
@@ -269,6 +273,40 @@ run_friction --min-lanes 1 --json
   || fail "page-2 failure seen: [$OUT]"
 [ "$(grep -c 'actions/runs/601/jobs' "$FAKE_GH_LOG")" = "2" ] \
   || fail "full page plus the short one: [$(cat "$FAKE_GH_LOG")]"
+
+# --- retries: a 502 on a jobs call is retried once, and a search rate limit waits then retries ---
+setup repeat
+: >"$T/once-jobs-601"
+run_friction --json
+[ "$CODE" = "1" ] || fail "502 then success exits 1 (got $CODE): [$OUT] [$(cat "$T/stderr.txt")]"
+[ "$(grep -c 'actions/runs/601/jobs' "$FAKE_GH_LOG")" = "2" ] \
+  || fail "502 retried once: [$(cat "$FAKE_GH_LOG")]"
+[ "$(jget "d['repeats'][0]['test']")" = "fiber-core doors::watch" ] \
+  || fail "502 retry keeps the repeat: [$OUT]"
+
+setup repeat
+: >"$T/once-ratelimit"
+run_friction --json
+[ "$CODE" = "1" ] || fail "rate limit then success exits 1 (got $CODE): [$OUT] [$(cat "$T/stderr.txt")]"
+[ "$(grep -c 'search/issues' "$FAKE_GH_LOG")" = "2" ] \
+  || fail "rate-limited search retried once: [$(cat "$FAKE_GH_LOG")]"
+grep -q "rate_limit" "$FAKE_GH_LOG" || fail "rate limit reset read: [$(cat "$FAKE_GH_LOG")]"
+[ "$(jget "d['repeats'][0]['issue']")" = "1386" ] || fail "rate-limited search linked: [$OUT]"
+
+# --- stale no-issue cache: searched again once it is over 6 h old, and linked ---
+setup repeat
+mkdir -p "$HOME/.cache/switchyard"
+python3 -c "import json; json.dump({'jobs': {}, 'issues': {'fiber-core doors::watch': {'issue': None, 'issue_state': None, 'closed_at': None, 'updated_at': None, 'searched_at': '2026-10-09T10:00:00Z'}}, 'branches': {}}, open('$HOME/.cache/switchyard/ci-friction.json', 'w'))"
+run_friction --json
+[ "$CODE" = "1" ] || fail "stale no-issue exits 1 (got $CODE): [$OUT]"
+[ "$(grep -c 'search/issues' "$FAKE_GH_LOG")" = "1" ] || fail "stale no-issue searched: [$(cat "$FAKE_GH_LOG")]"
+[ "$(jget "d['repeats'][0]['issue']")" = "1386" ] || fail "stale no-issue linked: [$OUT]"
+# a no-issue entry searched under 6 h ago is not searched again
+setup repeat
+mkdir -p "$HOME/.cache/switchyard"
+python3 -c "import json; json.dump({'jobs': {}, 'issues': {'fiber-core doors::watch': {'issue': None, 'issue_state': None, 'closed_at': None, 'updated_at': None, 'searched_at': '2026-10-09T17:00:00Z'}}, 'branches': {}}, open('$HOME/.cache/switchyard/ci-friction.json', 'w'))"
+run_friction --json
+[ "$(grep -c 'search/issues' "$FAKE_GH_LOG")" = "0" ] || fail "fresh no-issue not searched: [$(cat "$FAKE_GH_LOG")]"
 
 # --- exits: 2 on usage and on listing failures, state still written ---
 OUT="$(python3 "$FRICTION" --since 24h 2>"$T/stderr.txt")"; CODE=$?

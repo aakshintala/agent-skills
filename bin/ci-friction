@@ -17,7 +17,7 @@
 # when its test is sighted again. Exit codes: 0 none, 1 a repeat or a
 # recurrence after close, 2 error. With --json only JSON is printed.
 # CI_FRICTION_NOW (ISO UTC) pins "now"; it exists for tests only.
-import json, os, re, subprocess, sys
+import json, os, re, subprocess, sys, time
 from datetime import datetime, timedelta, timezone
 
 BOUND = {"Selection": 5, "Linux x86_64 checks": 5, "Tests macos": 15,
@@ -30,6 +30,15 @@ TS = re.compile(r"^\S+Z ")
 NX = re.compile(r"^\s*(FAIL|TIMEOUT) \[\s*[\d.]+s\]\s+"
                 r"(?:\(\s*\d+/\d+\)\s+)?(\S+)\s+(\S+)", re.M)
 PANIC = re.compile(r"thread '([^']+)' panicked at")
+# Waits before a 5xx retry and before a search rate-limit retry when the reset
+# time cannot be read. CI_FRICTION_RETRY_SLEEP lets the tests skip the wait.
+try:
+    RETRY_WAIT = float(os.environ.get("CI_FRICTION_RETRY_SLEEP") or 5)
+except ValueError:
+    RETRY_WAIT = 5.0
+SERVER_ERR = re.compile(r"HTTP 5\d\d")
+RATE_LIMIT = re.compile(r"rate limit exceeded", re.I)  # gh puts "(HTTP 403)" last
+NO_ISSUE_TTL = timedelta(hours=6)  # a no-issue lookup is retried after this
 USAGE = ("usage: ci-friction --repo owner/name [--since 24h] [--state PATH] "
          "[--min-lanes 2] [--json]")
 
@@ -187,10 +196,30 @@ def classify(name, steps, text):
     return ("other", (errs[-1] if errs else (lines[-1] if lines else ""))[:160], [])
 
 
+def wait_for_search_reset():
+    """Sleep until the search limit resets, at most 65 s."""
+    try:
+        reset = json.loads(subprocess.run(
+            ["gh", "api", "rate_limit"], capture_output=True, text=True,
+            check=True).stdout)["resources"]["search"]["reset"]
+        wait = min(max(float(reset) - time.time(), 0.0), 65.0)
+    except (subprocess.CalledProcessError, ValueError, KeyError, TypeError):
+        wait = min(RETRY_WAIT, 65.0)
+    time.sleep(wait)
+
+
 def gh_api(path, escape=False, fields=()):
+    """One gh api call. A 5xx is retried after a pause; a search rate limit is
+    retried after the reset. Each retries once; a second failure raises."""
     cmd = ["gh", "api"] + (["--allow-escape-sequences"] if escape else [])
     cmd += [path] + [x for f in fields for x in ("-f", f)]
     p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0 and "HTTP 403" in (p.stderr or "") and RATE_LIMIT.search(p.stderr):
+        wait_for_search_reset()
+        p = subprocess.run(cmd, capture_output=True, text=True)
+    elif p.returncode != 0 and SERVER_ERR.search(p.stderr or ""):
+        time.sleep(RETRY_WAIT)
+        p = subprocess.run(cmd, capture_output=True, text=True)
     if p.returncode != 0:
         err = (p.stderr or "").strip().splitlines()
         msg = "\n".join(err[-3:])
@@ -411,10 +440,14 @@ def main(argv):
         print("ci-friction: %s" % e, file=sys.stderr)
         ok = False
 
-    # issue lookup per new test name; re-read cached open issues sighted again
+    # issue lookup per new test name; re-read cached open issues sighted again.
+    # A no-issue entry is searched again once its searched_at is over 6 h old.
     for key in sorted(seen):
         ent = issues_st.get(key)
-        if not isinstance(ent, dict) or "issue" not in ent:
+        searched = parse_ts(ent.get("searched_at") or "") if isinstance(ent, dict) else None
+        if not isinstance(ent, dict) or "issue" not in ent or (
+                ent.get("issue") is None
+                and (searched is None or now - searched > NO_ISSUE_TTL)):
             last = key.split()[-1]
             try:
                 out = gh_api("search/issues?q=repo:%s+is:issue+\"%s\""
@@ -429,10 +462,12 @@ def main(argv):
                 it = items[0]
                 issues_st[key] = {"issue": it.get("number"), "issue_state": it.get("state"),
                                   "closed_at": it.get("closed_at"),
-                                  "updated_at": it.get("updated_at")}
+                                  "updated_at": it.get("updated_at"),
+                                  "searched_at": iso(now)}
             else:
                 issues_st[key] = {"issue": None, "issue_state": None,
-                                  "closed_at": None, "updated_at": None}
+                                  "closed_at": None, "updated_at": None,
+                                  "searched_at": iso(now)}
         elif ent.get("issue_state") == "open" and key in resight and ent.get("issue"):
             try:
                 it = json.loads(gh_api("repos/%s/issues/%s" % (repo, ent["issue"])))
