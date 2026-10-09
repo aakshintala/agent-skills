@@ -143,13 +143,28 @@ start_review() {
   bash "$REVIEW" start "$@"
 }
 
+stale_ts_for() {
+  # stale_ts_for AGE: touch -t timestamp for AGE (hours by default;
+  # trailing h for hours, m for minutes). Keeps bare numbers meaning hours
+  # so existing callers are unchanged.
+  stale_age_spec="$1"
+  case "$stale_age_spec" in
+    *m) stale_n="${stale_age_spec%m}"; stale_unit="M"; stale_word="minutes";;
+    *h) stale_n="${stale_age_spec%h}"; stale_unit="H"; stale_word="hours";;
+    *) stale_n="$stale_age_spec"; stale_unit="H"; stale_word="hours";;
+  esac
+  date -v-"${stale_n}${stale_unit}" +%Y%m%d%H%M 2>/dev/null || date -d "$stale_n $stale_word ago" +%Y%m%d%H%M
+}
+
 stale_state() {
-  # stale_state RUN_DIR JID ROLE AGE_HOURS STATUS CLONE: plant one stale-run
-  # fixture: a real worktree RUN_DIR/wt-ROLE added from the fixture clone, a
-  # state file TMPDIR/review-pr/JID aged AGE_HOURS hours, and, unless STATUS
-  # is NOREC, a job record carrying that status.
+  # stale_state RUN_DIR JID ROLE STATE_AGE STATUS CLONE [RECORD_AGE]: plant
+  # one stale-run fixture: a real worktree RUN_DIR/wt-ROLE added from the
+  # fixture clone, a state file TMPDIR/review-pr/JID aged STATE_AGE, and,
+  # unless STATUS is NOREC, a job record carrying that status aged
+  # RECORD_AGE (default STATE_AGE, so existing callers age both together).
   stale_run_dir="$1"; stale_jid="$2"; stale_role="$3"
   stale_age="$4"; stale_status="$5"; stale_clone="$6"
+  stale_rec_age="${7:-$4}"
   mkdir -p "$TMPDIR/review-pr" "$TMPDIR/delegate-jobs"
   git -C "$T/clone" worktree add -q --detach "$stale_run_dir/wt-$stale_role" "$FAKE_SHA" || fail "stale fixture worktree setup"
   {
@@ -167,8 +182,10 @@ stale_state() {
     rm -f "$TMPDIR/delegate-jobs/$stale_jid.json"
   else
     printf '{"status":"%s"}\n' "$stale_status" >"$TMPDIR/delegate-jobs/$stale_jid.json"
+    stale_rec_ts="$(stale_ts_for "$stale_rec_age")"
+    touch -t "$stale_rec_ts" "$TMPDIR/delegate-jobs/$stale_jid.json" || fail "stale fixture record touch"
   fi
-  stale_ts="$(date -v-"$stale_age"H +%Y%m%d%H%M 2>/dev/null || date -d "$stale_age hours ago" +%Y%m%d%H%M)"
+  stale_ts="$(stale_ts_for "$stale_age")"
   touch -t "$stale_ts" "$TMPDIR/review-pr/$stale_jid" || fail "stale fixture touch"
 }
 
@@ -818,7 +835,7 @@ STATUS: DONE" 0
 write_record overbuild DONE "VERDICT: APPROVE
 STATUS: DONE" 0
 stale_rd="$(mktemp -d "$TMPDIR/review-pr.run.XXXXXX")"
-stale_state "$stale_rd" job-old review 1 DONE "$T/clone"
+stale_state "$stale_rd" job-old review 1 DONE "$T/clone" 0
 stale_sf="$TMPDIR/review-pr/job-old"
 stale_wt="$stale_rd/wt-review"
 start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start with a fresh stale run exits 0"
@@ -847,6 +864,67 @@ start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 --model M --overbu
 [ ! -e "$stale_wt" ] || fail "prune removes the recordless worktree"
 [ ! -e "$stale_rd" ] || fail "prune removes the recordless run dir"
 bash "$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "collect after recordless prune exits 0"
+
+# --- case: start prunes a DONE run two hours after it ends
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+stale_rd="$(mktemp -d "$TMPDIR/review-pr.run.XXXXXX")"
+stale_state "$stale_rd" job-done2 review 2h DONE "$T/clone" 2h
+stale_sf="$TMPDIR/review-pr/job-done2"
+stale_wt="$stale_rd/wt-review"
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 --model M --overbuild-model M2 >/dev/null 2>&1 || fail "pruning start exits 0"
+[ ! -e "$stale_sf" ] || fail "prune removes the two-hour finished state file"
+[ ! -e "$stale_wt" ] || fail "prune removes the two-hour finished worktree"
+[ ! -e "$stale_rd" ] || fail "prune removes the two-hour finished run dir"
+bash "$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "collect after two-hour prune exits 0"
+
+# --- case: start keeps a long job that finished ten minutes ago
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+stale_rd="$(mktemp -d "$TMPDIR/review-pr.run.XXXXXX")"
+stale_state "$stale_rd" job-justdone review 7h DONE "$T/clone" 10m
+stale_sf="$TMPDIR/review-pr/job-justdone"
+stale_wt="$stale_rd/wt-review"
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start with a just-finished run exits 0"
+[ -f "$stale_sf" ] || fail "just-finished state is kept"
+[ -d "$stale_wt" ] || fail "just-finished worktree is kept"
+[ -d "$stale_rd" ] || fail "just-finished run dir is kept"
+bash "$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "collect after just-finished exits 0"
+git -C "$T/clone" worktree remove --force "$stale_wt" >/dev/null 2>&1 || rm -rf "$stale_wt"
+rm -rf "$stale_rd"
+rm -f "$stale_sf" "$TMPDIR/delegate-jobs/job-justdone.json"
+
+# --- case: a run with no record is kept at two hours, pruned at seven
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+young_rd="$(mktemp -d "$TMPDIR/review-pr.run.XXXXXX")"
+stale_state "$young_rd" job-norec2 review 2h NOREC "$T/clone"
+old_rd="$(mktemp -d "$TMPDIR/review-pr.run.XXXXXX")"
+stale_state "$old_rd" job-norec7 review 7h NOREC "$T/clone"
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 --model M --overbuild-model M2 >/dev/null 2>&1 || fail "start with recordless runs exits 0"
+[ -f "$TMPDIR/review-pr/job-norec2" ] || fail "two-hour recordless state is kept"
+[ -d "$young_rd/wt-review" ] || fail "two-hour recordless worktree is kept"
+[ ! -e "$TMPDIR/review-pr/job-norec7" ] || fail "prune removes the seven-hour recordless state"
+[ ! -e "$old_rd" ] || fail "prune removes the seven-hour recordless run dir"
+bash "$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "collect after recordless ages exits 0"
+git -C "$T/clone" worktree remove --force "$young_rd/wt-review" >/dev/null 2>&1 || rm -rf "$young_rd/wt-review"
+rm -rf "$young_rd"
+rm -f "$TMPDIR/review-pr/job-norec2"
 
 # --- case: start prunes a stale two-role run sharing one run dir when the clone is gone
 reset_state
