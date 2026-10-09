@@ -48,6 +48,20 @@ EXPECTED_PID="$(git patch-id --stable <"$T/diff.txt" | awk '{print $1}')"
 # --- fake gh
 gh() (
   set -euo pipefail
+  if [ "$1" = "api" ]; then
+    # check runs of a commit, as gh api --jq emits them: name, status, conclusion, started_at, id
+    ep="${*: -1}"
+    case "$ep" in repos/O/N/commits/*/check-runs) ;; *) echo "fake gh: unknown api $ep" >&2; exit 2;; esac
+    printf '%s\n' "$ep" >>"$T/state/api.txt"
+    if [ -n "${CI_RUNS_FILE:-}" ]; then cat "$CI_RUNS_FILE"; exit 0; fi
+    awk -F'\t' 'NF >= 2 {
+      if ($2 == "pass") { st = "completed"; c = "success" }
+      else if ($2 == "fail") { st = "completed"; c = "failure" }
+      else if ($2 == "cancel") { st = "completed"; c = "cancelled" }
+      else { st = "in_progress"; c = "" }
+      printf "%s\t%s\t%s\t2026-10-09T00:00:00Z\t%d\n", $1, st, c, NR }' "$T/checks.txt"
+    exit 0
+  fi
   [ "$1" = "pr" ] || { echo "fake gh: only pr supported" >&2; exit 2; }
   shift
   case "$1" in
@@ -972,5 +986,38 @@ git -C "$T/clone" worktree remove --force "$stale_rd/wt-overbuild" >/dev/null 2>
 rm -rf "$stale_rd"
 rm -f "$TMPDIR/review-pr/job-live-review" "$TMPDIR/review-pr/job-live-overbuild"
 rm -f "$TMPDIR/delegate-jobs/job-live-review.json" "$TMPDIR/delegate-jobs/job-live-overbuild.json"
+
+# --- ci_case LABEL RUNS WANT: one review round trip whose reviewed head has the
+# check runs RUNS (TSV rows of name, status, conclusion, started_at, id, joined
+# by \n). The CI line must read WANT, and the API must be asked for the reviewed
+# head's check runs. Runs in a subshell with its own HOME and TMPDIR.
+ci_case() {
+  ci_label="$1"; ci_want="$3"
+  ci_runs="$T/canned/ci-$(printf '%s' "$ci_label" | tr ' ' '_').tsv"
+  printf '%b' "$2" >"$ci_runs"
+  # the legacy gh pr checks fixture, derived from the same runs for the old code
+  awk -F'\t' 'NF >= 5 { s = ($3 == "failure") ? "fail" : ($3 == "cancelled") ? "cancel" : ($2 == "completed") ? "pass" : "pending"; print $1 "\t" s }' "$ci_runs" >"$T/checks.txt"
+  rm -f "$T/state/api.txt"
+  (
+    export HOME="$(mktemp -d "$T/home.XXXXXX")"
+    export TMPDIR="$(mktemp -d "$T/tmp.XXXXXX")"
+    export CI_RUNS_FILE="$ci_runs"
+    write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+    write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+    start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 --model M --overbuild-model M2 >/dev/null 2>&1 || fail "$ci_label: start exits 0"
+    out="$(bash "$REVIEW" collect job-review job-overbuild 2>/dev/null)" || true
+    grep -qx "CI $SHORT $ci_want" <<<"$out" || fail "$ci_label: want CI $SHORT $ci_want, got [$(grep '^CI ' <<<"$out")]"
+    grep -qx "repos/O/N/commits/$FAKE_SHA/check-runs" "$T/state/api.txt" || fail "$ci_label: check runs asked for the reviewed head"
+  )
+}
+
+# --- case: CI state comes from the reviewed head's check runs, not gh pr checks
+ci_case "cancelled only" 'ci\tcompleted\tcancelled\t2026-10-09T10:00:00Z\t101\nlint\tcompleted\tcancelled\t2026-10-09T10:00:01Z\t102\n' cancelled || exit 1
+ci_case "cancelled then later success" 'ci\tcompleted\tcancelled\t2026-10-09T10:00:00Z\t300\nci\tcompleted\tsuccess\t2026-10-09T10:05:00Z\t200\nlint\tcompleted\tsuccess\t2026-10-09T10:00:00Z\t150\n' pass || exit 1
+ci_case "one failure" 'ci\tcompleted\tfailure\t2026-10-09T10:00:00Z\t1\nlint\tcompleted\tsuccess\t2026-10-09T10:00:00Z\t2\n' fail || exit 1
+ci_case "in progress" 'ci\tin_progress\t\t2026-10-09T10:00:00Z\t1\nlint\tcompleted\tsuccess\t2026-10-09T10:00:00Z\t2\n' pending || exit 1
 
 echo "review-pr: all cases passed"

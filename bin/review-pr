@@ -103,25 +103,34 @@ state_get() {
 }
 
 ci_state() {
-  # ci_state PR REPO: pass, pending, fail or none, from gh pr checks.
-  checks="$(gh pr checks "$1" --repo "$2" 2>/dev/null || true)"
-  ci="none"
-  if [ -n "$checks" ]; then
-    ci="pass"
-    while IFS= read -r line; do
-      case "$line" in ""|NAME*|Name*) continue;; esac
-      state="$(printf '%s\n' "$line" | awk -F'\t' '{print $2}')"
-      if [ -z "$state" ]; then
-        state="$(printf '%s\n' "$line" | awk '{print $2}')"
-      fi
-      case "$state" in
-        fail|failed|failure|cancel|cancelled|timed_out|action_required) ci="fail"; break;;
-        pending|queued|requested|waiting|in_progress)
-          if [ "$ci" != "fail" ]; then ci="pending"; fi;;
-      esac
-    done <<<"$checks"
-  fi
-  printf '%s' "$ci"
+  # ci_state REPO SHA: fail, pending, cancelled, pass or none, from the check
+  # runs on commit SHA (the reviewed head, not the PR's current one). Each check
+  # name counts its latest run (started_at, then id). Precedence: fail >
+  # pending > cancelled > pass. An empty SHA, no runs or an API error is none.
+  local runs
+  [ -n "$2" ] || { printf 'none'; return 0; }
+  runs="$(gh api --paginate --jq '.check_runs[] | [.name, .status, (.conclusion // ""), (.started_at // ""), (.id | tostring)] | @tsv' "repos/$1/commits/$2/check-runs" 2>/dev/null)" || { printf 'none'; return 0; }
+  printf '%s\n' "$runs" | awk -F'\t' '
+    NF >= 5 && (!($1 in ts) || $4 > ts[$1] || ($4 == ts[$1] && $5 + 0 > id[$1] + 0)) {
+      ts[$1] = $4; id[$1] = $5; stt[$1] = $2; concl[$1] = $3
+    }
+    END {
+      found = 0; best = 0
+      for (n in ts) {
+        found = 1
+        if (stt[n] != "completed") r = 3
+        else if (concl[n] == "failure" || concl[n] == "timed_out" || concl[n] == "action_required") r = 4
+        else if (concl[n] == "cancelled") r = 2
+        else if (concl[n] == "success" || concl[n] == "skipped" || concl[n] == "neutral") r = 1
+        else r = 3
+        if (r > best) best = r
+      }
+      if (!found) printf "none"
+      else if (best == 4) printf "fail"
+      else if (best == 3) printf "pending"
+      else if (best == 2) printf "cancelled"
+      else printf "pass"
+    }'
 }
 
 # remove_state_worktree STATE_FILE: remove the worktree recorded in a state
@@ -556,7 +565,7 @@ cmd_collect() {
   if [ -n "$sha" ]; then short="${sha:0:8}"; fi
   if [ -z "$roles_ok" ]; then
     if [ -n "$pr" ] && [ -n "$repo" ]; then
-      ci="$(ci_state "$pr" "$repo")"
+      ci="$(ci_state "$repo" "$sha")"
     else
       ci="none"
     fi
@@ -700,7 +709,7 @@ cmd_collect() {
   done
 
   if [ -n "$pr" ] && [ -n "$repo" ]; then
-    ci="$(ci_state "$pr" "$repo")"
+    ci="$(ci_state "$repo" "$sha")"
   else
     ci="none"
   fi
