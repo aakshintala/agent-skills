@@ -601,12 +601,18 @@ cat >"$RCOUT/fiber-home/projects/p/sessions/cn-sid-1/events.jsonl" <<'EOF'
 {"kind":"tool_call_requested","session_id":"cn-sid-1","ts":2,"schema_version":1,"action_id":"c2","payload":{"name":"shell","arguments":{"command":"cd x && git push origin HEAD"}}}
 {"kind":"tool_call_requested","session_id":"cn-sid-1","ts":3,"schema_version":1,"action_id":"c3","payload":{"name":"shell","arguments":{"command":"gh pr create"}}}
 {"kind":"tool_call_requested","session_id":"cn-sid-1","ts":4,"schema_version":1,"action_id":"c4","payload":{"name":"shell","arguments":{"command":"echo; curl -s u"}}}
+{"kind":"tool_call_requested","session_id":"cn-sid-1","ts":5,"schema_version":1,"action_id":"c5","payload":{"name":"shell","arguments":{"command":"GH_TOKEN=replay-invalid gh pr view 7"}}}
+{"kind":"tool_call_requested","session_id":"cn-sid-1","ts":6,"schema_version":1,"action_id":"c6","payload":{"name":"shell","arguments":{"command":"env git push up HEAD"}}}
+{"kind":"tool_call_requested","session_id":"cn-sid-1","ts":7,"schema_version":1,"action_id":"c7","payload":{"name":"shell","arguments":{"command":"echo \"run gh later\""}}}
 EOF
 RUN_OUT="$RCOUT" bash -c '. "$1"; collect_notes cn1 "$2/runs/cn1" "$3/scratch"' _ "$T/collect_notes.sh" "$RCOUT" "$CNOTES" || fail "collect_notes runs"
 grep -q "through the high road" "$RCOUT/runs/cn1/notes.txt" && fail "commit message with gh inside a word is not outward"
 grep -q "git push origin HEAD" "$RCOUT/runs/cn1/notes.txt" || fail "git push after && is outward"
 grep -q "gh pr create" "$RCOUT/runs/cn1/notes.txt" || fail "gh pr create is outward"
 grep -q "curl -s u" "$RCOUT/runs/cn1/notes.txt" || fail "curl after ; is outward"
+grep -q "gh pr view 7" "$RCOUT/runs/cn1/notes.txt" || fail "gh after an env assignment is outward"
+grep -q "env git push up HEAD" "$RCOUT/runs/cn1/notes.txt" || fail "git push behind env is outward"
+grep -q "run gh later" "$RCOUT/runs/cn1/notes.txt" && fail "gh inside a quoted echo is not outward"
 
 echo "run cases passed"
 
