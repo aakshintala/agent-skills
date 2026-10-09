@@ -70,6 +70,23 @@ and `git` logs outward subcommands (`push`, `remote`, `send-email`,
 `FIBER_HOME` and the cargo target stay under the out dir.
 The replay `TMPDIR` is a unique `mktemp -d /tmp/frp-XXXXXX` dir per prep (path recorded in `runs/<id>/tmpdir`): Fiber and its tests put unix sockets under `TMPDIR`, and a path under the out dir leaves no room under the 103-byte socket limit.
 
+## Canary
+
+`scripts/canary.sh` runs one ticket's brief on pi and on Fiber side by side:
+`run <ticket> <brief file> --gate '<gate>' [--repo owner/name] [--clone <path>] [--out DIR]`
+cuts two worktrees from the same freshly fetched `origin/main` (branches
+`canary/<ticket>-pi` and `canary/<ticket>-fiber`), runs the brief through
+`delegate run` on each side concurrently (pi, then Fiber, then both watches),
+and runs the gate in each worktree once both jobs end. The brief is wrapped
+with a line telling each agent to commit locally and never push or open a PR.
+Output goes to `~/.cache/agents/canary/<ticket>/` (or `--out`): a `pi/` and a
+`fiber/` directory, each holding `worktree`, `prompt.md`, `diff.patch`,
+`gate.log`, `gate.exit` and `metrics.json`, plus a top-level `summary.md`
+with the two-column comparison table. Exit codes: 0 means both runs finished
+(whatever their gates did), 1 means a run errored in the harness, 2 means a
+usage or setup error. `clean <ticket> [--out DIR]` removes both worktrees and
+branches (metrics stay) so the ticket can run again.
+
 ## Skill
 
 The skill lives in switchyard's `skills/delegate/`. Setup links `~/.claude/skills/delegate` to it, and pi reads `~/.agents/skills` directly, so both load it from the checkout and an edit is live without a reinstall.
