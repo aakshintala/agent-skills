@@ -61,8 +61,8 @@ case "$path" in
     jid="$(printf '%s' "$path" | sed -E 's/.*jobs\/([0-9]+).*/\1/')"
     if [ -e "$T/fail-log-$jid" ]; then cat "$T/fail-log-$jid" >&2; exit 1; fi
     serve "logs/$jid.txt" "log-$jid";;
-  *actions/cache/usage)
-    serve cache.json cache;;
+  *actions/caches\?*)
+    case "$path" in *page=2*) serve caches-2.json caches2;; *) serve caches-1.json caches1;; esac;;
   *commits/main)
     serve head.json head;;
   *commits\?sha=main*)
@@ -216,6 +216,15 @@ expect 1 "BREACH cache"
 setup cache
 run_health --cache-max 11
 expect 0 "^ci-health O/N: OK"
+
+# --- cache: listing summed across two pages; stale usage endpoint ignored ---
+setup cache-pages
+run_health --json
+[ "$(jget "d['cache_bytes']")" = "7750000000" ] || fail "cache bytes summed across pages: [$OUT]"
+[ "$(jget "d['cache_count']")" = "102" ] || fail "cache count across pages: [$OUT]"
+grep -q "actions/caches?per_page=100&page=2" "$FAKE_GH_LOG" || fail "second page fetched: [$(cat "$FAKE_GH_LOG")]"
+grep -q "actions/cache/usage" "$FAKE_GH_LOG" && fail "usage endpoint not called"
+grep -q '"check": "cache"' <<<"$OUT" && fail "7.75 GB is under 9.5: [$OUT]"
 
 # --- backstop: uncovered target breaches ---
 setup bs-breach

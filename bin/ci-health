@@ -13,7 +13,7 @@
 # commit older than --backstop-age has no core-green run at it or later),
 # backstop-broken (2 consecutive main runs share a compile/test cause),
 # design (any timeout, Bench comment failure, or exit 127 in Release),
-# cache (usage at or above --cache-max decimal GB).
+# cache (listed cache bytes at or above --cache-max decimal GB).
 #
 # Durations take `<n>m` or `<n>h` (bare number = minutes). Exit codes: 0 no
 # breach, 1 breach, 2 usage/auth/listing error, 3 partial data (printed).
@@ -418,16 +418,14 @@ def main(argv):
             breaches.append({"check": "design",
                              "detail": "%s: %s (job %s)" % (d["kind"], d["job"], d["job_id"])})
 
-    # cache usage
+    # the live listing, not actions/cache/usage: usage lags a prune by minutes
     try:
-        cache_bytes = json.loads(gh.api("repos/%s/actions/cache/usage" % repo)).get(
-            "active_caches_size_in_bytes")
-        if not isinstance(cache_bytes, int):
-            gh.partial = True
-            cache_bytes = None
-    except (subprocess.CalledProcessError, ValueError):
+        caches = gh.paged("repos/%s/actions/caches" % repo, "actions_caches")
+        cache_bytes = sum(int(c.get("size_in_bytes") or 0) for c in caches)
+        cache_count = len(caches)
+    except (subprocess.CalledProcessError, ValueError, TypeError):
         gh.partial = True
-        cache_bytes = None
+        cache_bytes = cache_count = None
     if isinstance(cache_bytes, int) and cache_bytes >= cmax * 1e9:
         breaches.append({"check": "cache",
                          "detail": "cache %.2f GB at or above %.1f" % (cache_bytes / 1e9, cmax)})
@@ -563,7 +561,7 @@ def main(argv):
                         "commits_behind": behind, "red_streak": red_streak,
                         "red_causes": red_causes_newest},
            "timeouts": timeouts, "design_failures": design,
-           "cache_bytes": cache_bytes, "breaches": breaches,
+           "cache_bytes": cache_bytes, "cache_count": cache_count, "breaches": breaches,
            "partial": gh.partial}
 
     # prune runs older than the lookback, then the log cache with the runs
