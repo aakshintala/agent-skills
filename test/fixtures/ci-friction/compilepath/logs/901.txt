@@ -1,2 +1,2 @@
-2026-10-09T17:30:01Z error[E0277]: a value of type Vec<Vec<(String, Option<Spot>, Ink)>> cannot be built from an iterator
+2026-10-09T17:30:01Z error[E0277]: a value of type Vec<Vec<(std::string::String, Option<swapped::Spot>, Ink)>> cannot be built from an iterator
 2026-10-09T17:30:01Z could not compile `fiber-core` due to previous error
