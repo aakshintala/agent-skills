@@ -37,7 +37,7 @@ try:
 except ValueError:
     RETRY_WAIT = 5.0
 SERVER_ERR = re.compile(r"HTTP 5\d\d")
-RATE_LIMIT = re.compile(r"HTTP 403.*rate limit exceeded", re.I)
+RATE_LIMIT = re.compile(r"rate limit exceeded", re.I)  # gh puts "(HTTP 403)" last
 NO_ISSUE_TTL = timedelta(hours=6)  # a no-issue lookup is retried after this
 USAGE = ("usage: ci-friction --repo owner/name [--since 24h] [--state PATH] "
          "[--min-lanes 2] [--json]")
@@ -214,7 +214,7 @@ def gh_api(path, escape=False, fields=()):
     cmd = ["gh", "api"] + (["--allow-escape-sequences"] if escape else [])
     cmd += [path] + [x for f in fields for x in ("-f", f)]
     p = subprocess.run(cmd, capture_output=True, text=True)
-    if p.returncode != 0 and RATE_LIMIT.search(p.stderr or ""):
+    if p.returncode != 0 and "HTTP 403" in (p.stderr or "") and RATE_LIMIT.search(p.stderr):
         wait_for_search_reset()
         p = subprocess.run(cmd, capture_output=True, text=True)
     elif p.returncode != 0 and SERVER_ERR.search(p.stderr or ""):

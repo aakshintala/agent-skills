@@ -72,7 +72,7 @@ case "$path" in
     serve "logs/$jid.txt" "log-$jid";;
   search/issues*)
     q="$(printf '%s' "$path" | sed -E 's/.*"([^"]+)"[^"]*$/\1/')"
-    if [ -e "$T/once-ratelimit" ]; then rm -f "$T/once-ratelimit"; echo "HTTP 403: API rate limit exceeded for user ID 1." >&2; exit 1; fi
+    if [ -e "$T/once-ratelimit" ]; then rm -f "$T/once-ratelimit"; echo "gh: API rate limit exceeded for user ID 1. If you reach out to GitHub Support for help, please include your request ID. (HTTP 403)" >&2; exit 1; fi
     key="$(printf '%s' "$q" | sed -E 's/[^A-Za-z0-9]+/-/g')"
     f="search/$key.json"
     if [ -e "$scen/$f" ]; then cat "$scen/$f"; else printf '{"total_count":0,"items":[]}'; fi;;
