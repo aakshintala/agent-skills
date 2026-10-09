@@ -160,6 +160,15 @@ run_friction --json
 [ "$(jget "d['repeats'][0]['issue_state']")" = "open" ] || fail "issue state: [$OUT]"
 [ "$(jget "d['recurred_after_close']")" = "[]" ] || fail "open issue never recurs: [$OUT]"
 
+# --- compile keys: one error in two type-path spellings is one repeat ---
+setup compilepath
+run_friction --json
+[ "$CODE" = "1" ] || fail "compile spellings exit 1 (got $CODE): [$OUT] [$(cat "$T/stderr.txt")]"
+[ "$(jget "len(d['repeats'])")" = "1" ] || fail "compile spellings: one repeat: [$OUT]"
+[ "$(jget "d['repeats'][0]['lanes']")" = "['#1401', 'main']" ] || fail "compile spellings lanes: [$OUT]"
+[ "$(jget "d['repeats'][0]['test']")" = "compile fiber-core: error[E0277]: a value of type Vec<Vec<(String, Option<Spot>, Ink)>> cannot be built from an iterator" ] \
+  || fail "compile spellings key: [$OUT]"
+
 # --- one lane twice: not a repeat at 2, a repeat at 1 ---
 setup onelane
 run_friction

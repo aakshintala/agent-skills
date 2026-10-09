@@ -25,6 +25,8 @@ BOUND = {"Selection": 5, "Linux x86_64 checks": 5, "Tests macos": 15,
          "Release build and size (Linux x86_64)": 15,
          "Bug fix fails at the red commit": 10, "Benchmark comment": 5,
          "CI verdict": 5, "Report a failed backstop": 5}
+# a::b::C -> C in compile keys, so rustc's full and short spellings match
+TYPE_PATH = re.compile(r"\b(?:[A-Za-z_]\w*::)+([A-Za-z_]\w*)")
 ANSI = re.compile(r"(\x1b|\^\[)\[[0-9;]*[A-Za-z]")
 TS = re.compile(r"^\S+Z ")
 NX = re.compile(r"^\s*(FAIL|TIMEOUT) \[\s*[\d.]+s\]\s+"
@@ -148,7 +150,7 @@ def classify(name, steps, text):
             return ("mutant-timeout", det, [])
         if code == "4":
             if crates and comp:
-                first = re.sub(r"\s*-->\s*.*$", "", comp[0].strip())
+                first = TYPE_PATH.sub(r"\1", re.sub(r"\s*-->\s*.*$", "", comp[0].strip()))
                 key = "compile %s: %s" % (",".join(sorted(set(crates))), first[:120])
                 return ("mutants-baseline-compile", "%s: %s" % (
                     ",".join(sorted(set(crates))), comp[0].strip()[:120]), [key])
@@ -169,7 +171,7 @@ def classify(name, steps, text):
     if step == "Set up job" or not lines:
         return ("infra", "runner setup failed", [])
     if crates and comp:
-        first = re.sub(r"\s*-->\s*.*$", "", comp[0].strip())
+        first = TYPE_PATH.sub(r"\1", re.sub(r"\s*-->\s*.*$", "", comp[0].strip()))
         key = "compile %s: %s" % (",".join(sorted(set(crates))), first[:140])
         return ("compile", "%s: %s" % (",".join(sorted(set(crates))), comp[0].strip()[:140]), [key])
     if missed:
