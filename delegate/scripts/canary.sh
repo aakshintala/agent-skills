@@ -338,14 +338,21 @@ cmd_run() {
     mkdir -p "$out/$side"
   done
   mkdir -p "$parent"
-  git -C "$clone" worktree add -b "$pi_branch" "$pi_wt" "$base" >/dev/null 2>&1 \
-    || { err "worktree add failed for $pi_wt"; return 2; }
+  if ! git -C "$clone" worktree add -b "$pi_branch" "$pi_wt" "$base" >/dev/null 2>&1; then
+    err "worktree add failed for $pi_wt"
+    git -C "$clone" branch -D "$pi_branch" >/dev/null 2>&1 || true
+    return 2
+  fi
   printf '%s' "$pi_wt" >"$out/pi/worktree"
   if ! git -C "$clone" worktree add -b "$fiber_branch" "$fiber_wt" "$base" >/dev/null 2>&1; then
     err "worktree add failed for $fiber_wt"
-    git -C "$clone" worktree remove --force "$pi_wt" >/dev/null 2>&1 || true
-    git -C "$clone" branch -D "$pi_branch" >/dev/null 2>&1 || true
-    rm -f "$out/pi/worktree"
+    git -C "$clone" branch -D "$fiber_branch" >/dev/null 2>&1 || true
+    if git -C "$clone" worktree remove --force "$pi_wt" >/dev/null 2>&1 \
+      && git -C "$clone" branch -D "$pi_branch" >/dev/null 2>&1; then
+      rm -f "$out/pi/worktree"
+    else
+      err "cleanup of $pi_wt failed; run 'canary.sh clean $ticket' after fixing the cause"
+    fi
     return 2
   fi
   printf '%s' "$fiber_wt" >"$out/fiber/worktree"

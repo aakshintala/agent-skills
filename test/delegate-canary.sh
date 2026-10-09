@@ -118,6 +118,31 @@ chmod +x "$FBIN/gh"
 cat >"$FBIN/git" <<EOF
 #!/bin/sh
 printf 'git %s\n' "\$*" >>"$FAKE_LOGDIR/git.log"
+# Simulate native 'worktree add -b' leaving its branch when checkout fails
+# (e.g. an unwritable target): create the branch, then fail without a worktree.
+fail_side="\${CANARY_FAKE_WORKTREE_FAIL:-}"
+if [ -n "\$fail_side" ]; then
+  case " \$* " in
+    *" worktree add "*)
+      case " \$* " in
+        *"-\$fail_side "*|*"-\$fail_side")
+          clone=""; branch=""; base=""
+          prev=""
+          for a in "\$@"; do
+            case "\$prev" in
+              -C) clone="\$a" ;;
+              -b) branch="\$a" ;;
+            esac
+            prev="\$a"
+          done
+          for a in "\$@"; do base="\$a"; done
+          if [ -n "\$clone" ] && [ -n "\$branch" ] && [ -n "\$base" ]; then
+            $REAL_GIT -C "\$clone" branch "\$branch" "\$base" >/dev/null 2>&1 || true
+          fi
+          exit 1 ;;
+      esac ;;
+  esac
+fi
 exec "$REAL_GIT" "\$@"
 EOF
 chmod +x "$FBIN/git"
@@ -357,6 +382,44 @@ bash "$CANARY" clean 225 --out "$OUT4" || fail "second clean exits 0"
 
 # clean with nothing to remove still exits 0
 bash "$CANARY" clean 999 --out "$T/out-empty" || fail "clean of a fresh ticket exits 0"
+
+# --- Partial setup rollback: fiber worktree add fails after pi succeeds ---
+# The fake git leaves the fiber branch (like native git on checkout failure);
+# canary.sh must remove both branches and the pi worktree so a rerun works.
+OUT5="$T/out5"
+if CANARY_FAKE_WORKTREE_FAIL=fiber FAKE_EVENTS="$T/ev2.jsonl" bash "$CANARY" run 227 "$T/brief.md" \
+  --gate 'test -f work-marker' --out "$OUT5" 2>/dev/null; then
+  fail "fiber worktree failure should not exit 0"
+else
+  [ $? -eq 2 ] || fail "fiber worktree failure exits 2"
+fi
+git -C "$HOME/work/fiber" show-ref --verify --quiet refs/heads/canary/227-pi && fail "failed fiber add leaves no pi branch"
+git -C "$HOME/work/fiber" show-ref --verify --quiet refs/heads/canary/227-fiber && fail "failed fiber add leaves no fiber branch"
+[ ! -e "$HOME/work/fiber-canary-227-pi" ] || fail "failed fiber add removes pi worktree"
+[ ! -e "$HOME/work/fiber-canary-227-fiber" ] || fail "failed fiber add creates no fiber worktree"
+[ ! -f "$OUT5/pi/worktree" ] || fail "failed fiber add keeps no pi tracking"
+FAKE_EVENTS="$T/ev2.jsonl" bash "$CANARY" run 227 "$T/brief.md" \
+  --gate 'test -f work-marker' --out "$OUT5" || fail "rerun works after fiber worktree failure"
+[ "$(jq -r .outcome "$OUT5/pi/metrics.json")" = "DONE" ] || fail "rerun pi DONE after worktree failure"
+[ "$(jq -r .outcome "$OUT5/fiber/metrics.json")" = "DONE" ] || fail "rerun fiber DONE after worktree failure"
+bash "$CANARY" clean 227 --out "$OUT5" || fail "clean after rerun exits 0"
+
+# --- Partial setup rollback: pi worktree add fails ---
+OUT6="$T/out6"
+if CANARY_FAKE_WORKTREE_FAIL=pi FAKE_EVENTS="$T/ev2.jsonl" bash "$CANARY" run 228 "$T/brief.md" \
+  --gate 'test -f work-marker' --out "$OUT6" 2>/dev/null; then
+  fail "pi worktree failure should not exit 0"
+else
+  [ $? -eq 2 ] || fail "pi worktree failure exits 2"
+fi
+git -C "$HOME/work/fiber" show-ref --verify --quiet refs/heads/canary/228-pi && fail "failed pi add leaves no pi branch"
+git -C "$HOME/work/fiber" show-ref --verify --quiet refs/heads/canary/228-fiber && fail "failed pi add leaves no fiber branch"
+FAKE_EVENTS="$T/ev2.jsonl" bash "$CANARY" run 228 "$T/brief.md" \
+  --gate 'test -f work-marker' --out "$OUT6" || fail "rerun works after pi worktree failure"
+[ "$(jq -r .outcome "$OUT6/pi/metrics.json")" = "DONE" ] || fail "rerun pi DONE after pi failure"
+bash "$CANARY" clean 228 --out "$OUT6" || fail "clean after pi rerun exits 0"
+
+echo "setup rollback cases passed"
 
 # final no-push guarantee across every run above
 grep -q '^git push' "$FLOG/git.log" && fail "no git push is ever run"
