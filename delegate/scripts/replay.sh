@@ -505,11 +505,12 @@ seal_check() {
   local rundir="$1" scratch="$2" repo="$3" base probe
   base=".replay-seal-probe.$$.${RANDOM:-0}"
   probe="${HOME:-/tmp}/$base"
-  if [ -e "$probe" ]; then
+  if [ -e "$probe" ] || [ -L "$probe" ]; then
     err "seal probe $probe exists; refusing"
     return 1
   fi
-  if run_in_seal "$rundir" sh -c 'touch "$1"' _ "$probe" 2>/dev/null; then
+  # set -C: exclusive create, so an open seal never writes through a link.
+  if run_in_seal "$rundir" sh -c 'set -C; : >"$1"' _ "$probe" 2>/dev/null; then
     rm -f "$probe"
     err "seal open: home write probe succeeded"
     return 1
