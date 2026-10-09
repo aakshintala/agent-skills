@@ -22,6 +22,10 @@ MUSE_FIBER_MODEL="fiber/opencode-go/muse-spark-1.3-contributor"
 
 TAB="$(printf '\t')"
 
+# Shared cost/token/denial extraction (factored out, see #223).
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/metrics.sh"
+
 default_out() {
   printf '%s/.cache/agents/fiber-replay' "${HOME:-/tmp}"
 }
@@ -836,6 +840,7 @@ cmd_run() {
   fi
   [ -f "$out/manifest.tsv" ] || { err "no manifest at $out/manifest.tsv (run select first)"; return 2; }
   RUN_OUT="$out"
+  FIBER_EVENTS_ROOT="$RUN_OUT/fiber-home"
   SEL_OUT="$out"
   RUN_REALTMP="${TMPDIR:-/tmp}"
   DELEGATE_BIN="${DELEGATE_BIN:-delegate}"
@@ -941,131 +946,6 @@ cmd_run() {
 
 # ---------- report ----------
 
-fmt_money() {
-  if [ -z "$1" ] || [ "$1" = "null" ]; then
-    printf 'unknown'
-  else
-    printf '$%.6f' "$1"
-  fi
-}
-
-fmt_share() {
-  if [ -z "$1" ] || [ "$1" = "null" ]; then
-    printf 'unknown'
-  else
-    awk -v s="$1" 'BEGIN{printf "%.1f%%", s * 100}'
-  fi
-}
-
-fmt_wall() {
-  if [ -z "$1" ] || [ "$1" = "null" ]; then
-    printf 'unknown'
-  else
-    awk -v ms="$1" 'BEGIN{printf "%.1fs", ms / 1000}'
-  fi
-}
-
-# pi_metrics RECORD SESSION: outcome gate cost in out cr share wall, one per line.
-pi_metrics() {
-  local rec="$1" session="$2" status gate cost in out cr cw share wall
-  status="$(jq -r '.status // "unknown"' "$rec" 2>/dev/null)"
-  [ "$status" = "null" ] && status="unknown"
-  gate="$(jq -r 'if .result.gateResult.passed == null then "n/a" elif .result.gateResult.passed == true then "true" elif .result.gateResult.passed == false then "false" else "n/a" end' "$rec" 2>/dev/null)"
-  case "$gate" in
-    true) gate="pass" ;; false) gate="fail" ;; *) gate="n/a" ;;
-  esac
-  cost="$(jq -r '.result.costUsd // ""' "$rec" 2>/dev/null)"
-  [ "$cost" = "null" ] && cost=""
-  in="$(jq -r '.result.usage.inputTokens // ""' "$rec" 2>/dev/null)"
-  out="$(jq -r '.result.usage.outputTokens // ""' "$rec" 2>/dev/null)"
-  cr="$(jq -r '.result.usage.cacheReadTokens // ""' "$rec" 2>/dev/null)"
-  cw="$(jq -r '.result.usage.cacheWriteTokens // ""' "$rec" 2>/dev/null)"
-  for v in in out cr cw; do [ "${!v}" = "null" ] && eval "$v=\"\""; done
-  share=""
-  if [ -n "$in" ] && [ -n "$cr" ] && [ -n "$cw" ]; then
-    share="$(awk -v i="$in" -v c="$cr" -v w="$cw" 'BEGIN{d=i+c+w; if (d>0) printf "%.4f", c/d}')"
-  fi
-  wall=""
-  if [ -f "$session" ]; then
-    wall="$(jq -rs '[.[] | select(.type=="custom" and .customType=="pi-stamp")
-      | .data.endedAt - .data.startedAt][0] // ""' "$session" 2>/dev/null)"
-  fi
-  if [ -z "$wall" ] || [ "$wall" = "null" ]; then
-    wall="$(jq -r '.result.durationMs // ""' "$rec" 2>/dev/null)"
-    [ "$wall" = "null" ] && wall=""
-  fi
-  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
-    "$status" "$gate" "$cost" "$in" "$out" "$cr" "$share" "$wall"
-}
-
-# fiber_events SID: the single events file, or "" when missing/ambiguous.
-fiber_events() {
-  local sid="$1" ev="" f
-  for f in "$RUN_OUT"/fiber-home/projects/*/sessions/"$sid"/events.jsonl; do
-    [ -e "$f" ] || continue
-    if [ -n "$ev" ]; then
-      printf ''
-      return 0
-    fi
-    ev="$f"
-  done
-  printf '%s' "$ev"
-}
-
-# fiber_metrics RECORD: outcome gate cost in out cr share wall, one per line.
-# A session with no usage_recorded event renders tokens and cost unknown.
-fiber_metrics() {
-  local rec="$1" status gate cost in out cr cw share wall sid ev has_usage
-  local started ended
-  status="$(jq -r '.status // "unknown"' "$rec" 2>/dev/null)"
-  [ "$status" = "null" ] && status="unknown"
-  gate="$(jq -r 'if .result.gateResult.passed == null then "n/a" elif .result.gateResult.passed == true then "true" elif .result.gateResult.passed == false then "false" else "n/a" end' "$rec" 2>/dev/null)"
-  case "$gate" in
-    true) gate="pass" ;; false) gate="fail" ;; *) gate="n/a" ;;
-  esac
-  cost="$(jq -r '.result.costUsd // ""' "$rec" 2>/dev/null)"
-  [ "$cost" = "null" ] && cost=""
-  in="$(jq -r '.result.usage.inputTokens // ""' "$rec" 2>/dev/null)"
-  out="$(jq -r '.result.usage.outputTokens // ""' "$rec" 2>/dev/null)"
-  cr="$(jq -r '.result.usage.cacheReadTokens // ""' "$rec" 2>/dev/null)"
-  cw="$(jq -r '.result.usage.cacheWriteTokens // ""' "$rec" 2>/dev/null)"
-  for v in in out cr cw; do [ "${!v}" = "null" ] && eval "$v=\"\""; done
-  sid="$(jq -r '.resume.sessionId // ""' "$rec" 2>/dev/null)"
-  ev=""
-  has_usage="unverified"
-  if [ -n "$sid" ] && [ "$sid" != "null" ]; then
-    ev="$(fiber_events "$sid")"
-    if [ -n "$ev" ]; then
-      if grep -q '"usage_recorded"' "$ev" 2>/dev/null; then
-        has_usage="yes"
-      else
-        has_usage="no"
-      fi
-    fi
-  fi
-  if [ "$has_usage" != "yes" ]; then
-    cost=""; in=""; out=""; cr=""; cw=""
-  fi
-  share=""
-  if [ -n "$in" ] && [ -n "$cr" ] && [ -n "$cw" ]; then
-    share="$(awk -v i="$in" -v c="$cr" -v w="$cw" 'BEGIN{d=i+c+w; if (d>0) printf "%.4f", c/d}')"
-  fi
-  wall=""
-  if [ -n "$ev" ]; then
-    started="$(jq -r 'select(.kind=="fiber_started") | .ts' "$ev" 2>/dev/null | head -n 1)"
-    ended="$(jq -r 'select(.kind=="fiber_exited") | .ts' "$ev" 2>/dev/null | head -n 1)"
-    if [ -n "$started" ] && [ -n "$ended" ]; then
-      wall="$(awk -v a="$started" -v b="$ended" 'BEGIN{printf "%d", b - a}')"
-    fi
-  fi
-  if [ -z "$wall" ]; then
-    wall="$(jq -r '.result.durationMs // ""' "$rec" 2>/dev/null)"
-    [ "$wall" = "null" ] && wall=""
-  fi
-  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
-    "$status" "$gate" "$cost" "$in" "$out" "$cr" "$share" "$wall"
-}
-
 # pi_level SESSION: last thinking_level_change, else unknown.
 pi_level() {
   local lvl
@@ -1081,38 +961,6 @@ fiber_level() {
       | map(select(. != null)) | last // ""' "$1" 2>/dev/null)"
   fi
   [ -n "$lvl" ] && [ "$lvl" != "null" ] && printf '%s' "$lvl" || printf 'fiber default'
-}
-
-# denials_for RECORD: denial lines action_id decided_by reason command.
-denials_for() {
-  local rec="$1" sid ev aid decided reason cmd match
-  sid="$(jq -r '.resume.sessionId // ""' "$rec" 2>/dev/null)"
-  if [ -z "$sid" ] || [ "$sid" = "null" ]; then
-    printf 'EVENTS_MISSING\n'
-    return 0
-  fi
-  ev="$(fiber_events "$sid")"
-  if [ -z "$ev" ]; then
-    printf 'EVENTS_MISSING\n'
-    return 0
-  fi
-  jq 'empty' "$ev" >/dev/null 2>&1 || { printf 'EVENTS_MISSING\n'; return 0; }
-  for aid in $(jq -r 'select(.kind=="permission_resolved" and .payload.decision=="deny")
-      | .action_id // ""' "$ev" 2>/dev/null); do
-    [ -n "$aid" ] || continue
-    decided="$(jq -r --arg a "$aid" 'select(.kind=="permission_resolved" and .action_id==$a)
-      | .payload.decided_by // "unknown"' "$ev" 2>/dev/null | head -n 1)"
-    reason="$(jq -r --arg a "$aid" 'select(.kind=="permission_resolved" and .action_id==$a)
-      | .payload.reason // ""' "$ev" 2>/dev/null | head -n 1)"
-    [ -n "$reason" ] || reason="unknown"
-    match="$(jq -r --arg a "$aid" 'select(.kind=="tool_call_requested" and .action_id==$a)
-      | .payload.name + " " + (.payload.arguments | if type=="string" then . else tojson end)' \
-      "$ev" 2>/dev/null | head -n 1)"
-    [ -n "$match" ] || match="unknown"
-    cmd="$(printf '%s' "$match" | cut -c1-200)"
-    printf '%s\t%s\t%s\t%s\n' "$aid" "$decided" "$reason" "$cmd"
-  done
-  return 0
 }
 
 # verdict_fail ID: failure verdict decision + note, or "".
@@ -1157,6 +1005,7 @@ cmd_report() {
     return 2
   fi
   RUN_OUT="$out"
+  FIBER_EVENTS_ROOT="$RUN_OUT/fiber-home"
   VERDICTS_FILE="$verdicts"
   local jobs_dir="${REPLAY_JOBS_DIR:-${TMPDIR:-/tmp}/delegate-jobs}"
   local res="$out/results.md"
