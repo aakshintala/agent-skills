@@ -64,6 +64,15 @@ now_ms() {
   printf '%d' "$(( $(date +%s) * 1000 ))"
 }
 
+# resolve_fiber_bin: the Fiber binary delegate would run, in delegate's order
+# (FIBER_BIN, then PATH). Prints its path; returns 1 when there is none.
+resolve_fiber_bin() {
+  local found
+  if [ -n "${FIBER_BIN:-}" ]; then printf '%s' "$FIBER_BIN"; return 0; fi
+  found="$(command -v fiber 2>/dev/null)" && [ -n "$found" ] || return 1
+  printf '%s' "$found"
+}
+
 # match_table TABLE TEXT TOOL: true when a row for TOOL (or *) matches TEXT.
 match_table() {
   local table="$1" text="$2" tool="$3" line rest row_tool ere
@@ -333,6 +342,15 @@ cmd_run() {
   [[ "$ticket" =~ ^[0-9A-Za-z._-]+$ ]] || { err "bad ticket '$ticket'"; return 2; }
   [ -n "$gate" ] || { err "--gate is required"; return 2; }
   [ -f "$brief" ] || { err "brief file $brief missing"; return 2; }
+  # Resolve Fiber before any worktree, job or output dir exists, and pin the
+  # binary so delegate runs the same one the summary records.
+  local fiber_bin fiber_version
+  fiber_bin="$(resolve_fiber_bin)" \
+    || { err "no Fiber binary: set FIBER_BIN or put fiber on PATH"; return 2; }
+  fiber_version="$("$fiber_bin" --version 2>/dev/null)" \
+    || { err "$fiber_bin --version failed"; return 2; }
+  fiber_version="$(printf '%s' "$fiber_version" | head -n 1)"
+  export FIBER_BIN="$fiber_bin"
   local repo_name="${repo##*/}"
   [ -n "$repo_name" ] || { err "bad --repo '$repo'"; return 2; }
   [ -z "$clone" ] && clone="$HOME/work/$repo_name"
@@ -451,7 +469,7 @@ cmd_run() {
   run_side_metrics fiber "$fiber_wt" "$fiber_id" "$FIBER_MODEL" "$fiber_run_ok" "$fiber_note" \
     "$fiber_wrc" "$fiber_start" "$fiber_end" "$out" "$base" "$jobs_dir" "$tmp_root"
 
-  write_summary "$ticket" "$base" "$out"
+  write_summary "$ticket" "$base" "$out" "$fiber_bin" "$fiber_version"
 
   if [ -f "$out/pi/.harness" ] || [ -f "$out/fiber/.harness" ]; then
     rm -f "$out/pi/.harness" "$out/fiber/.harness"
@@ -599,9 +617,10 @@ load_side() {
   S_per="$(jq -r '.per_review_tokens_est // "unknown"' "$metrics")"
 }
 
-# write_summary TICKET BASE OUT: the two-column comparison table.
+# write_summary TICKET BASE OUT FIBER_BIN FIBER_VERSION: the two-column
+# comparison table, under a line naming the Fiber binary and its version.
 write_summary() {
-  local ticket="$1" base="$2" out="$3"
+  local ticket="$1" base="$2" out="$3" fiber_bin="$4" fiber_version="$5"
   local pi_outcome fiber_outcome pi_gate fiber_gate pi_wall fiber_wall
   local pi_in fiber_in pi_out fiber_out pi_cr fiber_cr
   local pi_main fiber_main pi_rev fiber_rev pi_rc fiber_rc
@@ -620,6 +639,7 @@ write_summary() {
   {
     printf '# Canary %s\n\n' "$ticket"
     printf 'Base `%s`.\n\n' "$base"
+    printf 'Fiber `%s`, `fiber --version`: `%s`.\n\n' "$fiber_bin" "$fiber_version"
     printf '| metric | pi | fiber |\n'
     printf '| --- | --- | --- |\n'
     printf '| outcome | %s | %s |\n' "$pi_outcome" "$fiber_outcome"

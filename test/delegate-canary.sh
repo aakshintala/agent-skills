@@ -172,6 +172,19 @@ PATH="$FBIN:$PATH"
 export PATH
 export DELEGATE_BIN="$FBIN/delegate"
 
+# --- Fiber stand-in: the binary every run uses (FIBER_BIN), which prints a
+# version for `--version`. Kept off PATH so the no-binary case can drop it.
+FIBER_STUB_DIR="$T/fiber-stub"
+FIBER_STUB="$FIBER_STUB_DIR/fiber"
+mkdir -p "$FIBER_STUB_DIR"
+cat >"$FIBER_STUB" <<'EOF'
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo "fiber 9.9.9-canary-test"; exit 0; fi
+exit 1
+EOF
+chmod +x "$FIBER_STUB"
+export FIBER_BIN="$FIBER_STUB"
+
 printf 'Do the thing.\n' >"$T/brief.md"
 
 # --- Task 2 fixture: main lines, reviewer lines, an extension line, a dupe generation_id ---
@@ -522,6 +535,42 @@ msg="$(bash "$CANARY" clean 998 --out "$T/out-none" 2>&1)" || fail "clean withou
 printf '%s' "$msg" | grep -q 'nothing to clean' || fail "clean without a clone file says nothing to clean"
 
 echo "setup rollback cases passed"
+
+# --- Fiber binary preflight ---
+# (a) No FIBER_BIN and no fiber on PATH: run exits 2 naming FIBER_BIN, before
+# any worktree, job or output dir exists for the ticket.
+NOFIBER_PATH=""
+IFS=: read -ra path_dirs <<<"$PATH"
+for d in "${path_dirs[@]}"; do
+  [ -n "$d" ] && [ -x "$d/fiber" ] && continue
+  NOFIBER_PATH="${NOFIBER_PATH:+$NOFIBER_PATH:}$d"
+done
+OUT8="$T/out8"
+env -u FIBER_BIN PATH="$NOFIBER_PATH" FAKE_EVENTS="$T/ev2.jsonl" \
+  bash "$CANARY" run 230 "$T/brief.md" --gate 'test -f work-marker' \
+  --out "$OUT8" >/dev/null 2>"$T/nofiber.err"
+rc=$?
+[ "$rc" -eq 2 ] || fail "run with no Fiber binary exits 2 (got $rc)"
+grep -q 'FIBER_BIN' "$T/nofiber.err" || fail "no-binary message names FIBER_BIN"
+[ ! -e "$HOME/work/fiber-canary-230-pi" ] || fail "no-binary run creates no pi worktree"
+[ ! -e "$HOME/work/fiber-canary-230-fiber" ] || fail "no-binary run creates no fiber worktree"
+git -C "$HOME/work/fiber" show-ref --verify --quiet refs/heads/canary/230-pi && fail "no-binary run creates no pi branch"
+git -C "$HOME/work/fiber" show-ref --verify --quiet refs/heads/canary/230-fiber && fail "no-binary run creates no fiber branch"
+[ ! -e "$OUT8" ] || fail "no-binary run creates no output dir"
+
+# (b) The summary records the binary's path and its --version output. Case
+# 223 used FIBER_BIN; case 231 has no FIBER_BIN and finds the stand-in on PATH.
+grep -qF "$FIBER_STUB" "$OUT/summary.md" || fail "summary records the Fiber binary path"
+grep -qF 'fiber 9.9.9-canary-test' "$OUT/summary.md" || fail "summary records fiber --version"
+OUT9="$T/out9"
+env -u FIBER_BIN PATH="$FIBER_STUB_DIR:$PATH" FAKE_EVENTS="$T/ev2.jsonl" \
+  bash "$CANARY" run 231 "$T/brief.md" --gate 'test -f work-marker' --out "$OUT9" \
+  || fail "run finds fiber on PATH"
+grep -qF "$FIBER_STUB" "$OUT9/summary.md" || fail "PATH-found binary path is recorded"
+grep -qF 'fiber 9.9.9-canary-test' "$OUT9/summary.md" || fail "PATH-found binary version is recorded"
+bash "$CANARY" clean 231 --out "$OUT9" || fail "clean 231 exits 0"
+
+echo "fiber preflight cases passed"
 
 # final no-push guarantee across every run above
 grep -q '^git push' "$FLOG/git.log" && fail "no git push is ever run"
