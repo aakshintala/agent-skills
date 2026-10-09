@@ -406,16 +406,17 @@ grep -q "the PR merged with current origin/main fails the gate" <<<"$ERR" || fai
 setup; echo "$NOSTRICT" >"$ST/rules"; advance_main other.txt o
 O0="$(origin_head)"
 bash "$SHIP" 7 --repo O/N --reviewed "$HEAD0" --worktree "$WT" \
-  --gate 'if [ -e other.txt ]; then /bin/sleep 30; fi' >"$S/kill-out.txt" 2>"$S/kill-err.txt" &
+  --gate 'if [ -e other.txt ]; then /bin/sleep 30 & echo $! >"$ST/gate-sleep.pid"; wait $!; fi' >"$S/kill-out.txt" 2>"$S/kill-err.txt" &
 kill_pid=$!
 for i in $(seq 1 100); do
-  [ "$(git -C "$WT" rev-parse HEAD)" != "$HEAD0" ] && break
+  [ "$(git -C "$WT" rev-parse HEAD)" != "$HEAD0" ] && [ -e "$ST/gate-sleep.pid" ] && break
   /bin/sleep 0.1
 done
-[ "$(git -C "$WT" rev-parse HEAD)" != "$HEAD0" ] || fail "SIGTERM test: merged-tree gate started"
+[ "$(git -C "$WT" rev-parse HEAD)" != "$HEAD0" ] && [ -e "$ST/gate-sleep.pid" ] || fail "SIGTERM test: merged-tree gate started"
+gate_sleep="$(cat "$ST/gate-sleep.pid")"
+[ -n "$gate_sleep" ] || fail "SIGTERM test: gate sleep pid recorded"
 kill -TERM "$kill_pid"
-/bin/sleep 0.2
-pkill -f "/bin/sleep 30" 2>/dev/null || true
+kill -TERM "$gate_sleep" 2>/dev/null || true
 wait "$kill_pid"; kill_code=$?
 [ "$kill_code" = 143 ] || fail "SIGTERM test: exit 143 (got $kill_code)"
 [ "$(origin_head)" = "$O0" ] || fail "SIGTERM test: origin branch unchanged"
@@ -424,7 +425,7 @@ wait "$kill_pid"; kill_code=$?
 [ ! -e "$(git -C "$WT" rev-parse --git-path MERGE_HEAD)" ] || fail "SIGTERM test: no merge in progress"
 ! grep -q '^gh pr merge' "$ST/gh.log" || fail "SIGTERM test: no merge call"
 [ -d "$WT" ] || fail "worktree kept after SIGTERM"
-pkill -f "/bin/sleep 30" 2>/dev/null || true
+kill "$gate_sleep" 2>/dev/null || true
 
 # a conflicting main move: exit 3, worktree clean on the pinned head
 setup; echo "$NOSTRICT" >"$ST/rules"

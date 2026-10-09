@@ -242,18 +242,18 @@ if [ "$strict" = 0 ] && [ -n "$gate" ]; then
     trap 'trap - EXIT INT TERM; guard_restore; exit 143' TERM
     trap 'trap - EXIT INT TERM; guard_restore; exit 130' INT
     if ! git -C "$worktree" -c user.name=ship-pr -c user.email=ship-pr@localhost merge --no-ff --no-edit origin/main >&2; then
-      trap - EXIT INT TERM
       guard_restore
+      trap - EXIT INT TERM
       die 3 "PR conflicts with current origin/main; rebase, then rerun"
     fi
     if ! gate_out="$(cd "$worktree" && bash -c "$gate" </dev/null 2>&1)"; then
       printf '%s\n' "$gate_out" | tail -n 20
-      trap - EXIT INT TERM
       guard_restore
+      trap - EXIT INT TERM
       die 1 "the PR merged with current origin/main fails the gate"
     fi
-    trap - EXIT INT TERM
     guard_restore
+    trap - EXIT INT TERM
     say "gate passes on the PR merged with current origin/main"
   fi
 fi
