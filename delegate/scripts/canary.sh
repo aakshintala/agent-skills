@@ -65,12 +65,15 @@ now_ms() {
 }
 
 # resolve_fiber_bin: the Fiber binary delegate would run, in delegate's order
-# (FIBER_BIN, then PATH). Prints its path; returns 1 when there is none.
+# (FIBER_BIN, then PATH, then $HOME/.local/bin/fiber). Prints its path; returns
+# 1 when there is none. The last candidate must be executable, so a missing
+# file is refused here rather than failing later.
 resolve_fiber_bin() {
   local found
   if [ -n "${FIBER_BIN:-}" ]; then printf '%s' "$FIBER_BIN"; return 0; fi
-  found="$(command -v fiber 2>/dev/null)" && [ -n "$found" ] || return 1
-  printf '%s' "$found"
+  found="$(command -v fiber 2>/dev/null)" && [ -n "$found" ] && { printf '%s' "$found"; return 0; }
+  if [ -x "$HOME/.local/bin/fiber" ]; then printf '%s' "$HOME/.local/bin/fiber"; return 0; fi
+  return 1
 }
 
 # match_table TABLE TEXT TOOL: true when a row for TOOL (or *) matches TEXT.

@@ -570,6 +570,19 @@ grep -qF "$FIBER_STUB" "$OUT9/summary.md" || fail "PATH-found binary path is rec
 grep -qF 'fiber 9.9.9-canary-test' "$OUT9/summary.md" || fail "PATH-found binary version is recorded"
 bash "$CANARY" clean 231 --out "$OUT9" || fail "clean 231 exits 0"
 
+# (c) No FIBER_BIN and no fiber on PATH, but $HOME/.local/bin/fiber exists:
+# delegate's last resort, so the run uses it and the summary records it.
+mkdir -p "$HOME/.local/bin"
+cp "$FIBER_STUB" "$HOME/.local/bin/fiber"
+OUT10="$T/out10"
+env -u FIBER_BIN PATH="$NOFIBER_PATH" FAKE_EVENTS="$T/ev2.jsonl" \
+  bash "$CANARY" run 232 "$T/brief.md" --gate 'test -f work-marker' --out "$OUT10" \
+  || fail "run finds fiber in HOME/.local/bin"
+grep -qF "$HOME/.local/bin/fiber" "$OUT10/summary.md" || fail "HOME/.local/bin binary path is recorded"
+grep -qF 'fiber 9.9.9-canary-test' "$OUT10/summary.md" || fail "HOME/.local/bin binary version is recorded"
+bash "$CANARY" clean 232 --out "$OUT10" || fail "clean 232 exits 0"
+rm -f "$HOME/.local/bin/fiber"
+
 echo "fiber preflight cases passed"
 
 # final no-push guarantee across every run above
