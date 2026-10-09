@@ -454,15 +454,23 @@ setup_fiber_home() {
   chmod 700 "$fh"
   [ -f "$src/config.json" ] && { cp "$src/config.json" "$fh/"; chmod 600 "$fh/config.json"; }
   [ -d "$src/credentials" ] && { cp -r "$src/credentials" "$fh/"; chmod -R go-rwx "$fh/credentials"; }
-  [ -d "$src/rules" ] && { cp -r "$src/rules" "$fh/"; }
+  [ -d "$src/extensions" ] && { cp -R "$src/extensions" "$fh/"; }
+  [ -e "$src/rules" ] && { cp -R "$src/rules" "$fh/"; }
   return 0
+}
+
+# run_tmp RUNDIR: the replay's TMPDIR. Short and outside DIR on purpose: Fiber
+# and its tests put unix sockets under TMPDIR, and a socket path must fit in
+# 103 bytes, which a TMPDIR under DIR/runs/<uuid>/ does not leave room for.
+run_tmp() {
+  printf '/tmp/frp-%s' "$(basename "$1" | cut -c1-8)"
 }
 
 # write_seal RUNDIR: seal.sb profile, gh shim, gitconfig, tmp dir.
 write_seal() {
   local rundir="$1" home="${HOME:-/tmp}" realtmp="${RUN_REALTMP:-/tmp}"
   {
-    printf '(allow default)\n'
+    printf '(version 1)\n(allow default)\n'
     printf '(deny file-write* (subpath %s))\n' "$(sb_quote "$home")"
     printf '(allow file-write* (subpath %s) (subpath %s) (subpath %s))\n' \
       "$(sb_quote "$RUN_OUT")" "$(sb_quote "$home/.cargo/registry")" "$(sb_quote "$home/.cargo/git")"
@@ -470,7 +478,9 @@ write_seal() {
     printf '(deny file-read* (subpath %s) (subpath %s) (literal %s))\n' \
       "$(sb_quote "$home/.ssh")" "$(sb_quote "$home/.config/gh")" "$(sb_quote "$home/.git-credentials")"
   } >"$rundir/seal.sb"
-  mkdir -p "$rundir/shim" "$rundir/tmp"
+  mkdir -p "$rundir/shim"
+  rm -rf "$(run_tmp "$rundir")"
+  mkdir -p "$(run_tmp "$rundir")"
   cat >"$rundir/shim/gh" <<'EOF'
 #!/bin/sh
 echo "gh disabled in replay" >&2
@@ -493,7 +503,7 @@ run_in_seal() {
     "GIT_CONFIG_GLOBAL=$rundir/gitconfig" \
     GIT_TERMINAL_PROMPT=0 \
     GIT_SSH_COMMAND=false \
-    "TMPDIR=$rundir/tmp" \
+    "TMPDIR=$(run_tmp "$rundir")" \
     "FIBER_HOME=$RUN_OUT/fiber-home" \
     "FIBER_BIN=$FIBER_BIN" \
     "CARGO_TARGET_DIR=$RUN_OUT/target/$suffix" \
@@ -653,9 +663,9 @@ launch_job() {
   fi
   run_in_seal "$rundir" "$DELEGATE_BIN" watch "$newid" >>"$rundir/delegate.err" 2>&1 \
     || { err "$id: delegate watch failed"; return 1; }
-  [ -f "$rundir/tmp/delegate-jobs/$newid.json" ] \
+  [ -f "$(run_tmp "$rundir")/delegate-jobs/$newid.json" ] \
     || { err "$id: replay record missing"; return 1; }
-  cp "$rundir/tmp/delegate-jobs/$newid.json" "$rundir/record.json"
+  cp "$(run_tmp "$rundir")/delegate-jobs/$newid.json" "$rundir/record.json"
   collect_notes "$id" "$rundir" "$rundir/scratch"
   return 0
 }
