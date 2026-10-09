@@ -12,7 +12,12 @@ fail() {
   exit 1
 }
 
-T="$(mktemp -d "${TMPDIR:-/tmp}/test-delegate-canary.XXXXXX")"
+# Keep the test root outside /tmp and /private/tmp: canary.sh treats those
+# as blanket allowed roots, so a HOME under /tmp (mktemp's default when the
+# outer TMPDIR is unset, as on CI) would make the task-3 `$HOME/x` write
+# contained instead of needs_out. $HOME is never under /tmp in practice.
+ORIG_HOME="${HOME:-/tmp}"
+T="$(mktemp -d "$ORIG_HOME/test-delegate-canary.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 export HOME="$T/home"
 mkdir -p "$HOME"

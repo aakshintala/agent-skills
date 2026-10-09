@@ -78,16 +78,38 @@ match_table() {
   return 1
 }
 
+# expand_bare TEXT NAME VALUE: replace $NAME only when the next character
+# is not [A-Za-z0-9_] (end of string counts as a boundary). A longer
+# name such as $TMPDIR_BACKUP is left for the unknown rules.
+expand_bare() {
+  local text="$1" name="$2" value="$3"
+  local needle="\$$name" out="" rest="$text" pre="" tail="" next=""
+  while :; do
+    case "$rest" in
+      *"$needle"*)
+        pre="${rest%%"$needle"*}"
+        tail="${rest#*"$needle"}"
+        next="${tail:0:1}"
+        case "$next" in
+          ""|[!A-Za-z0-9_]) out="$out$pre$value"; rest="$tail" ;;
+          *) out="$out$pre$needle"; rest="$tail" ;;
+        esac ;;
+      *) out="$out$rest"; break ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
 # normalize_text TEXT WORKTREE TMPDIR: expand ~, $HOME, $TMPDIR, $PWD.
 normalize_text() {
   local t="$1" wt="$2" tmp="$3" home="${HOME:-/tmp}" esc
   tmp="${tmp%/}"; [ -n "$tmp" ] || tmp="/tmp"
   t="${t//\$\{HOME\}/$home}"
-  t="${t//\$HOME/$home}"
+  t="$(expand_bare "$t" "HOME" "$home")"
   t="${t//\$\{TMPDIR\}/$tmp}"
-  t="${t//\$TMPDIR/$tmp}"
+  t="$(expand_bare "$t" "TMPDIR" "$tmp")"
   t="${t//\$\{PWD\}/$wt}"
-  t="${t//\$PWD/$wt}"
+  t="$(expand_bare "$t" "PWD" "$wt")"
   t="${t//\~\//$home/}"
   esc="$(printf '%s' "$home" | sed -e 's/[#\\/&]/\\&/g')"
   t="$(printf '%s' "$t" | sed -E "s#(^|[[:space:]\"'=])~([[:space:]\"']|\$)#\1${esc}\2#g")"
@@ -317,10 +339,15 @@ cmd_run() {
   done
   mkdir -p "$parent"
   git -C "$clone" worktree add -b "$pi_branch" "$pi_wt" "$base" >/dev/null 2>&1 \
-    || { err "worktree add failed for $pi_wt"; return 1; }
-  git -C "$clone" worktree add -b "$fiber_branch" "$fiber_wt" "$base" >/dev/null 2>&1 \
-    || { err "worktree add failed for $fiber_wt"; return 1; }
+    || { err "worktree add failed for $pi_wt"; return 2; }
   printf '%s' "$pi_wt" >"$out/pi/worktree"
+  if ! git -C "$clone" worktree add -b "$fiber_branch" "$fiber_wt" "$base" >/dev/null 2>&1; then
+    err "worktree add failed for $fiber_wt"
+    git -C "$clone" worktree remove --force "$pi_wt" >/dev/null 2>&1 || true
+    git -C "$clone" branch -D "$pi_branch" >/dev/null 2>&1 || true
+    rm -f "$out/pi/worktree"
+    return 2
+  fi
   printf '%s' "$fiber_wt" >"$out/fiber/worktree"
   write_prompt "$brief" "$pi_wt" "$pi_branch" >"$out/pi/prompt.md"
   write_prompt "$brief" "$fiber_wt" "$fiber_branch" >"$out/fiber/prompt.md"
@@ -352,19 +379,26 @@ cmd_run() {
   elif [ -z "$fiber_id" ]; then fiber_run_ok=0; fiber_note="delegate run printed no job id"; fi
 
   local pi_wp="" fiber_wp=""
+  local pi_wrc_file="$out/pi/.watch_rc" fiber_wrc_file="$out/fiber/.watch_rc"
+  local pi_end_file="$out/pi/.watch_end" fiber_end_file="$out/fiber/.watch_end"
   if [ "$pi_run_ok" -eq 1 ]; then
-    "$delegate_bin" watch "$pi_id" >>"$out/pi/delegate.log" 2>&1 &
+    ( "$delegate_bin" watch "$pi_id" >>"$out/pi/delegate.log" 2>&1
+      echo "$?" >"$pi_wrc_file"; now_ms >"$pi_end_file" ) &
     pi_wp=$!
   fi
   if [ "$fiber_run_ok" -eq 1 ]; then
-    "$delegate_bin" watch "$fiber_id" >>"$out/fiber/delegate.log" 2>&1 &
+    ( "$delegate_bin" watch "$fiber_id" >>"$out/fiber/delegate.log" 2>&1
+      echo "$?" >"$fiber_wrc_file"; now_ms >"$fiber_end_file" ) &
     fiber_wp=$!
   fi
   local pi_end fiber_end pi_wrc=0 fiber_wrc=0
-  if [ -n "$pi_wp" ]; then wait "$pi_wp"; pi_wrc=$?; fi
-  pi_end="$(now_ms)"
-  if [ -n "$fiber_wp" ]; then wait "$fiber_wp"; fiber_wrc=$?; fi
-  fiber_end="$(now_ms)"
+  if [ -n "$pi_wp" ]; then wait "$pi_wp"; fi
+  if [ -f "$pi_wrc_file" ]; then pi_wrc="$(cat "$pi_wrc_file")"; fi
+  if [ -f "$pi_end_file" ]; then pi_end="$(cat "$pi_end_file")"; else pi_end="$(now_ms)"; fi
+  if [ -n "$fiber_wp" ]; then wait "$fiber_wp"; fi
+  if [ -f "$fiber_wrc_file" ]; then fiber_wrc="$(cat "$fiber_wrc_file")"; fi
+  if [ -f "$fiber_end_file" ]; then fiber_end="$(cat "$fiber_end_file")"; else fiber_end="$(now_ms)"; fi
+  rm -f "$pi_wrc_file" "$pi_end_file" "$fiber_wrc_file" "$fiber_end_file"
 
   # Gates run in each worktree once both jobs end.
   local pi_gate_exit fiber_gate_exit
@@ -425,7 +459,7 @@ run_side_metrics() {
   fi
   local wall_ms=$((end_ms - start_ms))
   local m_in="" m_out="" m_cr="" m_total="" m_main="" m_reviewer=""
-  local rc="" rt="" per=""
+  local rc="" rt="" per="" split=""
   if [ "$side" = "pi" ]; then
     if [ -n "$rec" ]; then
       m_total="$(pi_metrics "$rec" "" | sed -n 3p)"
@@ -442,12 +476,11 @@ run_side_metrics() {
       m_in="$(fiber_metrics "$rec" | sed -n 4p)"
       m_out="$(fiber_metrics "$rec" | sed -n 5p)"
       m_cr="$(fiber_metrics "$rec" | sed -n 6p)"
-      fiber_side_split "$rec" "$wt" "$tmp_root" "$notes" "$den_tsv" "$decisions"
-      m_main="$(cat "$dir/.split_main")"
-      m_reviewer="$(cat "$dir/.split_reviewer")"
-      rt="$(cat "$dir/.split_tokens")"
-      rc="$(cat "$dir/.split_rc")"
-      rm -f "$dir/.split_main" "$dir/.split_reviewer" "$dir/.split_tokens" "$dir/.split_rc"
+      split="$(fiber_side_split "$rec" "$wt" "$tmp_root" "$notes" "$den_tsv" "$decisions")"
+      m_main="$(printf '%s' "$split" | jq -r '.main_cost')"
+      m_reviewer="$(printf '%s' "$split" | jq -r '.reviewer_cost')"
+      rt="$(printf '%s' "$split" | jq -r '.reviewer_tokens')"
+      rc="$(printf '%s' "$split" | jq -r '.reviewed_calls')"
     else
       printf 'fiber events unavailable without a job record\n' >>"$notes"
     fi
@@ -483,12 +516,12 @@ run_side_metrics() {
   rm -f "$notes" "$den_tsv" "$decisions"
 }
 
-# fiber_side_split RECORD WORKTREE TMPROOT NOTES DEN_TSV DECISIONS: reviewer
-# cost split, denials and sandbox classes for the fiber side.
+# fiber_side_split RECORD WORKTREE TMPROOT NOTES DEN_TSV DECISIONS: print the
+# reviewer_split JSON for the fiber side; denials and sandbox classes go to
+# DEN_TSV and DECISIONS, notes appended to NOTES.
 fiber_side_split() {
   local rec="$1" wt="$2" tmp_root="$3" notes="$4" den_tsv="$5" decisions="$6"
-  local dir sid ev split
-  dir="$(dirname "$notes")"
+  local sid ev split
   sid="$(jq -r '.resume.sessionId // ""' "$rec" 2>/dev/null)"
   ev=""
   if [ -n "$sid" ] && [ "$sid" != "null" ]; then
@@ -496,17 +529,11 @@ fiber_side_split() {
   fi
   if [ -z "$ev" ] || ! jq empty "$ev" >/dev/null 2>&1; then
     printf 'fiber events missing or unparsable; cost split unknown\n' >>"$notes"
-    printf 'null' >"$dir/.split_main"
-    printf 'null' >"$dir/.split_reviewer"
-    printf 'null' >"$dir/.split_tokens"
-    printf 'null' >"$dir/.split_rc"
+    printf '{"main_cost":null,"reviewer_cost":null,"reviewer_tokens":null,"reviewed_calls":null}'
     return 0
   fi
   split="$(reviewer_split "$ev")"
-  printf '%s' "$(printf '%s' "$split" | jq -r '.main_cost')" >"$dir/.split_main"
-  printf '%s' "$(printf '%s' "$split" | jq -r '.reviewer_cost')" >"$dir/.split_reviewer"
-  printf '%s' "$(printf '%s' "$split" | jq -r '.reviewer_tokens')" >"$dir/.split_tokens"
-  printf '%s' "$(printf '%s' "$split" | jq -r '.reviewed_calls')" >"$dir/.split_rc"
+  printf '%s' "$split"
   denials_for "$rec" >"$den_tsv" 2>/dev/null || true
   if grep -qx 'EVENTS_MISSING' "$den_tsv" 2>/dev/null; then
     : >"$den_tsv"
