@@ -400,7 +400,7 @@ replace_cwd() {
   local file="$1" old="$2" new="$3" tmp
   [ -n "$old" ] || return 0
   tmp="$file.rew$$"
-  jq -Rrs --arg o "$old" --arg n "$new" '
+  jq -Rjs --arg o "$old" --arg n "$new" '
     def bound: . == "" or startswith("/")
       or test("^[\\s\"'"'"'`)\\]}>,;:]") or test("^\\.(\\s|$)");
     split($o) as $p

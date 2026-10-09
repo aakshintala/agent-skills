@@ -531,6 +531,14 @@ grep -qF "$OUT7/runs/job-sib/briefs/1-other.md" "$OUT7/runs/job-sib/prompt.md" |
 grep -q "scratch-2" "$OUT7/runs/job-sib/prompt.md" && fail "sibling prefix corrupted"
 grep -qF "$T/wt/job-2/other.md" "$OUT7/runs/job-sib/prompt.md" && fail "sibling ref original gone from prompt"
 
+# replace_cwd rewrites only complete path prefixes: any sibling continuation
+# (ASCII or not) survives; explicit delimiters and a sentence-ending "." bound.
+sed -n '/^replace_cwd() {/,/^}/p' "$REPLAY" >"$T/replace_cwd.sh"
+printf 'a /old/job/x /old/job-2/y /old/job+2/z /old/job\303\251/w `/old/job` (/old/job) /old/job. /old/job.bak "/old/job" /old/job\n/old/job' >"$T/rc.txt"
+bash -c '. "$1"; replace_cwd "$2" /old/job /S' _ "$T/replace_cwd.sh" "$T/rc.txt" || fail "replace_cwd runs"
+printf 'a /S/x /old/job-2/y /old/job+2/z /old/job\303\251/w `/S` (/S) /S. /old/job.bak "/S" /S\n/S' >"$T/rc.want"
+cmp -s "$T/rc.txt" "$T/rc.want" || fail "replace_cwd rewrites only complete prefixes (got: $(cat "$T/rc.txt"))"
+
 echo "run cases passed"
 
 # --- Task 4: report and all ---
