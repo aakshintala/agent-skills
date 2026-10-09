@@ -25,6 +25,11 @@ BOUND = {"Selection": 5, "Linux x86_64 checks": 5, "Tests macos": 15,
          "Release build and size (Linux x86_64)": 15,
          "Bug fix fails at the red commit": 10, "Benchmark comment": 5,
          "CI verdict": 5, "Report a failed backstop": 5}
+# a::b::C -> C in compile keys, so rustc's full and short spellings match
+# bump when compile-key format changes; a state file without this one reclassifies its compile jobs
+KEY_VERSION = 2
+COMPILE_CLASSES = ("compile", "mutants-baseline-compile")
+TYPE_PATH = re.compile(r"\b(?:[A-Za-z_]\w*::)+([A-Za-z_]\w*)")
 ANSI = re.compile(r"(\x1b|\^\[)\[[0-9;]*[A-Za-z]")
 TS = re.compile(r"^\S+Z ")
 NX = re.compile(r"^\s*(FAIL|TIMEOUT) \[\s*[\d.]+s\]\s+"
@@ -148,7 +153,7 @@ def classify(name, steps, text):
             return ("mutant-timeout", det, [])
         if code == "4":
             if crates and comp:
-                first = re.sub(r"\s*-->\s*.*$", "", comp[0].strip())
+                first = TYPE_PATH.sub(r"\1", re.sub(r"\s*-->\s*.*$", "", comp[0].strip()))
                 key = "compile %s: %s" % (",".join(sorted(set(crates))), first[:120])
                 return ("mutants-baseline-compile", "%s: %s" % (
                     ",".join(sorted(set(crates))), comp[0].strip()[:120]), [key])
@@ -169,7 +174,7 @@ def classify(name, steps, text):
     if step == "Set up job" or not lines:
         return ("infra", "runner setup failed", [])
     if crates and comp:
-        first = re.sub(r"\s*-->\s*.*$", "", comp[0].strip())
+        first = TYPE_PATH.sub(r"\1", re.sub(r"\s*-->\s*.*$", "", comp[0].strip()))
         key = "compile %s: %s" % (",".join(sorted(set(crates))), first[:140])
         return ("compile", "%s: %s" % (",".join(sorted(set(crates))), comp[0].strip()[:140]), [key])
     if missed:
@@ -334,6 +339,11 @@ def main(argv):
     cutoff = now - timedelta(minutes=since_min)
 
     st = load_state(state_path)
+    if st.get("key_version") != KEY_VERSION:
+        # compile keys cached before the path-collapse change are stale: reclassify once
+        jobs_old = st.get("jobs") if isinstance(st.get("jobs"), dict) else {}
+        st["jobs"] = {k: v for k, v in jobs_old.items()
+                      if not (isinstance(v, dict) and v.get("class") in COMPILE_CLASSES)}
     jobs_st = st.get("jobs") if isinstance(st.get("jobs"), dict) else {}
     issues_st = st.get("issues") if isinstance(st.get("issues"), dict) else {}
     branches_st = st.get("branches") if isinstance(st.get("branches"), dict) else {}
@@ -561,7 +571,7 @@ def main(argv):
                         and parse_ts(v["completed_at"]) >= cutoff)]:
         jobs_st.pop(jid, None)
     st.update({"jobs": jobs_st, "issues": issues_st, "branches": branches_st,
-               "compares": compares})
+               "compares": compares, "key_version": KEY_VERSION})
     save_state(state_path, st)
 
     if not ok:

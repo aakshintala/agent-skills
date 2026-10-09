@@ -160,7 +160,25 @@ run_friction --json
 [ "$(jget "d['repeats'][0]['issue_state']")" = "open" ] || fail "issue state: [$OUT]"
 [ "$(jget "d['recurred_after_close']")" = "[]" ] || fail "open issue never recurs: [$OUT]"
 
-# --- one lane twice: not a repeat at 2, a repeat at 1 ---
+# --- compile keys: one error in two type-path spellings is one repeat ---
+setup compilepath
+run_friction --json
+[ "$CODE" = "1" ] || fail "compile spellings exit 1 (got $CODE): [$OUT] [$(cat "$T/stderr.txt")]"
+[ "$(jget "len(d['repeats'])")" = "1" ] || fail "compile spellings: one repeat: [$OUT]"
+[ "$(jget "d['repeats'][0]['lanes']")" = "['#1401', 'main']" ] || fail "compile spellings lanes: [$OUT]"
+[ "$(jget "d['repeats'][0]['test']")" = "compile fiber-core: error[E0277]: a value of type Vec<Vec<(String, Option<Spot>, Ink)>> cannot be built from an iterator" ] \
+  || fail "compile spellings key: [$OUT]"
+
+# --- upgrade: a compile job cached under the old qualified key is reclassified ---
+setup compilepath
+mkdir -p "$HOME/.cache/switchyard"
+python3 -c "import json; json.dump({'jobs': {'901': {'class': 'compile', 'detail': 'fiber-core: old', 'tests': ['compile fiber-core: error[E0277]: a value of type Vec<Vec<(std::string::String, Option<swapped::Spot>, Ink)>> cannot be built from an iterator'], 'lane': '#1401', 'os': 'linux-x64', 'completed_at': '2026-10-09T17:40:00Z', 'head_sha': 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'}}, 'issues': {}, 'branches': {}}, open('$HOME/.cache/switchyard/ci-friction.json', 'w'))"
+run_friction --json
+[ "$CODE" = "1" ] || fail "upgrade exits 1 (got $CODE): [$OUT] [$(cat "$T/stderr.txt")]"
+[ "$(jget "len(d['repeats'])")" = "1" ] || fail "upgrade: one repeat: [$OUT]"
+[ "$(jget "d['repeats'][0]['lanes']")" = "['#1401', 'main']" ] || fail "upgrade lanes: [$OUT]"
+
+# --- one lane twice: not a repeat at 2, a repeat at 1 ---# --- one lane twice: not a repeat at 2, a repeat at 1 ---
 setup onelane
 run_friction
 [ "$CODE" = "0" ] || fail "one lane exits 0 (got $CODE): [$OUT]"
