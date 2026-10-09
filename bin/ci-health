@@ -1,0 +1,616 @@
+#!/usr/bin/env python3
+# ci-health --repo owner/name [--window 75m] [--state ~/.cache/switchyard/ci-health.json]
+#             [--queue-p90 10] [--queue-max 15] [--sat-min 30] [--sat-jobs 38]
+#             [--backstop-age 2h] [--cache-max 9.5] [--json]
+#
+# Hourly, read-only check of fiber CI health. Reads `gh api` plus a state file
+# holding the last check time, a job cache keyed by run id and `updated_at`,
+# and the last core-green main SHA. Writes only its state file.
+#
+# Breaches: queue-p90 (pooled p90 of non-mutant PR jobs over --queue-p90 min),
+# queue-max (any Selection or Tests job over --queue-max min), saturation
+# (--sat-min minutes with >= --sat-jobs jobs running), backstop (newest main
+# commit older than --backstop-age has no core-green run at it or later),
+# backstop-broken (2 consecutive main runs share a compile/test cause),
+# design (any timeout, Bench comment failure, or exit 127 in Release),
+# cache (usage at or above --cache-max decimal GB).
+#
+# Durations take `<n>m` or `<n>h` (bare number = minutes). Exit codes: 0 no
+# breach, 1 breach, 2 usage/auth/listing error, 3 partial data (printed).
+# Without --json prints a one-line summary. CI_HEALTH_NOW (ISO UTC) pins "now";
+# it exists for tests only.
+import json, math, os, re, subprocess, sys
+from datetime import datetime, timedelta, timezone
+
+BOUND = {"Selection": 5, "Linux x86_64 checks": 5, "Tests macos": 15,
+         "Tests linux-x64": 10, "Tests linux-arm": 10, "Mutants": 20,
+         "Release build and size (Linux x86_64)": 15,
+         "Bug fix fails at the red commit": 10, "Benchmark comment": 5,
+         "CI verdict": 5, "Report a failed backstop": 5}
+CORE = ("Linux x86_64 checks", "Tests linux-x64", "Tests linux-arm",
+        "Tests macos", "Release build and size (Linux x86_64)")
+ANSI = re.compile(r"(\x1b|\^\[)\[[0-9;]*[A-Za-z]")
+TS = re.compile(r"^\S+Z ")
+ERR = re.compile(r"\s*error(\[E\d+\])?: ")
+NX = re.compile(r"^\s*(FAIL|TIMEOUT) \[\s*[\d.]+s\]\s+(?:\(\s*\d+/\d+\)\s+)?(\S+)\s+(\S+)", re.M)
+USAGE = ("usage: ci-health --repo owner/name [--window 75m] [--state PATH] "
+         "[--queue-p90 10] [--queue-max 15] [--sat-min 30] [--sat-jobs 38] "
+         "[--backstop-age 2h] [--cache-max 9.5] [--json]")
+
+
+class Fatal(Exception):
+    pass  # exit 2: usage, auth or runs/commits listing failure
+
+
+def fail(msg):
+    raise Fatal(msg)
+
+
+def parse_ts(s):
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def iso(dt):
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def dur(s, what):
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)(m|h)?", s or "")
+    if not m:
+        fail("bad --%s %r (want <n>m or <n>h)" % (what, s))
+    v = float(m.group(1))
+    return v * 60 if m.group(2) == "h" else v
+
+
+def num(s, what, integer=False, positive=False):
+    try:
+        v = int(s) if integer else float(s)
+    except (ValueError, TypeError):
+        fail("bad --%s %r" % (what, s))
+    if integer and v < 1:
+        fail("bad --%s %r (want >= 1)" % (what, s))
+    if not integer and positive and not v > 0:
+        fail("bad --%s %r (want > 0)" % (what, s))
+    if not integer and not positive and not v >= 0:
+        fail("bad --%s %r" % (what, s))
+    return v
+
+
+def pct(xs, p):
+    xs = sorted(xs)
+    if not xs:
+        return float("nan")
+    k = (len(xs) - 1) * p
+    f, c = math.floor(k), math.ceil(k)
+    return xs[f] + (xs[c] - xs[f]) * (k - f)
+
+
+def r1(x):
+    return round(x + 1e-9, 1)
+
+
+def group(name):
+    name = name or ""
+    if name.startswith("Mutants"):
+        return "Mutants"
+    if name.startswith("Tests ("):
+        inner = name[7:-1] if name.endswith(")") else name[7:]
+        return {"ubuntu-24.04": "Tests linux-x64",
+                "ubuntu-24.04-arm": "Tests linux-arm",
+                "macos-26": "Tests macos"}.get(inner, name)
+    if name.startswith("CI"):
+        return "CI verdict"
+    return name
+
+
+def osof(labels):
+    s = " ".join(labels or [])
+    if "macos" in s:
+        return "macOS"
+    if "arm" in s:
+        return "linux-arm"
+    return "linux-x64"
+
+
+def is_timeout(job):
+    g = group(job.get("name"))
+    if g not in BOUND or not job.get("runner_name"):
+        return False
+    if job.get("conclusion") != "cancelled":
+        return False
+    s, e = parse_ts(job.get("started_at")), parse_ts(job.get("completed_at"))
+    if not s or not e:
+        return False
+    return (e - s).total_seconds() >= BOUND[g] * 60 - 30
+
+
+def clean_lines(text):
+    return [TS.sub("", ANSI.sub("", l)) for l in text.splitlines()]
+
+
+def run_causes(log_text):
+    """Cause strings for one failed core job's log."""
+    lines = clean_lines(log_text)
+    text = "\n".join(lines)
+    crates = sorted(set(re.findall(r"could not compile `([^`]+)`", text)))
+    comps = [l for l in lines if ERR.match(l) and "aborting" not in l
+             and "could not compile" not in l and "warning" not in l]
+    if crates and comps:
+        first = re.sub(r"\s*-->\s*.*$", "", comps[0].strip())
+        return ["compile %s: %s" % (",".join(crates), first)]
+    nx = NX.findall(text)
+    if nx:
+        return sorted({"test %s %s" % (b, c) for _, b, c in nx})
+    return []
+
+
+class GH:
+    def __init__(self):
+        self.partial = False
+
+    def api(self, path, escape=False):
+        cmd = ["gh", "api"]
+        if escape:
+            cmd.append("--allow-escape-sequences")
+        cmd.append(path)
+        p = subprocess.run(cmd, capture_output=True, text=True)
+        if p.returncode != 0:
+            err = (p.stderr or "").strip().splitlines()
+            raise subprocess.CalledProcessError(p.returncode, cmd, p.stdout,
+                                                "\n".join(err[-3:]))
+        return p.stdout
+
+    def paged(self, base, key):
+        """Fetch per_page=100 pages until short; cap 10 (cap hit = partial)."""
+        items = []
+        for page in range(1, 11):
+            sep = "&" if "?" in base else "?"
+            try:
+                out = self.api("%s%sper_page=100&page=%d" % (base, sep, page))
+            except subprocess.CalledProcessError as e:
+                raise e
+            try:
+                batch = json.loads(out).get(key, [])
+            except ValueError:
+                batch = None
+            if batch is None:
+                self.partial = True
+                return items
+            items.extend(batch)
+            if len(batch) < 100:
+                return items
+        self.partial = True
+        return items
+
+
+def load_state(path):
+    try:
+        with open(path) as fh:
+            st = json.load(fh)
+        assert isinstance(st, dict)
+        return st
+    except (OSError, ValueError, AssertionError) as e:
+        print("ci-health: state unreadable (%s), starting empty" % e, file=sys.stderr)
+        return {}
+
+
+def save_state(path, st):
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = path + ".tmp-%d" % os.getpid()
+    with open(tmp, "w") as fh:
+        json.dump(st, fh)
+    os.replace(tmp, path)
+
+
+def main(argv):
+    repo = window = state_path = None
+    qp90, qmax, satmin, satjobs, bsage, cmax = "10", "15", "30", "38", "2h", "9.5"
+    want_json = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--json":
+            want_json = True
+            i += 1
+        elif a in ("--repo", "--window", "--state", "--queue-p90", "--queue-max",
+                   "--sat-min", "--sat-jobs", "--backstop-age", "--cache-max") and i + 1 < len(argv):
+            i += 1
+            if a == "--repo":
+                repo = argv[i]
+            elif a == "--window":
+                window = argv[i]
+            elif a == "--state":
+                state_path = argv[i]
+            elif a == "--queue-p90":
+                qp90 = argv[i]
+            elif a == "--queue-max":
+                qmax = argv[i]
+            elif a == "--sat-min":
+                satmin = argv[i]
+            elif a == "--sat-jobs":
+                satjobs = argv[i]
+            elif a == "--backstop-age":
+                bsage = argv[i]
+            elif a == "--cache-max":
+                cmax = argv[i]
+            i += 1
+        else:
+            fail("unknown or incomplete flag %r\n%s" % (a, USAGE))
+    if not repo or not re.fullmatch(r"[^/\s]+/[^/\s]+", repo):
+        fail("missing --repo owner/name\n%s" % USAGE)
+    window_min = dur(window or "75m", "window")
+    if not window_min > 0:
+        fail("bad --window %r (want > 0)" % (window,))
+    qp90 = num(qp90, "queue-p90")
+    qmax = num(qmax, "queue-max")
+    satmin = num(satmin, "sat-min", positive=True)
+    satjobs = num(satjobs, "sat-jobs", positive=True)
+    bsage = dur(bsage or "2h", "backstop-age")
+    if not bsage > 0:
+        fail("bad --backstop-age (want > 0)")
+    cmax = num(cmax, "cache-max", positive=True)
+    if not state_path:
+        state_path = os.path.join(os.path.expanduser("~"), ".cache", "switchyard", "ci-health.json")
+    try:
+        now = parse_ts(os.environ.get("CI_HEALTH_NOW") or "") or datetime.now(timezone.utc)
+    except ValueError:
+        fail("bad CI_HEALTH_NOW %r" % os.environ.get("CI_HEALTH_NOW"))
+    start = now - timedelta(minutes=window_min)
+    lookback = now - timedelta(minutes=window_min + 120)
+
+    st = load_state(state_path)
+    runs_cache = st.get("runs") if isinstance(st.get("runs"), dict) else {}
+    log_cache = st.get("logcache") if isinstance(st.get("logcache"), dict) else {}
+    gh = GH()
+    try:
+        runs = gh.paged("repos/%s/actions/runs?created=>=%s" % (repo, iso(lookback)), "workflow_runs")
+    except subprocess.CalledProcessError as e:
+        fail("could not list runs: %s" % e)
+    # jobs per run, via cache keyed by updated_at
+    jobs_by_run = {}
+    for r in runs:
+        rid = str(r.get("id"))
+        ent = runs_cache.get(rid) if isinstance(runs_cache.get(rid), dict) else None
+        if ent and ent.get("updated_at") == r.get("updated_at") and isinstance(ent.get("jobs"), list):
+            jobs_by_run[rid] = ent["jobs"]
+            continue
+        try:
+            jobs = gh.paged("repos/%s/actions/runs/%s/jobs" % (repo, rid), "jobs")
+        except subprocess.CalledProcessError:
+            gh.partial = True
+            if ent and isinstance(ent.get("jobs"), list):
+                jobs_by_run[rid] = ent["jobs"]
+            else:
+                jobs_by_run[rid] = []
+            continue
+        jobs_by_run[rid] = jobs
+        runs_cache[rid] = {"updated_at": r.get("updated_at"),
+                           "created_at": r.get("created_at"), "jobs": jobs}
+
+    def queue_min(job):
+        s = parse_ts(job.get("started_at"))
+        c = parse_ts(job.get("created_at"))
+        if not c:
+            return None
+        if s:
+            return (s - c).total_seconds() / 60
+        if job.get("status") == "completed":
+            return None  # terminal without starting: never queued on a runner
+        return (now - c).total_seconds() / 60
+
+    ci = lambda r: (r.get("path") or "").endswith("/ci.yml")
+    inwin = lambda s: bool(parse_ts(s or "") and start <= parse_ts(s) <= now)
+
+    pr_stats, main_stats = {}, {}
+    pool = []
+    qmax_hits = []
+    for r in runs:
+        if not ci(r):
+            continue
+        ev = r.get("event")
+        if ev not in ("pull_request", "push"):
+            continue
+        for j in jobs_by_run.get(str(r.get("id")), []):
+            if not inwin(j.get("created_at")):
+                continue
+            g = group(j.get("name"))
+            q = queue_min(j)
+            if q is None or q < 0:
+                continue
+            if ev == "pull_request":
+                if g != "Mutants":
+                    pool.append(q)
+                    pr_stats.setdefault(g, []).append(q)
+                    if g == "Selection" or g.startswith("Tests "):
+                        if q > qmax:
+                            qmax_hits.append((g, q, j))
+            elif ev == "push" and r.get("head_branch") == "main":
+                main_stats.setdefault(g, []).append(q)
+
+    def defsumm(xs):
+        return {"n": len(xs), "p50": r1(pct(xs, 0.5)),
+                "p90": r1(pct(xs, 0.9)), "max": r1(max(xs))}
+
+    pr_queue = {g: defsumm(xs) for g, xs in sorted(pr_stats.items()) if xs}
+    main_queue = {g: defsumm(xs) for g, xs in sorted(main_stats.items()) if xs}
+    breaches = []
+    if pool and pct(pool, 0.9) > qp90:
+        breaches.append({"check": "queue-p90",
+                         "detail": "pooled PR p90 %.1f min over %.1f" % (r1(pct(pool, 0.9)), qp90)})
+    for g, q, j in sorted(qmax_hits, key=lambda t: -t[1]):
+        breaches.append({"check": "queue-max",
+                         "detail": "%s queued %.1f min (job %s)" % (g, r1(q), j.get("id"))})
+
+    # saturation: per-minute running counts over the window (every workflow)
+    nmin = max(1, int((now - start).total_seconds() // 60))
+    run_ct = [0] * nmin
+    mac_ct = [0] * nmin
+    for r in runs:
+        for j in jobs_by_run.get(str(r.get("id")), []):
+            if not j.get("runner_name"):
+                continue
+            s, e = parse_ts(j.get("started_at")), parse_ts(j.get("completed_at")) or now
+            if not s:
+                continue
+            a = int((s - start).total_seconds() // 60)
+            b = int((e - start).total_seconds() // 60)
+            for m in range(max(0, a), min(nmin, max(0, b))):
+                run_ct[m] += 1
+                if osof(j.get("labels")) == "macOS":
+                    mac_ct[m] += 1
+    sat_min = sum(1 for c in run_ct if c >= satjobs)
+    mac_min = sum(1 for c in mac_ct if c >= 5)
+    if sat_min >= satmin:
+        breaches.append({"check": "saturation",
+                         "detail": "%d min with %d+ jobs running" % (sat_min, int(satjobs))})
+
+    # timeouts + design failures (jobs completed inside the window, ci.yml)
+    timeouts, design = [], []
+    release_logs_needed = []
+    for r in runs:
+        if not ci(r):
+            continue
+        for j in jobs_by_run.get(str(r.get("id")), []):
+            comp = parse_ts(j.get("completed_at") or "")
+            if not (comp and start <= comp <= now):
+                continue
+            if is_timeout(j):
+                s = parse_ts(j.get("started_at"))
+                mins = (comp - s).total_seconds() / 60
+                timeouts.append({"run_id": r.get("id"), "job_id": j.get("id"),
+                                 "job": j.get("name"), "minutes": r1(mins)})
+                design.append({"kind": "timeout", "run_id": r.get("id"),
+                               "job_id": j.get("id"), "job": j.get("name")})
+            if j.get("conclusion") == "failure" and group(j.get("name")) == "Benchmark comment":
+                design.append({"kind": "bench-comment", "run_id": r.get("id"),
+                               "job_id": j.get("id"), "job": j.get("name")})
+            if j.get("conclusion") == "failure" and group(j.get("name")) == "Release build and size (Linux x86_64)":
+                release_logs_needed.append((r, j))
+
+    def fetch_log(jid):
+        try:
+            return gh.api("repos/%s/actions/jobs/%s/logs" % (repo, jid), escape=True)
+        except subprocess.CalledProcessError:
+            gh.partial = True
+            return None
+
+    for r, j in release_logs_needed:
+        key = str(j.get("id"))
+        ent = log_cache.get(key)
+        if isinstance(ent, dict) and "exit127" in ent:
+            is127 = ent["exit127"]
+        else:
+            text = fetch_log(j.get("id"))
+            if text is None:
+                continue
+            is127 = "Process completed with exit code 127" in text
+            log_cache[key] = {"exit127": is127}
+        if is127:
+            design.append({"kind": "release-exit-127", "run_id": r.get("id"),
+                           "job_id": j.get("id"), "job": j.get("name")})
+    if design:
+        for d in design:
+            breaches.append({"check": "design",
+                             "detail": "%s: %s (job %s)" % (d["kind"], d["job"], d["job_id"])})
+
+    # cache usage
+    try:
+        cache_bytes = json.loads(gh.api("repos/%s/actions/cache/usage" % repo)).get(
+            "active_caches_size_in_bytes")
+        if not isinstance(cache_bytes, int):
+            gh.partial = True
+            cache_bytes = None
+    except (subprocess.CalledProcessError, ValueError):
+        gh.partial = True
+        cache_bytes = None
+    if isinstance(cache_bytes, int) and cache_bytes >= cmax * 1e9:
+        breaches.append({"check": "cache",
+                         "detail": "cache %.2f GB at or above %.1f" % (cache_bytes / 1e9, cmax)})
+
+    # backstop
+    try:
+        head_sha = json.loads(gh.api("repos/%s/commits/main" % repo)).get("sha")
+    except (subprocess.CalledProcessError, ValueError) as e:
+        fail("could not read main head: %s" % e)
+    if not head_sha:
+        fail("could not read main head")
+    try:
+        tgt = json.loads(gh.api("repos/%s/commits?sha=main&until=%s&per_page=1" % (repo, iso(now - timedelta(minutes=bsage)))))
+        target_sha = (tgt or [{}])[0].get("sha") if isinstance(tgt, list) else None
+    except (subprocess.CalledProcessError, ValueError) as e:
+        fail("could not list main commits: %s" % e)
+    try:
+        main_runs = json.loads(gh.api(
+            "repos/%s/actions/runs?branch=main&event=push&per_page=30" % repo)).get("workflow_runs", [])
+    except (subprocess.CalledProcessError, ValueError) as e:
+        fail("could not list main runs: %s" % e)
+    main_runs = [r for r in main_runs if ci(r)]
+    for r in main_runs:
+        rid = str(r.get("id"))
+        if rid not in jobs_by_run:
+            ent = runs_cache.get(rid) if isinstance(runs_cache.get(rid), dict) else None
+            if ent and ent.get("updated_at") == r.get("updated_at"):
+                jobs_by_run[rid] = ent["jobs"]
+            else:
+                try:
+                    jobs_by_run[rid] = gh.paged("repos/%s/actions/runs/%s/jobs" % (repo, rid), "jobs")
+                except subprocess.CalledProcessError:
+                    gh.partial = True
+                    jobs_by_run[rid] = ent["jobs"] if ent and isinstance(ent.get("jobs"), list) else []
+                runs_cache[rid] = {"updated_at": r.get("updated_at"),
+                                   "created_at": r.get("created_at"),
+                                   "jobs": jobs_by_run[rid]}
+
+    def core_state(r):
+        core = [j for j in jobs_by_run.get(str(r.get("id")), [])
+                if group(j.get("name")) in CORE]
+        if not core:
+            return None
+        if any(not j.get("conclusion") for j in core):
+            return None  # unfinished core job: neither green nor red
+        if any((j.get("conclusion") or "") == "failure" for j in core):
+            return "red"
+        if all(j.get("conclusion") in ("success", "skipped") for j in core):
+            return "green"
+        return None
+
+    main_runs.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+    green_sha = green_at = None
+    for r in main_runs:
+        if core_state(r) == "green":
+            green_sha, green_at = r.get("head_sha"), r.get("created_at")
+            break
+    if not green_sha and isinstance(st.get("last_core_green_sha"), str):
+        green_sha, green_at = st.get("last_core_green_sha"), st.get("last_core_green_at")
+
+    behind = None
+    if green_sha:
+        try:
+            cmp1 = json.loads(gh.api("repos/%s/compare/%s...%s" % (repo, green_sha, head_sha)))
+            behind = cmp1.get("ahead_by", 0) if green_sha != head_sha else 0
+        except (subprocess.CalledProcessError, ValueError):
+            gh.partial = True
+    if green_sha and target_sha:
+        if green_sha == target_sha:
+            covered = True
+        else:
+            try:
+                cmp2 = json.loads(gh.api("repos/%s/compare/%s...%s" % (repo, target_sha, green_sha)))
+                covered = cmp2.get("status") in ("ahead", "identical")
+            except (subprocess.CalledProcessError, ValueError):
+                gh.partial = True
+                covered = None
+        if covered is False:
+            breaches.append({"check": "backstop",
+                             "detail": "no core-green run at %s or later" % (target_sha or "")[:8]})
+        elif covered is None:
+            pass  # partial, not a breach
+    elif not green_sha:
+        breaches.append({"check": "backstop", "detail": "no core-green main SHA known"})
+
+    reds = []
+    for r in main_runs:
+        s = core_state(r)
+        if s == "red":
+            reds.append(r)
+        elif s == "green":
+            break
+        # neither green nor red: skipped for the streak
+    red_streak = 0
+    for r in main_runs:
+        s = core_state(r)
+        if s == "red":
+            red_streak += 1
+        elif s is None:
+            continue
+        else:
+            break
+
+    def red_causes(r):
+        out = set()
+        for j in jobs_by_run.get(str(r.get("id")), []):
+            if group(j.get("name")) not in CORE or (j.get("conclusion") or "") != "failure":
+                continue
+            key = "causes:%s" % j.get("id")
+            if key in log_cache and isinstance(log_cache[key], list):
+                out.update(log_cache[key])
+                continue
+            text = fetch_log(j.get("id"))
+            if text is None:
+                continue
+            cs = run_causes(text)
+            log_cache[key] = cs
+            out.update(cs)
+        return out
+
+    red_causes_newest = sorted(reds[0] and red_causes(reds[0]) or []) if reds else []
+    if len(reds) >= 2 and red_causes(reds[0]) & red_causes(reds[1]):
+        shared = sorted(red_causes(reds[0]) & red_causes(reds[1]))
+        breaches.append({"check": "backstop-broken",
+                         "detail": "same failure in %s and %s: %s" % (
+                             reds[0].get("id"), reds[1].get("id"), "; ".join(shared)[:200])})
+
+    out = {"window": {"start": iso(start), "end": iso(now)},
+           "pr_queue": pr_queue, "main_queue": main_queue,
+           "saturated_minutes": sat_min, "macos_capped_minutes": mac_min,
+           "backstop": {"head_sha": head_sha, "last_core_green_sha": green_sha,
+                        "last_core_green_at": green_at,
+                        "commits_behind": behind, "red_streak": red_streak,
+                        "red_causes": red_causes_newest},
+           "timeouts": timeouts, "design_failures": design,
+           "cache_bytes": cache_bytes, "breaches": breaches,
+           "partial": gh.partial}
+
+    # prune runs older than the lookback, then the log cache with the runs
+    # cache: only evidence (exit-127 flags, cause strings) for live jobs stays
+    for rid in [k for k, v in runs_cache.items()
+                if not (isinstance(v, dict) and parse_ts(v.get("created_at") or "")
+                        and parse_ts(v["created_at"]) >= lookback)]:
+        runs_cache.pop(rid, None)
+    live = set()
+    for v in runs_cache.values():
+        for j in v.get("jobs", []) if isinstance(v, dict) else []:
+            if isinstance(j, dict) and j.get("id") is not None:
+                live.add(str(j["id"]))
+    for k in list(log_cache.keys()):
+        jid = k[len("causes:"):] if k.startswith("causes:") else k
+        v = log_cache[k]
+        if jid not in live or not (isinstance(v, list)
+                                   or (isinstance(v, dict) and "text" not in v)):
+            log_cache.pop(k, None)
+    # debt: hourly cadence, upgrade trigger is a second writer of this file
+    st.update({"last_check": iso(now), "runs": runs_cache,
+               "logcache": log_cache,
+               "last_core_green_sha": green_sha, "last_core_green_at": green_at})
+    save_state(state_path, st)
+
+    if want_json:
+        print(json.dumps(out))
+    else:
+        checks = sorted({b["check"] for b in breaches})
+        prp90 = r1(pct(pool, 0.9)) if pool else 0.0
+        prmax = r1(max(pool)) if pool else 0.0
+        gb = (cache_bytes / 1e9) if isinstance(cache_bytes, int) else 0.0
+        print("ci-health %s: %s%s | pr p90 %.1fm max %.1fm | saturated %dm | "
+              "backstop %s -%s red %d | cache %.2f GB" % (
+                  repo, "BREACH " if breaches else "OK",
+                  ",".join(checks) if breaches else "",
+                  prp90, prmax, sat_min,
+                  (green_sha or "?")[:7], behind if behind is not None else "?",
+                  red_streak, gb))
+    if breaches:
+        return 1
+    return 3 if gh.partial else 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Fatal as e:
+        print("ci-health: %s" % e, file=sys.stderr)
+        sys.exit(2)

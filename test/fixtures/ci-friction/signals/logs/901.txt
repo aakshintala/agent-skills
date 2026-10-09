@@ -1,0 +1,6 @@
+2026-10-09T17:30:01Z FAIL [   3.100s] (1/9) fiber-core base::works
+2026-10-09T17:30:02Z Cancelling due to test failure: immediately terminating
+2026-10-09T17:30:03Z SIGTERM [   0.100s] (2/9) fiber-core other::a
+2026-10-09T17:30:04Z SIGTERM [   0.100s] (3/9) fiber-core other::b
+2026-10-09T17:30:05Z SIGKILL [   0.100s] (4/9) fiber-core other::c
+2026-10-09T17:30:06Z Process completed with exit code 4
