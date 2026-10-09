@@ -236,6 +236,14 @@ ship --timeout 14; expect 124 "CI timeout after sleeps"
 [ "$(cat "$ST/sleeps.txt")" = "7
 7" ] || fail "timeout counts gh-ci sleeps: [$(cat "$ST/sleeps.txt")]"
 
+setup; echo '[{"bucket":"pending","name":"ci"}]' >"$ST/checks"
+export GH_CI_INTERVAL=3600
+ship; expect 124 "default CI wait timeout is 7200"
+grep -q "timeout after 7200s" <<<"$OUT" || fail "default timeout header: [$OUT]"
+[ "$(cat "$ST/sleeps.txt")" = "3600
+3600" ] || fail "default timeout sleeps twice with 3600: [$(cat "$ST/sleeps.txt" 2>/dev/null)]"
+export GH_CI_INTERVAL=7
+
 setup; advance_main other.txt o
 checks_hook 'git --git-dir="$ORIGIN" rev-parse refs/heads/feature >"$ST/at-ci"'
 ship; expect 0 "rebased happy path"
@@ -367,6 +375,56 @@ echo changed >"$WT/file.txt"; git -C "$WT" commit -qam "touch file"; git -C "$WT
 HEAD0="$(git -C "$WT" rev-parse HEAD)"
 ship --gate 'echo conflicting >"$C/file.txt"; git -C "$C" commit -qam m; git -C "$C" push -q origin main'
 expect 3 "not strict, conflicting commit lands during the gate"; untouched "conflict during the gate"; no_merge "conflict during the gate"
+
+# ===== #214: on a non-strict base with --gate, gate the PR merged with current origin/main
+# main moved by an unrelated commit, gate passes on the merged tree: merge pinned to the PR head
+setup; echo "$NOSTRICT" >"$ST/rules"; advance_main other.txt o
+MAIN1="$(git --git-dir="$ORIGIN" rev-parse refs/heads/main)"
+ship --gate 'echo "$(git rev-parse HEAD)" >>"$ST/gate-heads"'
+expect 0 "not strict guard passes on the merged tree"
+[ "$(wc -l <"$ST/gate-heads")" -eq 2 ] || fail "guard runs the gate a second time on the merged tree"
+[ "$(sed -n 1p "$ST/gate-heads")" = "$HEAD0" ] || fail "first gate runs on the pinned head"
+[ "$(sed -n 2p "$ST/gate-heads")" != "$HEAD0" ] || fail "second gate runs on the merged tree"
+git -C "$C" merge-base --is-ancestor "$MAIN1" "$(sed -n 2p "$ST/gate-heads")" \
+  || fail "second gate runs on a tree merged with current origin/main"
+grep -q "gate passes on the PR merged with current origin/main" <<<"$ERR" || fail "guard pass message: [$ERR]"
+grep -q "^gh pr merge 7 --repo O/N --squash --match-head-commit $HEAD0\$" "$ST/gh.log" || fail "guard passes: merge pinned to the PR head"
+[ ! -e "$WT" ] || fail "guard passes: worktree removed"
+origin_head >/dev/null && fail "guard passes: no local merge commit leaks to origin"
+
+# gate fails only on the merged tree: exit 1, no merge, worktree back on the pinned head and clean
+setup; echo "$NOSTRICT" >"$ST/rules"; advance_main bad x
+ship --gate 'echo gate-merged-line; test ! -e bad'
+expect 1 "not strict guard fails on the merged tree"; no_merge "guard gate fails"
+grep -q gate-merged-line <<<"$OUT" || fail "guard gate tail printed: [$OUT]"
+grep -q "the PR merged with current origin/main fails the gate" <<<"$ERR" || fail "guard gate message: [$ERR]"
+[ "$(git -C "$WT" rev-parse HEAD)" = "$HEAD0" ] || fail "guard gate fails: worktree back on the pinned head"
+[ -z "$(git -C "$WT" status --porcelain)" ] || fail "guard gate fails: worktree clean"
+[ -d "$WT" ] || fail "worktree kept when the guard gate fails"
+
+# a conflicting main move: exit 3, worktree clean on the pinned head
+setup; echo "$NOSTRICT" >"$ST/rules"
+echo changed >"$WT/file.txt"; git -C "$WT" commit -qam "touch file"; git -C "$WT" push -q origin feature
+HEAD0="$(git -C "$WT" rev-parse HEAD)"
+advance_main file.txt conflicting
+ship --gate true
+expect 3 "not strict guard conflicts"; no_merge "guard conflict"
+grep -q "PR conflicts with current origin/main; rebase, then rerun" <<<"$ERR" || fail "guard conflict message: [$ERR]"
+[ "$(git -C "$WT" rev-parse HEAD)" = "$HEAD0" ] || fail "guard conflict: worktree back on the pinned head"
+[ -z "$(git -C "$WT" status --porcelain)" ] || fail "guard conflict: worktree clean"
+[ ! -e "$(git -C "$WT" rev-parse --git-path MERGE_HEAD)" ] || fail "guard conflict: no merge in progress"
+
+# main has not moved: the guard does not run the gate a second time
+setup; echo "$NOSTRICT" >"$ST/rules"
+ship --gate 'echo x >>"$ST/gates"'
+expect 0 "not strict, main unmoved"
+[ "$(wc -l <"$ST/gates")" -eq 1 ] || fail "unmoved main: gate runs once"
+
+# strict mode: the guard never runs, even when main moves during CI
+setup; checks_hook 'echo n >"$C/newfile.txt"; git -C "$C" add .; git -C "$C" commit -qm m; git -C "$C" push -q origin main'
+ship --gate 'test ! -e newfile.txt && echo x >>"$ST/gates"'
+expect 0 "strict, main moves during CI"
+[ "$(wc -l <"$ST/gates")" -eq 1 ] || fail "strict: gate runs once"
 
 # ===== exit 5: stray closing keywords
 setup; echo 'Resolves #97. also fixes #9' >"$ST/body"

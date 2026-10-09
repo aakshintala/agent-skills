@@ -218,6 +218,18 @@ run_wait 7 --timeout 0
 [ "$CODE" = "124" ] || fail "timeout 0 exits 124 (got $CODE): [$OUT]"
 [ ! -e "$T/state/sleeps.txt" ] || fail "timeout 0 never sleeps"
 
+# --- case: the default wait timeout is 7200 s
+reset_state
+export GH_CI_INTERVAL=3600
+set_heads "$A"; echo "$RULES_CI" >"$T/state/rules"
+set_checks '[{"bucket":"pending","name":"ci"}]'
+run_wait 7
+[ "$CODE" = "124" ] || fail "default timeout exits 124 (got $CODE): [$OUT]"
+grep -q "head: ${A:0:8} timeout after 7200s" <<<"$OUT" || fail "default timeout header: [$OUT]"
+[ "$(cat "$T/state/sleeps.txt")" = "3600
+3600" ] || fail "default timeout sleeps twice with 3600: [$(cat "$T/state/sleeps.txt")]"
+export GH_CI_INTERVAL=7
+
 # --- case: empty list and non-JSON output never exit 0 early while a check is required
 reset_state
 export GH_CI_INTERVAL=7
