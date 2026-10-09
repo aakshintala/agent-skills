@@ -33,7 +33,7 @@ TOK_QT="\"[^\"]*\"|'[^']*'"
 SANDBOX_NEEDS_OUT="$(printf '%s\n' \
   "needs_out${TAB}bash${TAB}(^|[^[:alnum:]_])(curl|wget)([^[:alnum:]_]|\$)" \
   "needs_out${TAB}bash${TAB}(^|[^[:alnum:]_])gh([^[:alnum:]_]|\$)" \
-  "needs_out${TAB}bash${TAB}(^|[^[:alnum:]_])git([[:space:]]+(-C[[:space:]]+[^[:space:]]+|-c[[:space:]]+[^[:space:]]+|--[A-Za-z-]+=[^[:space:]]+|--[A-Za-z-]+[[:space:]]+[^[:space:]]+|--[A-Za-z-]+|-[A-Za-z]+))*[[:space:]]+(fetch|push|clone|pull|ls-remote|submodule[[:space:]]+update)([^[:alnum:]_]|\$)" \
+  "needs_out${TAB}bash${TAB}(^|[^[:alnum:]_])git[[:space:]]([^;|&]*[[:space:]])?(fetch|push|clone|pull|ls-remote|submodule[[:space:]]+update)([^[:alnum:]_]|\$)" \
   "needs_out${TAB}bash${TAB}(^|[^[:alnum:]_])(npm|pnpm|yarn|bun)[[:space:]]+(install|i|ci|add|update)([^[:alnum:]_-]|\$)" \
   "needs_out${TAB}bash${TAB}(^|[^[:alnum:]_])npx([^[:alnum:]_-]|\$)" \
   "needs_out${TAB}bash${TAB}(^|[^[:alnum:]_])pip3?[[:space:]]+install([^[:alnum:]_]|\$)" \

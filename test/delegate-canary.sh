@@ -341,6 +341,14 @@ cat >"$T/ev3.jsonl" <<EOF
 {"kind":"tool_call_requested","session_id":"s1","ts":45,"schema_version":1,"action_id":"u7","seq":45,"payload":{"name":"bash","arguments":{"command":"x=/etc/y"}}}
 {"kind":"permission_resolved","session_id":"s1","ts":46,"schema_version":1,"action_id":"u7","seq":46,"payload":{"decision":"allow","decided_by":"reviewer"}}
 {"kind":"permission_resolved","session_id":"s1","ts":47,"schema_version":1,"action_id":"u9","seq":47,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":48,"schema_version":1,"action_id":"n13","seq":48,"payload":{"name":"bash","arguments":{"command":"git -C/tmp fetch origin"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":49,"schema_version":1,"action_id":"n13","seq":49,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":50,"schema_version":1,"action_id":"n14","seq":50,"payload":{"name":"bash","arguments":{"command":"git -cfoo.bar=baz fetch origin"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":51,"schema_version":1,"action_id":"n14","seq":51,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":52,"schema_version":1,"action_id":"n15","seq":52,"payload":{"name":"bash","arguments":{"command":"git -C \"/tmp/a b\" fetch origin"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":53,"schema_version":1,"action_id":"n15","seq":53,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":54,"schema_version":1,"action_id":"c4","seq":54,"payload":{"name":"bash","arguments":{"command":"git log --oneline"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":55,"schema_version":1,"action_id":"c4","seq":55,"payload":{"decision":"allow","decided_by":"reviewer"}}
 EOF
 
 # --- Task 3: the gate passes on pi only; the run still exits 0 ---
@@ -354,10 +362,10 @@ grep -q '| gate | pass | fail |' "$OUT3/summary.md" || fail "summary gate row"
 M3="$OUT3/fiber/metrics.json"
 [ "$(jq -r .cost.main "$M3")" = "1" ] || fail "task3 main cost"
 [ "$(jq -r .cost.reviewer "$M3")" = "0.5" ] || fail "task3 reviewer cost"
-[ "$(jq -r .reviewed_calls "$M3")" = "23" ] || fail "task3 reviewed calls"
-[ "$(jq -r .per_review_tokens_est "$M3")" = "100" ] || fail "task3 per-review tokens"
-[ "$(jq -r .sandbox.contained.count "$M3")" = "3" ] || fail "task3 contained 3"
-[ "$(jq -r .sandbox.needs_out.count "$M3")" = "12" ] || fail "task3 needs_out 12"
+[ "$(jq -r .reviewed_calls "$M3")" = "27" ] || fail "task3 reviewed calls"
+[ "$(jq -r .per_review_tokens_est "$M3")" = "85.18518518518519" ] || fail "task3 per-review tokens"
+[ "$(jq -r .sandbox.contained.count "$M3")" = "4" ] || fail "task3 contained 4"
+[ "$(jq -r .sandbox.needs_out.count "$M3")" = "15" ] || fail "task3 needs_out 15"
 [ "$(jq -r .sandbox.unknown.count "$M3")" = "8" ] || fail "task3 unknown 8"
 jq -e '.sandbox.contained.commands | any(contains("cargo test"))' "$M3" >/dev/null || fail "contained lists cargo test"
 jq -e '.sandbox.contained.commands | any(contains("x.txt"))' "$M3" >/dev/null || fail "contained lists tmp write"
@@ -372,6 +380,10 @@ jq -e '.sandbox.needs_out.commands | any(contains("/etc/err"))' "$M3" >/dev/null
 jq -e '.sandbox.contained.commands | any(contains("2>/dev/null"))' "$M3" >/dev/null || fail "contained keeps 2>/dev/null"
 jq -e '.sandbox.unknown.commands | any(contains("</etc/hosts"))' "$M3" >/dev/null || fail "unknown lists < redirect path"
 jq -e '.sandbox.unknown.commands | any(contains("x=/etc/y"))' "$M3" >/dev/null || fail "unknown lists =-attached path"
+jq -e '.sandbox.needs_out.commands | any(contains("git -C/tmp"))' "$M3" >/dev/null || fail "needs_out lists git -C/tmp"
+jq -e '.sandbox.needs_out.commands | any(contains("git -cfoo"))' "$M3" >/dev/null || fail "needs_out lists git -cfoo"
+jq -e '.sandbox.needs_out.commands | any(contains("/tmp/a b"))' "$M3" >/dev/null || fail "needs_out lists quoted git -C path"
+jq -e '.sandbox.contained.commands | any(contains("git log --oneline"))' "$M3" >/dev/null || fail "contained keeps git log"
 [ "$(jq -r '.denials | length' "$M3")" = "1" ] || fail "one denial"
 [ "$(jq -r '.denials[0].action_id' "$M3")" = "n2" ] || fail "denial action"
 [ "$(jq -r '.denials[0].decided_by' "$M3")" = "reviewer" ] || fail "denial decider"
