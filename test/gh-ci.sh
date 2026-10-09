@@ -558,7 +558,22 @@ run_failures --pr 7
 grep -q "=== ci / build (111): failure" <<<"$OUT" || fail "--pr failed run header: [$OUT]"
 grep -q "ok-job" <<<"$OUT" && fail "passed run jobs never appear: [$OUT]"
 grep -q "lint" <<<"$OUT" && fail "passed run name never appears: [$OUT]"
+grep -q "superseded" <<<"$OUT" && fail "nothing superseded, no note line: [$OUT]"
 grep -q -- "run list .*--limit 100" "$T/state/gh-args.txt" || fail "--pr lists runs with --limit 100: [$(cat "$T/state/gh-args.txt")]"
+
+# gh prints ESC as the literal text ^[ ; those colour codes are stripped too
+reset_state
+set_jobs 123 '{"jobs":[{"databaseId":111,"name":"build","conclusion":"failure"}]}'
+{
+  printf 'myjob\tmystep\t2026-10-07T12:00:01Z ^[[32;1m        PASS^[[0m ok\n'
+  printf 'myjob\tmystep\t2026-10-07T12:00:02Z ^[[31;1m        FAIL^[[0m [   8.5s] jobs a_test\n'
+} >"$T/state/log-111.txt"
+run_failures 123
+[ "$CODE" = "0" ] || fail "literal-escape digest exits 0 (got $CODE): [$OUT]"
+grep -qF '^[[' <<<"$OUT" && fail "no literal ^[[ codes in digest: [$OUT]"
+grep -q "$ESC_BYTES" <<<"$OUT" && fail "no escape bytes in literal-escape digest"
+grep -q "FAIL" <<<"$OUT" || fail "literal-escape digest keeps FAIL: [$OUT]"
+grep -q "a_test" <<<"$OUT" || fail "literal-escape digest keeps a_test: [$OUT]"
 
 # --pr ignores a superseded run: cancelled run 1 replaced by a successful
 # run 2 of the same workflow reports no failed jobs
@@ -569,8 +584,35 @@ set_jobs 2 '{"jobs":[{"databaseId":222,"name":"ok-job","conclusion":"success"}]}
 run_failures --pr 7
 [ "$CODE" = "0" ] || fail "superseded cancel exits 0 (got $CODE): [$OUT]"
 grep -q "no failed jobs on ${A:0:8}" <<<"$OUT" || fail "superseded cancel line: [$OUT]"
+grep -qx "skipped 1 superseded runs: 1" <<<"$OUT" || fail "superseded cancel names run 1: [$OUT]"
 grep -q -- "run list .*databaseId,name,event,conclusion,workflowName" "$T/state/gh-args.txt" \
   || fail "run list asks for event,workflowName: [$(cat "$T/state/gh-args.txt")]"
+
+# --pr names every superseded failed or cancelled run, after the digest; a
+# superseded success is not named
+reset_state
+set_heads "$A"
+set_runs '[{"databaseId":37925057416,"name":"CI","workflowName":"CI","event":"pull_request","conclusion":"cancelled"},{"databaseId":37925058210,"name":"CI","workflowName":"CI","event":"pull_request","conclusion":"failure"},{"databaseId":37925059000,"name":"CI","workflowName":"CI","event":"pull_request","conclusion":"success"},{"databaseId":40000000001,"name":"Lint","workflowName":"Lint","event":"pull_request","conclusion":"success"},{"databaseId":40000000002,"name":"Lint","workflowName":"Lint","event":"pull_request","conclusion":"failure"}]'
+set_jobs 37925059000 '{"jobs":[{"databaseId":222,"name":"ok-job","conclusion":"success"}]}'
+set_jobs 40000000002 '{"jobs":[{"databaseId":111,"name":"build","conclusion":"failure"}]}'
+make_rust_log 111
+run_failures --pr 7
+[ "$CODE" = "0" ] || fail "two superseded exits 0 (got $CODE): [$OUT]"
+grep -q "=== Lint / build (111): failure" <<<"$OUT" || fail "kept failed run digest: [$OUT]"
+grep -q "superseded runs: " <<<"$OUT" || fail "note after the digest: [$OUT]"
+[ "$(tail -n 1 <<<"$OUT")" = "skipped 2 superseded runs: 37925057416 37925058210" ] \
+  || fail "note names the cancelled and failed superseded runs in order: [$OUT]"
+grep -q "40000000001" <<<"$OUT" && fail "superseded success is not named: [$OUT]"
+grep -q "37925059000" <<<"$OUT" && fail "kept run is not named as superseded: [$OUT]"
+
+# superseded runs that all succeeded name nothing
+reset_state
+set_heads "$A"
+set_runs '[{"databaseId":1,"name":"CI","workflowName":"CI","event":"pull_request","conclusion":"success"},{"databaseId":2,"name":"CI","workflowName":"CI","event":"pull_request","conclusion":"success"}]'
+set_jobs 2 '{"jobs":[{"databaseId":222,"name":"ok-job","conclusion":"success"}]}'
+run_failures --pr 7
+[ "$CODE" = "0" ] || fail "superseded successes exit 0 (got $CODE): [$OUT]"
+grep -q "superseded" <<<"$OUT" && fail "superseded successes name no run: [$OUT]"
 
 # --pr still reports a cancelled run of another workflow
 reset_state
