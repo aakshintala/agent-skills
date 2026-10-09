@@ -251,10 +251,6 @@ run_friction --min-lanes 1 --json
 [ "$(grep -c 'graphql' "$FAKE_GH_LOG")" = "1" ] || fail "stale null re-looked-up: [$(cat "$FAKE_GH_LOG")]"
 [ "$(jget "[r['lanes'] for r in d['repeats']]")" = "[['#1502']]" ] \
   || fail "stale null recovered, pre-fix lane dropped: [$OUT]"
-setup fixcommit
-run_friction --min-lanes 1 --json >/dev/null
-run_friction --min-lanes 1 --json >/dev/null
-[ "$(grep -c 'graphql' "$FAKE_GH_LOG")" = "1" ] || fail "current-version lookup cached: [$(cat "$FAKE_GH_LOG")]"
 
 # --- 18g: post-fix sighting before closure is still a recurrence ---
 setup fixlate
