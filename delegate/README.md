@@ -49,6 +49,22 @@ Each job writes `$TMPDIR/delegate-jobs/<jobId>.json` (use `$TMPDIR` when set, ot
 
 Optional JSON at `~/.config/delegate/host-profile.json` (or `$XDG_CONFIG_HOME/delegate/host-profile.json`). Override the path with `DELEGATE_HOST_PROFILE`. Keys can set `default`, `models`, `gate`, `idleMs`, and `toolIdleMs`. Missing file is fine; defaults are built in.
 
+## Replay
+
+`scripts/replay.sh` reruns finished pi jobs on the Fiber backend and compares.
+`select` freezes a manifest of eligible jobs (with prompt, gate and brief
+snapshots); `run` replays each in a scratch clone at its base commit under
+`sandbox-exec`, driving `delegate run --model fiber/<model>`; `report` writes
+the Markdown comparison with the pass bar; `all` advances one batch of three.
+
+Inputs: `REPLAY_JOBS_DIR` (default `$TMPDIR/delegate-jobs`),
+`REPLAY_PI_SESSIONS` (default `~/.pi/agent/sessions`), `REPLAY_REPO_MAP`
+(prefix TAB owner/name), `REPLAY_REMOTE_BASE`, `REPLAY_FIBER_SRC` (a dedicated
+fiber clone, never `~/work/fiber`), `DELEGATE_BIN`, `REPLAY_SANDBOX_EXEC`
+(fake `sandbox-exec` for tests). The seal denies writes under `$HOME` and the
+real jobs dir, pins `gh` to a shim that exits 1, and voids `GH_TOKEN`;
+`FIBER_HOME` and the cargo target stay under the out dir.
+
 ## Skill
 
 The skill lives in switchyard's `skills/delegate/`. Setup links `~/.claude/skills/delegate` to it, and pi reads `~/.agents/skills` directly, so both load it from the checkout and an edit is live without a reinstall.
