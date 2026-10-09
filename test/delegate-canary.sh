@@ -583,6 +583,30 @@ grep -qF 'fiber 9.9.9-canary-test' "$OUT10/summary.md" || fail "HOME/.local/bin 
 bash "$CANARY" clean 232 --out "$OUT10" || fail "clean 232 exits 0"
 rm -f "$HOME/.local/bin/fiber"
 
+# (d) A relative FIBER_BIN, run from the directory that holds it: the worktree
+# runs elsewhere, so the summary and the exported FIBER_BIN must be absolute.
+mkdir -p "$T/relfb"
+cp "$FIBER_STUB" "$T/relfb/fiber"
+REL_FB_ABS="$(cd "$T/relfb" && pwd -P)/fiber"
+OUT11="$T/out11"
+( cd "$T/relfb" && env FIBER_BIN=./fiber FAKE_EVENTS="$T/ev2.jsonl" \
+  bash "$CANARY" run 234 "$T/brief.md" --gate 'test -f work-marker' --out "$OUT11" ) \
+  || fail "relative FIBER_BIN run exits 0"
+grep -qF "$REL_FB_ABS" "$OUT11/summary.md" || fail "relative FIBER_BIN is recorded as an absolute path"
+grep -qF '`./fiber`' "$OUT11/summary.md" && fail "relative FIBER_BIN is not recorded as given"
+bash "$CANARY" clean 234 --out "$OUT11" || fail "clean 234 exits 0"
+
+# (e) A relative PATH entry: the binary found there is recorded as absolute.
+mkdir -p "$T/relbin"
+cp "$FIBER_STUB" "$T/relbin/fiber"
+REL_PATH_ABS="$(cd "$T/relbin" && pwd -P)/fiber"
+OUT12="$T/out12"
+( cd "$T" && env -u FIBER_BIN PATH="relbin:$NOFIBER_PATH" FAKE_EVENTS="$T/ev2.jsonl" \
+  bash "$CANARY" run 235 "$T/brief.md" --gate 'test -f work-marker' --out "$OUT12" ) \
+  || fail "relative PATH entry run exits 0"
+grep -qF "$REL_PATH_ABS" "$OUT12/summary.md" || fail "relative PATH binary is recorded as an absolute path"
+bash "$CANARY" clean 235 --out "$OUT12" || fail "clean 235 exits 0"
+
 echo "fiber preflight cases passed"
 
 # final no-push guarantee across every run above

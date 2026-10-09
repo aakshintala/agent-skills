@@ -64,14 +64,30 @@ now_ms() {
   printf '%d' "$(( $(date +%s) * 1000 ))"
 }
 
+# absolute_path PATH: PATH made absolute against the current directory, with
+# its directory's symlinks resolved. Returns 1 when that directory is missing.
+absolute_path() {
+  local p="$1" dir base
+  dir="$(dirname "$p")"; base="$(basename "$p")"
+  dir="$(cd "$dir" 2>/dev/null && pwd -P)" || return 1
+  printf '%s/%s' "$dir" "$base"
+}
+
 # resolve_fiber_bin: the Fiber binary delegate would run, in delegate's order
-# (FIBER_BIN, then PATH, then $HOME/.local/bin/fiber). Prints its path; returns
-# 1 when there is none. The last candidate must be executable, so a missing
-# file is refused here rather than failing later.
+# (FIBER_BIN, then PATH, then $HOME/.local/bin/fiber). Prints its absolute path;
+# returns 1 when there is none. The worktree runs elsewhere, so a relative
+# path must be made absolute here, in the caller's directory. The last
+# candidate must be executable, so a missing file is refused here too.
 resolve_fiber_bin() {
-  local found
-  if [ -n "${FIBER_BIN:-}" ]; then printf '%s' "$FIBER_BIN"; return 0; fi
-  found="$(command -v fiber 2>/dev/null)" && [ -n "$found" ] && { printf '%s' "$found"; return 0; }
+  local found=""
+  if [ -n "${FIBER_BIN:-}" ]; then
+    case "$FIBER_BIN" in
+      */*) absolute_path "$FIBER_BIN"; return ;;
+    esac
+    found="$(command -v "$FIBER_BIN" 2>/dev/null)" && [ -n "$found" ] || return 1
+    absolute_path "$found"; return
+  fi
+  found="$(command -v fiber 2>/dev/null)" && [ -n "$found" ] && { absolute_path "$found"; return; }
   if [ -x "$HOME/.local/bin/fiber" ]; then printf '%s' "$HOME/.local/bin/fiber"; return 0; fi
   return 1
 }
