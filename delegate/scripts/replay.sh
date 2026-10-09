@@ -459,16 +459,17 @@ setup_fiber_home() {
   return 0
 }
 
-# run_tmp RUNDIR: the replay's TMPDIR. Short and outside DIR on purpose: Fiber
-# and its tests put unix sockets under TMPDIR, and a socket path must fit in
-# 103 bytes, which a TMPDIR under DIR/runs/<uuid>/ does not leave room for.
+# run_tmp RUNDIR: the replay's TMPDIR, a unique short dir per prep recorded in
+# RUNDIR/tmpdir. Short and outside DIR on purpose: Fiber and its tests put
+# unix sockets under TMPDIR, and a socket path must fit in 103 bytes, which
+# a TMPDIR under DIR/runs/<uuid>/ does not leave room for.
 run_tmp() {
-  printf '/tmp/frp-%s' "$(basename "$1" | cut -c1-8)"
+  cat "$1/tmpdir" 2>/dev/null
 }
 
 # write_seal RUNDIR: seal.sb profile, gh shim, gitconfig, tmp dir.
 write_seal() {
-  local rundir="$1" home="${HOME:-/tmp}" realtmp="${RUN_REALTMP:-/tmp}"
+  local rundir="$1" home="${HOME:-/tmp}" realtmp="${RUN_REALTMP:-/tmp}" tmpdir
   {
     printf '(version 1)\n(allow default)\n'
     printf '(deny file-write* (subpath %s))\n' "$(sb_quote "$home")"
@@ -479,8 +480,8 @@ write_seal() {
       "$(sb_quote "$home/.ssh")" "$(sb_quote "$home/.config/gh")" "$(sb_quote "$home/.git-credentials")"
   } >"$rundir/seal.sb"
   mkdir -p "$rundir/shim"
-  rm -rf "$(run_tmp "$rundir")"
-  mkdir -p "$(run_tmp "$rundir")"
+  tmpdir="$(mktemp -d /tmp/frp-XXXXXX)" || return 1
+  printf '%s' "$tmpdir" >"$rundir/tmpdir"
   cat >"$rundir/shim/gh" <<'EOF'
 #!/bin/sh
 echo "gh disabled in replay" >&2
@@ -549,7 +550,7 @@ row_field() {
 # prep_job ID FRESH: scratch clone, snapshot rewrite, seal files.
 prep_job() {
   local id="$1" fresh="$2" row rundir mirror scratch cwd cwd_norm repo sha
-  local mapline ref copy bylen
+  local mapline ref copy bylen oldtmp
   row="$(manifest_row "$id")"
   repo="$(row_field "$row" 5)"
   sha="$(row_field "$row" 6)"
@@ -559,7 +560,13 @@ prep_job() {
     err "run dir $rundir exists (pass --fresh to redo $id)"
     return 1
   fi
-  [ "$fresh" -eq 1 ] && rm -rf "$rundir"
+  if [ "$fresh" -eq 1 ] && [ -e "$rundir" ]; then
+    if [ -f "$rundir/tmpdir" ]; then
+      oldtmp="$(cat "$rundir/tmpdir" 2>/dev/null)"
+      case "$oldtmp" in /tmp/frp-*) rm -rf "$oldtmp" ;; esac
+    fi
+    rm -rf "$rundir"
+  fi
   mkdir -p "$rundir"
   mirror="$(mirror_path "$repo")"
   git clone -q "$mirror" "$rundir/scratch" 2>/dev/null || { err "$id: clone failed"; return 1; }
@@ -639,7 +646,7 @@ collect_notes() {
     | (if (try .payload.arguments.command catch null) | type == "string" then .payload.arguments.command
        elif (.payload.arguments | type == "string") then .payload.arguments
        else "" end) as $ctext
-    | select($cmd | (($ctext != "" and ($ctext | test("(^|[;&|(\\n]|\\$\\()[ \\t]*(git[ \\t]+push|gh|curl|wget)\\b")))
+    | select($cmd | (($ctext != "" and ($ctext | test("(^|[;&|(\\n]|\\$\\()[ \\t]*([A-Za-z_][A-Za-z0-9_]*=[^ \\t]*[ \\t]+|(env|command|exec|nohup|time|sudo)[ \\t]+)*(git[ \\t]+push|gh|curl|wget)\\b")))
         or ((contains($home + "/work/") or contains($home + "/.agents"))
             and (contains($scratch) | not))))
     | "note: " + $cmd[0:200]' "$ev" 2>/dev/null)"
