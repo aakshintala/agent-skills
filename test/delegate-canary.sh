@@ -429,7 +429,7 @@ git -C "$HOME/work/fiber" show-ref --verify --quiet refs/heads/canary/225-pi && 
 git -C "$HOME/work/fiber" show-ref --verify --quiet refs/heads/canary/225-fiber && fail "fiber branch removed"
 [ ! -f "$OUT4/pi/worktree" ] && [ ! -f "$OUT4/fiber/worktree" ] || fail "worktree files removed"
 [ -f "$OUT4/pi/metrics.json" ] && [ -f "$OUT4/summary.md" ] || fail "metrics stay after clean"
-git -C "$HOME/work/fiber" worktree list --porcelain | grep -q '225' && fail "225 worktrees unregistered"
+git -C "$HOME/work/fiber" worktree list --porcelain | grep -q -- '-canary-225-' && fail "225 worktrees unregistered"
 
 # a cleaned ticket runs again
 FAKE_EVENTS="$T/ev2.jsonl" bash "$CANARY" run 225 "$T/brief.md" \
