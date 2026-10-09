@@ -605,7 +605,7 @@ prep_job() {
     literal_replace "$rundir/prompt.md" "$ref" "$rundir/briefs/$copy" || return 1
   done <"$bylen"
   rm -f "$bylen"
-  write_seal "$rundir"
+  write_seal "$rundir" || { err "$id: seal setup failed"; return 1; }
   RUN_TARGET_SUFFIX="$(printf '%s' "$repo" | tr '/' '_')"
   run_in_seal "$rundir" "$FIBER_BIN" version >"$rundir/version.txt" 2>&1 \
     || { err "$id: fiber version failed"; return 1; }

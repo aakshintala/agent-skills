@@ -425,6 +425,12 @@ ATMP="$(cat "$T/tmpA/runs/job-hr/tmpdir")"; BTMP="$(cat "$T/tmpB/runs/job-hr/tmp
 [ "$ATMP" != "$BTMP" ] || fail "same job id in two out dirs gets different TMPDIRs"
 [ -d "$ATMP" ] || fail "first prep dir survives second prep"
 rm -rf "$ATMP" "$BTMP"
+# a failed TMPDIR allocation fails write_seal, and prep_job propagates it
+mkdir -p "$T/nomktemp" "$T/tmpC/runs/job-hr"
+printf '#!/bin/sh\nexit 1\n' >"$T/nomktemp/mktemp"
+chmod +x "$T/nomktemp/mktemp"
+PATH="$T/nomktemp:$PATH" RUN_OUT="$T/tmpC" bash -c '. "$1"; write_seal "$2"' _ "$T/tmpdir-funcs.sh" "$T/tmpC/runs/job-hr" && fail "write_seal fails when mktemp fails"
+grep -qF 'write_seal "$rundir" || {' "$REPLAY" || fail "prep_job propagates a write_seal failure"
 grep -qF "FIBER_BIN=$OUT2/fiber-target/release/fiber" "$HRENV" || fail "FIBER_BIN is the built fiber"
 grep -qF "FIBER_HOME=$OUT2/fiber-home" "$HRENV" || fail "FIBER_HOME under OUT"
 grep -qF "GH_TOKEN=replay-invalid" "$HRENV" || fail "GH_TOKEN invalid"
