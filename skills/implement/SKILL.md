@@ -15,11 +15,21 @@ You are the orchestrator for one ticket. The **main orchestrator** is the sessio
 - **Fix by churn.** Make a trivial change (a one-line deletion, a rename, a PR-body or label fix) inline, then run the gate yourself and state its output. Send a change that may start a run-and-fix loop (new behaviour, a fix whose cause isn't confirmed, an edit across several files) to a gated job.
 - **One worktree per job**, named for its branch, deleted on merge.
 
-## Fast path
+## Fast paths
+
+Planning is spent where the ticket leaves something to decide. Two kinds of ticket skip the plan; every other ticket takes the full path.
+
+### Confirmed bug
 
 Take it when the root cause is **confirmed**: a red test, or a `diagnosing-bugs` result, names the faulty code, and the fix stays in the faulty module, the call sites a signature change forces, and its test. A small diff whose cause is a guess takes the full path. The cause decides, not the size.
 
 Run step 1, skip steps 2–3, then build in a worktree cut from `origin/main`. The fence is that module, those call sites and the test, and it stands in for the plan's Files in the gate. Use an existing confirming test, or add one that goes red before the fix. Make the fix inline when **Fix by churn** allows, otherwise as a gated job whose brief names the cause, the fence and the gate, and has the job push, open a draft PR with the ticket's `Resolves` line, and report its URL and head SHA. Inline, do those three yourself. Then run steps 5–9 as written. Leave the fast path for step 2 when the fix spreads past the fence or the test won't go red.
+
+### Determined ticket
+
+Take it when the ticket is **determined**: it adds no new type, event, config key or doc decision, and its files are named in the ticket or found by one grep. A move, a rename or a mechanical removal is determined; a refactor that chooses new boundaries is not.
+
+Run steps 1–2. When the preflight finds no `core` item, skip step 3: fill `../planning/briefs/lane.md` yourself, with a `PLAN` of three parts: Rung `standard`; Files (the preflight's file list); and Tasks (the ticket's acceptance criteria, each with the test or command that shows it met). `GATE` is the workflow doc's gate. Then run steps 4–9 as written. When a build fails twice on the same finding, write the plan (step 3) and continue from there.
 
 ### 1. Check setup
 
@@ -35,7 +45,7 @@ Done when you know the tracker, labels, workflow doc and models, and the task ha
 
 Prepare the base first. A new ticket's base is `origin/main`. A re-plan's base is the PR's branch, brought up to date: merge `origin/main` into it in the PR's worktree and push, so the preflight and the Verifier never read a stale branch. Run the preflight and the Verifier in a checkout of the base: an up-to-date clone on `origin/main`, or the PR's worktree.
 
-Fill `../planning/briefs/preflight.md` with `fill-brief --out <absolute path>` (e.g. `~/.cache/agents/<repo>-<issue>-preflight.md`) and run it as its own job, on a `strong` model from a different family than yours, before any plan exists, using the printed line verbatim as the prompt, never a hand-written path. A `core` item parks the ticket. `non-blocking` items and the file list go to the plan.
+Fill `../planning/briefs/preflight.md` with `fill-brief --out <absolute path>` (e.g. `~/.cache/agents/<repo>-<issue>-preflight.md`) and run it as its own job, on a `strong` model from a different family than yours, before any plan exists, using the printed line verbatim as the prompt, never a hand-written path. Save the preflight's report beside its brief as `<repo>-<issue>-preflight-out.md` and hand that path, never the brief's, to whoever writes the plan. A `core` item parks the ticket. `non-blocking` items and the file list go to the plan.
 
 Done when the preflight has returned and no `core` item is open.
 
