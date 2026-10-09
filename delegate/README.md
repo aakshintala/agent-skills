@@ -64,6 +64,7 @@ fiber clone, never `~/work/fiber`), `DELEGATE_BIN`, `REPLAY_SANDBOX_EXEC`
 (fake `sandbox-exec` for tests). The seal denies writes under `$HOME` and the
 real jobs dir, pins `gh` to a shim that exits 1, and voids `GH_TOKEN`;
 `FIBER_HOME` and the cargo target stay under the out dir.
+The replay `TMPDIR` is `/tmp/frp-<id8>` (first 8 chars of the job id): Fiber and its tests put unix sockets under `TMPDIR`, and a path under the out dir leaves no room under the 103-byte socket limit.
 
 ## Skill
 

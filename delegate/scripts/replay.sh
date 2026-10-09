@@ -636,9 +636,12 @@ collect_notes() {
     | .payload.name as $n
     | (.payload.arguments | if type=="string" then . else tojson end) as $a
     | ($n + " " + $a) as $cmd
-    | select($cmd | test("git push|gh |curl |wget ")
+    | (if (try .payload.arguments.command catch null) | type == "string" then .payload.arguments.command
+       elif (.payload.arguments | type == "string") then .payload.arguments
+       else "" end) as $ctext
+    | select($cmd | (($ctext != "" and ($ctext | test("(^|[;&|(\\n]|\\$\\()[ \\t]*(git[ \\t]+push|gh|curl|wget)\\b")))
         or ((contains($home + "/work/") or contains($home + "/.agents"))
-            and (contains($scratch) | not)))
+            and (contains($scratch) | not))))
     | "note: " + $cmd[0:200]' "$ev" 2>/dev/null)"
   if [ -n "$match" ]; then
     printf '%s\n' "$match" >>"$rundir/notes.txt"

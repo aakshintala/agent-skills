@@ -364,9 +364,11 @@ git -C "$T/fiberwork" -c user.email=t@t -c user.name=t commit -q --allow-empty -
 git -C "$T/fiberwork" push -q "$T/fiber-origin.git" main 2>/dev/null
 REPLAY_FIBER_SRC="$T/fiber-src"
 export REPLAY_FIBER_SRC
-mkdir -p "$HOME/.fiber/credentials"
+mkdir -p "$HOME/.fiber/credentials" "$HOME/.fiber/extensions"
 printf '{"model":"m"}' >"$HOME/.fiber/config.json"
 printf 'secret' >"$HOME/.fiber/credentials/tok"
+printf '{"ext":"e"}' >"$HOME/.fiber/extensions/ext.json"
+printf 'rule' >"$HOME/.fiber/rules"
 export REPLAY_SANDBOX_EXEC="$FBIN/sandbox-deny"
 
 # usage errors first: no source, live source, batch+job, bad share
@@ -409,7 +411,9 @@ HRENV="$(grep -lF "cwd=$OUT2/runs/job-hr/scratch" "$FLOG"/run-fake-*.env | head 
 grep -qF "model=$MUSE_FIBER" "$HRENV" || fail "delegate ran the fiber model"
 grep -qF "prompt=$OUT2/runs/job-hr/prompt.md" "$HRENV" || fail "delegate read the run prompt"
 grep -qF "gate=true" "$HRENV" || fail "delegate got the gate"
-grep -qF "TMPDIR=$OUT2/runs/job-hr/tmp" "$HRENV" || fail "TMPDIR is the run tmp"
+grep -qF "TMPDIR=/tmp/frp-job-hr" "$HRENV" || fail "TMPDIR is /tmp/frp-<id8>"
+HRTMP="$(grep '^TMPDIR=' "$HRENV" | cut -d= -f2)"
+[ "${#HRTMP}" -lt 20 ] || fail "replay TMPDIR fits in 20 bytes"
 grep -qF "FIBER_BIN=$OUT2/fiber-target/release/fiber" "$HRENV" || fail "FIBER_BIN is the built fiber"
 grep -qF "FIBER_HOME=$OUT2/fiber-home" "$HRENV" || fail "FIBER_HOME under OUT"
 grep -qF "GH_TOKEN=replay-invalid" "$HRENV" || fail "GH_TOKEN invalid"
@@ -419,13 +423,22 @@ grep -qF "GIT_CONFIG_GLOBAL=$OUT2/runs/job-hr/gitconfig" "$HRENV" || fail "gitco
 grep -qF "CARGO_TARGET_DIR=$OUT2/target/aakshintala_fiber" "$HRENV" || fail "cargo target per repo"
 grep -qF "PATH0=$OUT2/runs/job-hr/shim" "$HRENV" || fail "shim first on PATH"
 [ -f "$OUT2/runs/job-hr/record.json" ] || fail "record copied out of sealed tmp"
+HRMATCH=0
+for f in "$HRTMP/delegate-jobs/"*.json; do
+  [ -e "$f" ] || continue
+  cmp -s "$f" "$OUT2/runs/job-hr/record.json" && HRMATCH=1
+done
+[ "$HRMATCH" -eq 1 ] || fail "record copied from TMPDIR/delegate-jobs"
 grep -qF '"backend": "fiber"' "$OUT2/runs/job-hr/record.json" || fail "record is the replay record"
 if ls "${TMPDIR:-/tmp}/delegate-jobs/fake-"* >/dev/null 2>&1; then fail "replay record leaked to real jobs dir"; fi
+[ "$(head -n 1 "$OUT2/runs/job-hr/seal.sb")" = "(version 1)" ] || fail "seal profile starts with (version 1)"
 grep -qF "$OUT2" "$OUT2/runs/job-hr/seal.sb" || fail "seal profile names OUT"
 grep -qF "${TMPDIR:-/tmp}/delegate-jobs" "$OUT2/runs/job-hr/seal.sb" || fail "seal denies real jobs dir"
 "$OUT2/runs/job-hr/shim/gh" >/dev/null 2>&1 && fail "shim gh exits 1"
 grep -q "fiber 0.0.0 (testhash)" "$OUT2/runs/job-hr/version.txt" || fail "fiber version recorded"
 [ -f "$OUT2/fiber-home/config.json" ] || fail "fiber home copied"
+[ -f "$OUT2/fiber-home/extensions/ext.json" ] || fail "fiber home copies extensions"
+[ -f "$OUT2/fiber-home/rules" ] || fail "fiber home copies rules file"
 if [ "$(uname)" = "Darwin" ]; then fibhome_mode="$(stat -f %Lp "$OUT2/fiber-home")"; else fibhome_mode="$(stat -c %a "$OUT2/fiber-home")"; fi
 [ "$fibhome_mode" = "700" ] || fail "fiber home mode 700"
 grep -q "events missing" "$OUT2/runs/job-hr/notes.txt" || fail "missing events noted"
@@ -565,6 +578,24 @@ bash "$REPLAY" run --out "$OUTH" --share muse --batch 3 >/dev/null || fail "head
 grep -qF "$OUTH/runs/job-hdr/scratch" "$OUTH/runs/job-hdr/prompt.md" || fail "header path rewritten to scratch"
 grep -qF "$HDRCWD" "$OUTH/runs/job-hdr/prompt.md" && fail "header original gone from prompt"
 grep -qF "/nonexistent/nowhere/xyz" "$OUTH/runs/job-hdr/prompt.md" && fail "resume cwd never leaks into prompt"
+
+# --- collect_notes matches outward commands only at command position ---
+sed -n '/^collect_notes() {/,/^}/p' "$REPLAY" >"$T/collect_notes.sh"
+CNOTES="$T/cnotes"; RCOUT="$T/cnotes-out"
+mkdir -p "$CNOTES/scratch" "$RCOUT/runs/cn1"
+printf '{"status":"DONE","resume":{"sessionId":"cn-sid-1"}}' >"$RCOUT/runs/cn1/record.json"
+mkdir -p "$RCOUT/fiber-home/projects/p/sessions/cn-sid-1"
+cat >"$RCOUT/fiber-home/projects/p/sessions/cn-sid-1/events.jsonl" <<'EOF'
+{"kind":"tool_call_requested","session_id":"cn-sid-1","ts":1,"schema_version":1,"action_id":"c1","payload":{"name":"shell","arguments":{"command":"git commit -m \"through the high road\""}}}
+{"kind":"tool_call_requested","session_id":"cn-sid-1","ts":2,"schema_version":1,"action_id":"c2","payload":{"name":"shell","arguments":{"command":"cd x && git push origin HEAD"}}}
+{"kind":"tool_call_requested","session_id":"cn-sid-1","ts":3,"schema_version":1,"action_id":"c3","payload":{"name":"shell","arguments":{"command":"gh pr create"}}}
+{"kind":"tool_call_requested","session_id":"cn-sid-1","ts":4,"schema_version":1,"action_id":"c4","payload":{"name":"shell","arguments":{"command":"echo; curl -s u"}}}
+EOF
+RUN_OUT="$RCOUT" bash -c '. "$1"; collect_notes cn1 "$2/runs/cn1" "$3/scratch"' _ "$T/collect_notes.sh" "$RCOUT" "$CNOTES" || fail "collect_notes runs"
+grep -q "through the high road" "$RCOUT/runs/cn1/notes.txt" && fail "commit message with gh inside a word is not outward"
+grep -q "git push origin HEAD" "$RCOUT/runs/cn1/notes.txt" || fail "git push after && is outward"
+grep -q "gh pr create" "$RCOUT/runs/cn1/notes.txt" || fail "gh pr create is outward"
+grep -q "curl -s u" "$RCOUT/runs/cn1/notes.txt" || fail "curl after ; is outward"
 
 echo "run cases passed"
 
