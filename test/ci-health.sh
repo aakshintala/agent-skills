@@ -189,6 +189,26 @@ run_health --json
 expect 1 "release-exit-127"
 [ "$(jget "d['design_failures'][0]['kind']")" = "release-exit-127" ] || fail "release kind: [$OUT]"
 
+# --- design: exit 127 persists on a warm state (evidence cached, not raw text) ---
+setup rel127
+run_health --json
+[ "$CODE" = "1" ] || fail "first run exits 1 (got $CODE): [$OUT]"
+run_health --json
+expect 1 "release-exit-127"
+[ "$(grep -c 'actions/jobs/43/logs' "$FAKE_GH_LOG")" = "1" ] \
+  || fail "release log fetched once across runs: [$(cat "$FAKE_GH_LOG")]"
+python3 -c "import json; d=json.load(open('$HOME/.cache/switchyard/ci-health.json')); assert all('text' not in v for v in d.get('logcache', {}).values() if isinstance(v, dict)), d.get('logcache')" \
+  || fail "no raw log text cached"
+
+# --- backstop: an unfinished core job skips the run (neither green nor red) ---
+setup unfinished
+run_health --json
+[ "$CODE" = "0" ] || fail "unfinished exits 0 (got $CODE): [$OUT]"
+[ "$(jget "d['backstop']['red_streak']")" = "0" ] || fail "no red streak: [$OUT]"
+[ "$(jget "d['backstop']['last_core_green_sha']")" = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ] \
+  || fail "green at the older run: [$OUT]"
+grep -q '"check": "backstop"' <<<"$OUT" && fail "covered backstop stays quiet: [$OUT]"
+
 # --- cache breach, and the flag moves it out ---
 setup cache
 run_health

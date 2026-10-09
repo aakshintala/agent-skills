@@ -49,9 +49,12 @@ case "$path" in
     case "$path" in *page=1*) cat "$scen/runs.json";; *) printf '{"workflow_runs":[]}';; esac;;
   *actions/runs/*/jobs*)
     rid="$(printf '%s' "$path" | sed -E 's/.*runs\/([0-9]+).*/\1/')"
+    page="$(printf '%s' "$path" | sed -nE 's/.*[?&]page=([0-9]+).*/\1/p')"
+    [ -n "$page" ] || page=1
     if [ -e "$T/fail-jobs-$rid" ]; then cat "$T/fail-jobs-$rid" >&2; exit 1; fi
-    f="jobs-$rid.json"
-    if [ -e "$scen/$f" ]; then cat "$scen/$f"; else printf '{"total_count":0,"jobs":[]}'; fi;;
+    if [ -e "$scen/jobs-$rid-p$page.json" ]; then cat "$scen/jobs-$rid-p$page.json";
+    elif [ "$page" = "1" ] && [ -e "$scen/jobs-$rid.json" ]; then cat "$scen/jobs-$rid.json";
+    else printf '{"total_count":0,"jobs":[]}'; fi;;
   *actions/jobs/*/logs)
     jid="$(printf '%s' "$path" | sed -E 's/.*jobs\/([0-9]+).*/\1/')"
     if [ -e "$T/fail-log-$jid" ]; then cat "$T/fail-log-$jid" >&2; exit 1; fi
@@ -61,11 +64,16 @@ case "$path" in
     key="$(printf '%s' "$q" | sed -E 's/[^A-Za-z0-9]+/-/g')"
     f="search/$key.json"
     if [ -e "$scen/$f" ]; then cat "$scen/$f"; else printf '{"total_count":0,"items":[]}'; fi;;
-  *issues/*/events)
+  *issues/*/events*)
     n="$(printf '%s' "$path" | sed -E 's/.*issues\/([0-9]+).*/\1/')"
-    serve "events/$n.json" "events-$n";;
+    page="$(printf '%s' "$path" | sed -nE 's/.*[?&]page=([0-9]+).*/\1/p')"
+    [ -n "$page" ] || page=1
+    if [ -e "$T/fail-events-$n" ]; then cat "$T/fail-events-$n" >&2; exit 1; fi
+    if [ -e "$scen/events/$n-p$page.json" ]; then cat "$scen/events/$n-p$page.json";
+    elif [ "$page" = "1" ] && [ -e "$scen/events/$n.json" ]; then cat "$scen/events/$n.json";
+    else printf '[]'; fi;;
   *repos/*/issues/*)
-    n="$(printf '%s' "$path" | sed -E 's/.*issues\/([0-9]+).*/\1/')"
+    n="$(printf '%s' "$path" | sed -E 's/.*issues\/([0-9]+)[^0-9]*$/\1/')"
     serve "issues/$n.json" "issues-$n";;
   *pulls\?*)
     br="$(printf '%s' "$path" | sed -E 's/.*head=[^:]+:([^&]+).*/\1/')"
@@ -217,6 +225,24 @@ run_friction --min-lanes 1 --json >/dev/null
   || fail "one compare per pair, cached: [$(cat "$FAKE_GH_LOG")]"
 [ "$(grep -c 'issues/1470/events' "$FAKE_GH_LOG")" = "1" ] \
   || fail "events fetched once: [$(cat "$FAKE_GH_LOG")]"
+
+# --- 18g: post-fix sighting before closure is still a recurrence ---
+setup fixlate
+run_friction --json
+[ "$CODE" = "1" ] || fail "fixlate exits 1 (got $CODE): [$OUT]"
+[ "$(jget "d['repeats']")" = "[]" ] || fail "single lane is no repeat: [$OUT]"
+[ "$(jget "d['recurred_after_close'][0]['issue']")" = "1471" ] || fail "recur issue: [$OUT]"
+[ "$(jget "d['recurred_after_close'][0]['lanes']")" = "['#1502']" ] \
+  || fail "recur lanes: [$OUT]"
+
+# --- jobs pagination: a failure on page 2 is still seen ---
+setup paged
+run_friction --min-lanes 1 --json
+[ "$CODE" = "1" ] || fail "paged exits 1 (got $CODE): [$OUT]"
+[ "$(jget "[r['test'] for r in d['repeats']]")" = "['fiber-core doors::far']" ] \
+  || fail "page-2 failure seen: [$OUT]"
+[ "$(grep -c 'actions/runs/601/jobs' "$FAKE_GH_LOG")" = "2" ] \
+  || fail "full page plus the short one: [$(cat "$FAKE_GH_LOG")]"
 
 # --- exits: 2 on usage and on listing failures, state still written ---
 OUT="$(python3 "$FRICTION" --since 24h 2>"$T/stderr.txt")"; CODE=$?

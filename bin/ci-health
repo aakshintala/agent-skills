@@ -392,21 +392,25 @@ def main(argv):
             if j.get("conclusion") == "failure" and group(j.get("name")) == "Release build and size (Linux x86_64)":
                 release_logs_needed.append((r, j))
 
-    def job_log(jid):
-        key = str(jid)
-        if key in log_cache and isinstance(log_cache[key], dict) and "text" in log_cache[key]:
-            return log_cache[key]["text"]
+    def fetch_log(jid):
         try:
-            text = gh.api("repos/%s/actions/jobs/%s/logs" % (repo, jid), escape=True)
+            return gh.api("repos/%s/actions/jobs/%s/logs" % (repo, jid), escape=True)
         except subprocess.CalledProcessError:
             gh.partial = True
             return None
-        log_cache[key] = {"text": text[:20000]}
-        return text
 
     for r, j in release_logs_needed:
-        text = job_log(j.get("id"))
-        if text is not None and "Process completed with exit code 127" in text:
+        key = str(j.get("id"))
+        ent = log_cache.get(key)
+        if isinstance(ent, dict) and "exit127" in ent:
+            is127 = ent["exit127"]
+        else:
+            text = fetch_log(j.get("id"))
+            if text is None:
+                continue
+            is127 = "Process completed with exit code 127" in text
+            log_cache[key] = {"exit127": is127}
+        if is127:
             design.append({"kind": "release-exit-127", "run_id": r.get("id"),
                            "job_id": j.get("id"), "job": j.get("name")})
     if design:
@@ -467,6 +471,8 @@ def main(argv):
                 if group(j.get("name")) in CORE]
         if not core:
             return None
+        if any(not j.get("conclusion") for j in core):
+            return None  # unfinished core job: neither green nor red
         if any((j.get("conclusion") or "") == "failure" for j in core):
             return "red"
         if all(j.get("conclusion") in ("success", "skipped") for j in core):
@@ -534,7 +540,7 @@ def main(argv):
             if key in log_cache and isinstance(log_cache[key], list):
                 out.update(log_cache[key])
                 continue
-            text = job_log(j.get("id"))
+            text = fetch_log(j.get("id"))
             if text is None:
                 continue
             cs = run_causes(text)
@@ -560,11 +566,23 @@ def main(argv):
            "cache_bytes": cache_bytes, "breaches": breaches,
            "partial": gh.partial}
 
-    # prune runs older than the lookback, then write state
+    # prune runs older than the lookback, then the log cache with the runs
+    # cache: only evidence (exit-127 flags, cause strings) for live jobs stays
     for rid in [k for k, v in runs_cache.items()
                 if not (isinstance(v, dict) and parse_ts(v.get("created_at") or "")
                         and parse_ts(v["created_at"]) >= lookback)]:
         runs_cache.pop(rid, None)
+    live = set()
+    for v in runs_cache.values():
+        for j in v.get("jobs", []) if isinstance(v, dict) else []:
+            if isinstance(j, dict) and j.get("id") is not None:
+                live.add(str(j["id"]))
+    for k in list(log_cache.keys()):
+        jid = k[len("causes:"):] if k.startswith("causes:") else k
+        v = log_cache[k]
+        if jid not in live or not (isinstance(v, list)
+                                   or (isinstance(v, dict) and "text" not in v)):
+            log_cache.pop(k, None)
     # debt: hourly cadence, upgrade trigger is a second writer of this file
     st.update({"last_check": iso(now), "runs": runs_cache,
                "logcache": log_cache,

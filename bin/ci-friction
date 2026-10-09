@@ -197,6 +197,25 @@ def gh_api(path, escape=False):
     return p.stdout
 
 
+def gh_paged(base, key):
+    """Fetch per_page=100 pages until a short page; cap 10 (cap hit warns)."""
+    items = []
+    for page in range(1, 11):
+        sep = "&" if "?" in base else "?"
+        out = gh_api("%s%sper_page=100&page=%d" % (base, sep, page))
+        data = json.loads(out)
+        batch = data.get(key, []) if isinstance(data, dict) else data
+        if not isinstance(batch, list):
+            raise Fatal("gh api %s returned no %s list"
+                        % (base.split("?")[0], key or "items"))
+        items.extend(batch)
+        if len(batch) < 100:
+            return items
+    print("ci-friction: page cap hit for %s" % base.split("?")[0],
+          file=sys.stderr)
+    return items
+
+
 def load_state(path):
     try:
         with open(path) as fh:
@@ -277,6 +296,9 @@ def main(argv):
             runs.extend(batch)
             if len(batch) < 100:
                 break
+        else:
+            print("ci-friction: page cap hit for repos/%s/actions/runs" % repo,
+                  file=sys.stderr)
     except Fatal as e:
         fail(str(e))
     runs = [r for r in runs if (r.get("conclusion") in ("failure", "cancelled")
@@ -311,8 +333,8 @@ def main(argv):
         for r in sorted(runs, key=lambda r: r.get("created_at") or ""):
             lane = lane_of(r)
             try:
-                out = gh_api("repos/%s/actions/runs/%s/jobs?per_page=100&page=1" % (repo, r.get("id")))
-                jobs = json.loads(out).get("jobs", [])
+                jobs = gh_paged("repos/%s/actions/runs/%s/jobs" % (repo, r.get("id")),
+                                "jobs")
             except Fatal as e:
                 print("ci-friction: %s" % e, file=sys.stderr)
                 ok = False
@@ -403,8 +425,8 @@ def main(argv):
             continue
         if "fix_commit" not in ent:
             try:
-                evts = json.loads(gh_api("repos/%s/issues/%s/events"
-                                           % (repo, ent["issue"])))
+                evts = gh_paged("repos/%s/issues/%s/events" % (repo, ent["issue"]),
+                                None)
             except Fatal as e:
                 print("ci-friction: %s" % e, file=sys.stderr)
                 ok = False
@@ -452,8 +474,11 @@ def main(argv):
                         "first_seen": first, "last_seen": last,
                         "issue": ent.get("issue"), "issue_state": ent.get("issue_state")})
         closed = ent.get("closed_at")
-        if ent.get("issue") and closed:
-            after = sorted({s[0] for s in sight if s[2] > closed})
+        if ent.get("issue") and (closed or ent.get("fix_commit")):
+            if ent.get("fix_commit"):
+                after = sorted({s[0] for s in sight})
+            else:
+                after = sorted({s[0] for s in sight if s[2] > closed})
             if after:
                 recurred.append({"test": key, "issue": ent["issue"],
                                  "closed_at": closed, "lanes": after, "last_seen": last})
@@ -463,8 +488,11 @@ def main(argv):
             continue
         ent = issues_st.get(key, {})
         closed = ent.get("closed_at")
-        if ent.get("issue") and closed:
-            after = sorted({s[0] for s in seen[key] if s[2] > closed})
+        if ent.get("issue") and (closed or ent.get("fix_commit")):
+            if ent.get("fix_commit"):
+                after = sorted({s[0] for s in seen[key]})
+            else:
+                after = sorted({s[0] for s in seen[key] if s[2] > closed})
             if after:
                 recurred.append({"test": key, "issue": ent["issue"], "closed_at": closed,
                                  "lanes": after,
