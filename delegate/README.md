@@ -62,8 +62,13 @@ Inputs: `REPLAY_JOBS_DIR` (default `$TMPDIR/delegate-jobs`),
 (prefix TAB owner/name), `REPLAY_REMOTE_BASE`, `REPLAY_FIBER_SRC` (a dedicated
 fiber clone, never `~/work/fiber`), `DELEGATE_BIN`, `REPLAY_SANDBOX_EXEC`
 (fake `sandbox-exec` for tests). The seal denies writes under `$HOME` and the
-real jobs dir, pins `gh` to a shim that exits 1, and voids `GH_TOKEN`;
+real jobs dir, voids `GH_TOKEN`, and puts logging shims first on `PATH`:
+`gh` logs and exits 1, `curl` and `wget` log then exec the real binary,
+and `git` logs outward subcommands (`push`, `remote`, `send-email`,
+`request-pull`) then execs the real git. Each shim appends one line to
+`runs/<id>/outward.log`, which `report` surfaces as `note: outward:` lines;
 `FIBER_HOME` and the cargo target stay under the out dir.
+The replay `TMPDIR` is a unique `mktemp -d /tmp/frp-XXXXXX` dir per prep (path recorded in `runs/<id>/tmpdir`): Fiber and its tests put unix sockets under `TMPDIR`, and a path under the out dir leaves no room under the 103-byte socket limit.
 
 ## Skill
 

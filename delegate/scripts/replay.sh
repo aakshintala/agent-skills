@@ -454,15 +454,58 @@ setup_fiber_home() {
   chmod 700 "$fh"
   [ -f "$src/config.json" ] && { cp "$src/config.json" "$fh/"; chmod 600 "$fh/config.json"; }
   [ -d "$src/credentials" ] && { cp -r "$src/credentials" "$fh/"; chmod -R go-rwx "$fh/credentials"; }
-  [ -d "$src/rules" ] && { cp -r "$src/rules" "$fh/"; }
+  [ -d "$src/extensions" ] && { cp -R "$src/extensions" "$fh/"; }
+  [ -e "$src/rules" ] && { cp -R "$src/rules" "$fh/"; }
   return 0
 }
 
-# write_seal RUNDIR: seal.sb profile, gh shim, gitconfig, tmp dir.
+# sh_quote S: shell single-quoted literal for baking paths into shims.
+sh_quote() {
+  local s="$1" esc
+  esc="$(printf '%s' "$s" | sed "s/'/'\\\\''/g")"
+  printf "'%s'" "$esc"
+}
+
+# clean_recorded_tmpdir RUNDIR: remove the recorded TMPDIR only when it is
+# exactly mktemp's /tmp/frp-XXXXXX form, a non-symlink dir owned by us.
+# Anything else is left alone with a warning: the sealed replay can rewrite
+# DIR, so a recorded path is untrusted.
+clean_recorded_tmpdir() {
+  local rundir="$1" oldtmp suffix
+  [ -f "$rundir/tmpdir" ] || return 0
+  oldtmp="$(cat "$rundir/tmpdir" 2>/dev/null)"
+  case "$oldtmp" in
+    /tmp/frp-??????) ;;
+    *) err "warning: leaving unexpected tmpdir $oldtmp"; return 0 ;;
+  esac
+  suffix="${oldtmp#/tmp/frp-}"
+  case "$suffix" in
+    ''|*[!A-Za-z0-9]*) err "warning: leaving unexpected tmpdir $oldtmp"; return 0 ;;
+  esac
+  if [ ! -d "$oldtmp" ] || [ -L "$oldtmp" ] || [ ! -O "$oldtmp" ]; then
+    err "warning: leaving unexpected tmpdir $oldtmp"
+    return 0
+  fi
+  rm -rf "$oldtmp"
+}
+
+# run_tmp RUNDIR: the replay's TMPDIR, a unique short dir per prep recorded in
+# RUNDIR/tmpdir. Short and outside DIR on purpose: Fiber and its tests put
+# unix sockets under TMPDIR, and a socket path must fit in 103 bytes, which
+# a TMPDIR under DIR/runs/<uuid>/ does not leave room for.
+run_tmp() {
+  cat "$1/tmpdir" 2>/dev/null
+}
+
+# write_seal RUNDIR: seal.sb profile, outward shims, gitconfig, tmp dir.
+# The shims log execution to RUNDIR/outward.log: gh logs and exits 1, curl
+# and wget log then exec the real binary, git logs outward subcommands
+# (push, remote, send-email, request-pull) then execs the real git.
 write_seal() {
-  local rundir="$1" home="${HOME:-/tmp}" realtmp="${RUN_REALTMP:-/tmp}"
+  local rundir="$1" home="${HOME:-/tmp}" realtmp="${RUN_REALTMP:-/tmp}" tmpdir
+  local seal_path p old_ifs real_git real_curl real_wget q_log q_git q_curl q_wget
   {
-    printf '(allow default)\n'
+    printf '(version 1)\n(allow default)\n'
     printf '(deny file-write* (subpath %s))\n' "$(sb_quote "$home")"
     printf '(allow file-write* (subpath %s) (subpath %s) (subpath %s))\n' \
       "$(sb_quote "$RUN_OUT")" "$(sb_quote "$home/.cargo/registry")" "$(sb_quote "$home/.cargo/git")"
@@ -470,13 +513,98 @@ write_seal() {
     printf '(deny file-read* (subpath %s) (subpath %s) (literal %s))\n' \
       "$(sb_quote "$home/.ssh")" "$(sb_quote "$home/.config/gh")" "$(sb_quote "$home/.git-credentials")"
   } >"$rundir/seal.sb"
-  mkdir -p "$rundir/shim" "$rundir/tmp"
-  cat >"$rundir/shim/gh" <<'EOF'
+  mkdir -p "$rundir/shim"
+  seal_path=""
+  old_ifs="$IFS"
+  IFS=:
+  set -f
+  for p in $PATH; do
+    if [ "$p" != "$rundir/shim" ] && [ -n "$p" ]; then
+      if [ -z "$seal_path" ]; then seal_path="$p"; else seal_path="$seal_path:$p"; fi
+    fi
+  done
+  set +f
+  IFS="$old_ifs"
+  real_git="$(PATH="$seal_path" command -v git 2>/dev/null)"
+  real_curl="$(PATH="$seal_path" command -v curl 2>/dev/null)"
+  real_wget="$(PATH="$seal_path" command -v wget 2>/dev/null)"
+  case "$real_git" in /*) ;; *) real_git="" ;; esac
+  case "$real_curl" in /*) ;; *) real_curl="" ;; esac
+  case "$real_wget" in /*) ;; *) real_wget="" ;; esac
+  tmpdir="$(mktemp -d /tmp/frp-XXXXXX)" || return 1
+  printf '%s' "$tmpdir" >"$rundir/tmpdir"
+  : >"$rundir/outward.log"
+  q_log="$(sh_quote "$rundir/outward.log")"
+  cat >"$rundir/shim/gh" <<EOF
 #!/bin/sh
+if [ \$# -gt 0 ]; then printf 'gh %s\n' "\$*" >>$q_log; else printf 'gh\n' >>$q_log; fi
 echo "gh disabled in replay" >&2
 exit 1
 EOF
   chmod +x "$rundir/shim/gh"
+  q_curl="$(sh_quote "$real_curl")"
+  if [ -n "$real_curl" ]; then
+    cat >"$rundir/shim/curl" <<EOF
+#!/bin/sh
+if [ \$# -gt 0 ]; then printf 'curl %s\n' "\$*" >>$q_log; else printf 'curl\n' >>$q_log; fi
+exec $q_curl "\$@"
+EOF
+  else
+    cat >"$rundir/shim/curl" <<EOF
+#!/bin/sh
+if [ \$# -gt 0 ]; then printf 'curl %s\n' "\$*" >>$q_log; else printf 'curl\n' >>$q_log; fi
+echo "curl disabled in replay: real binary not found" >&2
+exit 127
+EOF
+  fi
+  chmod +x "$rundir/shim/curl"
+  q_wget="$(sh_quote "$real_wget")"
+  if [ -n "$real_wget" ]; then
+    cat >"$rundir/shim/wget" <<EOF
+#!/bin/sh
+if [ \$# -gt 0 ]; then printf 'wget %s\n' "\$*" >>$q_log; else printf 'wget\n' >>$q_log; fi
+exec $q_wget "\$@"
+EOF
+  else
+    cat >"$rundir/shim/wget" <<EOF
+#!/bin/sh
+if [ \$# -gt 0 ]; then printf 'wget %s\n' "\$*" >>$q_log; else printf 'wget\n' >>$q_log; fi
+echo "wget disabled in replay: real binary not found" >&2
+exit 127
+EOF
+  fi
+  chmod +x "$rundir/shim/wget"
+  q_git="$(sh_quote "$real_git")"
+  if [ -n "$real_git" ]; then
+    cat >"$rundir/shim/git" <<EOF
+#!/bin/sh
+for a in "\$@"; do
+  case "\$a" in
+    push|remote|send-email|request-pull)
+      if [ \$# -gt 0 ]; then printf 'git %s\n' "\$*" >>$q_log; else printf 'git\n' >>$q_log; fi
+      break
+      ;;
+  esac
+done
+exec $q_git "\$@"
+EOF
+  else
+    cat >"$rundir/shim/git" <<EOF
+#!/bin/sh
+for a in "\$@"; do
+  case "\$a" in
+    push|remote|send-email|request-pull)
+      if [ \$# -gt 0 ]; then printf 'git %s\n' "\$*" >>$q_log; else printf 'git\n' >>$q_log; fi
+      echo "git disabled in replay: real binary not found" >&2
+      exit 127
+      ;;
+  esac
+done
+echo "git disabled in replay: real binary not found" >&2
+exit 127
+EOF
+  fi
+  chmod +x "$rundir/shim/git"
   printf '[user]\n\tname = replay\n\temail = replay@invalid\n' >"$rundir/gitconfig"
 }
 
@@ -493,7 +621,7 @@ run_in_seal() {
     "GIT_CONFIG_GLOBAL=$rundir/gitconfig" \
     GIT_TERMINAL_PROMPT=0 \
     GIT_SSH_COMMAND=false \
-    "TMPDIR=$rundir/tmp" \
+    "TMPDIR=$(run_tmp "$rundir")" \
     "FIBER_HOME=$RUN_OUT/fiber-home" \
     "FIBER_BIN=$FIBER_BIN" \
     "CARGO_TARGET_DIR=$RUN_OUT/target/$suffix" \
@@ -524,6 +652,9 @@ seal_check() {
     err "seal open: git push probe succeeded"
     return 1
   fi
+  # probes above run through the shims; clear their log lines so the
+  # replay starts with an empty outward log.
+  : >"$rundir/outward.log"
   return 0
 }
 
@@ -549,7 +680,10 @@ prep_job() {
     err "run dir $rundir exists (pass --fresh to redo $id)"
     return 1
   fi
-  [ "$fresh" -eq 1 ] && rm -rf "$rundir"
+  if [ "$fresh" -eq 1 ] && [ -e "$rundir" ]; then
+    clean_recorded_tmpdir "$rundir"
+    rm -rf "$rundir"
+  fi
   mkdir -p "$rundir"
   mirror="$(mirror_path "$repo")"
   git clone -q "$mirror" "$rundir/scratch" 2>/dev/null || { err "$id: clone failed"; return 1; }
@@ -588,17 +722,24 @@ prep_job() {
     literal_replace "$rundir/prompt.md" "$ref" "$rundir/briefs/$copy" || return 1
   done <"$bylen"
   rm -f "$bylen"
-  write_seal "$rundir"
+  write_seal "$rundir" || { err "$id: seal setup failed"; return 1; }
   RUN_TARGET_SUFFIX="$(printf '%s' "$repo" | tr '/' '_')"
   run_in_seal "$rundir" "$FIBER_BIN" version >"$rundir/version.txt" 2>&1 \
     || { err "$id: fiber version failed"; return 1; }
   return 0
 }
 
-# collect_notes ID RUNDIR SCRATCH: outward-action attempts from fiber events.
+# collect_notes ID RUNDIR SCRATCH: outward attempts from the execution log
+# plus tool-call arguments that point outside the scratch.
 collect_notes() {
-  local id="$1" rundir="$2" scratch="$3" sid ev match
+  local id="$1" rundir="$2" scratch="$3" sid ev match line
   : >"$rundir/notes.txt"
+  if [ -f "$rundir/outward.log" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -n "$line" ] || continue
+      printf 'note: outward: %s\n' "$line" >>"$rundir/notes.txt"
+    done <"$rundir/outward.log"
+  fi
   sid="$(jq -r '.resume.sessionId // ""' "$rundir/record.json" 2>/dev/null)"
   if [ -z "$sid" ] || [ "$sid" = "null" ]; then
     printf 'note: no replay session id in record\n' >>"$rundir/notes.txt"
@@ -626,9 +767,8 @@ collect_notes() {
     | .payload.name as $n
     | (.payload.arguments | if type=="string" then . else tojson end) as $a
     | ($n + " " + $a) as $cmd
-    | select($cmd | test("git push|gh |curl |wget ")
-        or ((contains($home + "/work/") or contains($home + "/.agents"))
-            and (contains($scratch) | not)))
+    | select($cmd | (((contains($home + "/work/") or contains($home + "/.agents"))
+            and (contains($scratch) | not))))
     | "note: " + $cmd[0:200]' "$ev" 2>/dev/null)"
   if [ -n "$match" ]; then
     printf '%s\n' "$match" >>"$rundir/notes.txt"
@@ -653,9 +793,9 @@ launch_job() {
   fi
   run_in_seal "$rundir" "$DELEGATE_BIN" watch "$newid" >>"$rundir/delegate.err" 2>&1 \
     || { err "$id: delegate watch failed"; return 1; }
-  [ -f "$rundir/tmp/delegate-jobs/$newid.json" ] \
+  [ -f "$(run_tmp "$rundir")/delegate-jobs/$newid.json" ] \
     || { err "$id: replay record missing"; return 1; }
-  cp "$rundir/tmp/delegate-jobs/$newid.json" "$rundir/record.json"
+  cp "$(run_tmp "$rundir")/delegate-jobs/$newid.json" "$rundir/record.json"
   collect_notes "$id" "$rundir" "$rundir/scratch"
   return 0
 }
