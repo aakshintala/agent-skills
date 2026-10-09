@@ -416,7 +416,7 @@ HRTMP="$(grep '^TMPDIR=' "$HRENV" | cut -d= -f2)"
 [ "$(cat "$OUT2/runs/job-hr/tmpdir")" = "$HRTMP" ] || fail "run tmpdir file matches TMPDIR"
 [ -d "$HRTMP" ] || fail "replay TMPDIR exists"
 # two preps of the same job id in two out dirs get different TMPDIRs; the first survives the second prep
-sed -n '/^sb_quote() {/,/^}/p;/^run_tmp() {/,/^}/p;/^write_seal() {/,/^}/p' "$REPLAY" >"$T/tmpdir-funcs.sh"
+sed -n '/^sb_quote() {/,/^}/p;/^sh_quote() {/,/^}/p;/^run_tmp() {/,/^}/p;/^write_seal() {/,/^}/p' "$REPLAY" >"$T/tmpdir-funcs.sh"
 mkdir -p "$T/tmpA/runs/job-hr" "$T/tmpB/runs/job-hr"
 RUN_OUT="$T/tmpA" RUN_REALTMP="${TMPDIR:-/tmp}" bash -c '. "$1"; write_seal "$2"' _ "$T/tmpdir-funcs.sh" "$T/tmpA/runs/job-hr" || fail "write_seal A runs"
 RUN_OUT="$T/tmpB" RUN_REALTMP="${TMPDIR:-/tmp}" bash -c '. "$1"; write_seal "$2"' _ "$T/tmpdir-funcs.sh" "$T/tmpB/runs/job-hr" || fail "write_seal B runs"
@@ -431,6 +431,36 @@ printf '#!/bin/sh\nexit 1\n' >"$T/nomktemp/mktemp"
 chmod +x "$T/nomktemp/mktemp"
 PATH="$T/nomktemp:$PATH" RUN_OUT="$T/tmpC" bash -c '. "$1"; write_seal "$2"' _ "$T/tmpdir-funcs.sh" "$T/tmpC/runs/job-hr" && fail "write_seal fails when mktemp fails"
 grep -qF 'write_seal "$rundir" || {' "$REPLAY" || fail "prep_job propagates a write_seal failure"
+# --- --fresh leaves an untrusted recorded tmpdir alone ---
+sed -n '/^err() {/,/^}/p;/^sh_quote() {/,/^}/p;/^clean_recorded_tmpdir() {/,/^}/p' "$REPLAY" >"$T/clean-tmp.sh"
+SENT="$T/sentinel"; mkdir -p "$SENT"; printf 'keep' >"$SENT/keep.txt"
+RCLEAN="$T/cleanrun"; mkdir -p "$RCLEAN"
+# traversal past the old prefix check resolves to the sentinel
+printf '%s' "/tmp/frp-ABCDEF/../..$SENT" >"$RCLEAN/tmpdir"
+clean_warn="$(bash -c '. "$1"; clean_recorded_tmpdir "$2"' _ "$T/clean-tmp.sh" "$RCLEAN" 2>&1)"
+[ -f "$SENT/keep.txt" ] || fail "traversal tmpdir left untouched"
+case "$clean_warn" in *warning*) ;; *) fail "traversal tmpdir warns" ;; esac
+# non-matching name in the suite temp dir
+mkdir -p "$T/nope"; printf 'keep' >"$T/nope/k.txt"
+printf '%s' "$T/nope" >"$RCLEAN/tmpdir"
+clean_warn="$(bash -c '. "$1"; clean_recorded_tmpdir "$2"' _ "$T/clean-tmp.sh" "$RCLEAN" 2>&1)"
+[ -f "$T/nope/k.txt" ] || fail "non-matching tmpdir left untouched"
+case "$clean_warn" in *warning*) ;; *) fail "non-matching tmpdir warns" ;; esac
+# symlink at mktemp form pointing at a real dir
+SYMREAL="$T/symreal"; mkdir -p "$SYMREAL"; printf 'keep' >"$SYMREAL/k.txt"
+SYMLINK="$(mktemp -u /tmp/frp-XXXXXX)"
+ln -s "$SYMREAL" "$SYMLINK"
+printf '%s' "$SYMLINK" >"$RCLEAN/tmpdir"
+clean_warn="$(bash -c '. "$1"; clean_recorded_tmpdir "$2"' _ "$T/clean-tmp.sh" "$RCLEAN" 2>&1)"
+[ -f "$SYMREAL/k.txt" ] || fail "symlink target left untouched"
+[ -L "$SYMLINK" ] || fail "symlink itself left untouched"
+case "$clean_warn" in *warning*) ;; *) fail "symlink tmpdir warns" ;; esac
+rm -f "$SYMLINK"
+# an exact-form dir owned by us is still cleaned
+VALIDTMP="$(mktemp -d /tmp/frp-XXXXXX)"; printf 'x' >"$VALIDTMP/f.txt"
+printf '%s' "$VALIDTMP" >"$RCLEAN/tmpdir"
+bash -c '. "$1"; clean_recorded_tmpdir "$2"' _ "$T/clean-tmp.sh" "$RCLEAN" 2>/dev/null || fail "valid tmpdir cleans"
+[ -e "$VALIDTMP" ] && fail "valid tmpdir removed"
 grep -qF "FIBER_BIN=$OUT2/fiber-target/release/fiber" "$HRENV" || fail "FIBER_BIN is the built fiber"
 grep -qF "FIBER_HOME=$OUT2/fiber-home" "$HRENV" || fail "FIBER_HOME under OUT"
 grep -qF "GH_TOKEN=replay-invalid" "$HRENV" || fail "GH_TOKEN invalid"
@@ -460,7 +490,8 @@ if [ "$(uname)" = "Darwin" ]; then fibhome_mode="$(stat -f %Lp "$OUT2/fiber-home
 [ "$fibhome_mode" = "700" ] || fail "fiber home mode 700"
 grep -q "events missing" "$OUT2/runs/job-hr/notes.txt" || fail "missing events noted"
 
-# live brief edited after select has no effect; events plant outward notes
+# live brief edited after select has no effect; path-outside events plant notes
+# (command text alone is not outward: detection is by shim execution)
 printf '# changed after select\n' >"$BRIEFS/my brief.md"
 cat >"$T/events.jsonl" <<EOF
 {"kind":"tool_call_requested","session_id":"s","ts":1,"schema_version":1,"action_id":"a1","payload":{"name":"shell","arguments":{"command":"git push origin main"}}}
@@ -474,7 +505,7 @@ grep -q "changed after select" "$OUT2/runs/job-space/briefs/1-my brief.md" && fa
 grep -qF "$OUT2/runs/job-space/briefs/1-my brief.md" "$OUT2/runs/job-space/prompt.md" || fail "prompt re-pointed at run brief"
 grep -qF "$OUT2/runs/job-space/scratch" "$OUT2/runs/job-space/gate.txt" || fail "gate rewritten to scratch"
 grep -qF "$SPCWD" "$OUT2/runs/job-space/gate.txt" && fail "original cwd gone from gate"
-grep -q "git push origin main" "$OUT2/runs/job-space/notes.txt" || fail "git push noted"
+grep -q "git push origin main" "$OUT2/runs/job-space/notes.txt" && fail "command text alone is not outward"
 grep -q "work/other/file.ts" "$OUT2/runs/job-space/notes.txt" || fail "home work path noted"
 grep -q "scratch/file.ts" "$OUT2/runs/job-space/notes.txt" && fail "scratch path is not outward"
 unset FAKE_EVENTS
@@ -596,29 +627,84 @@ grep -qF "$OUTH/runs/job-hdr/scratch" "$OUTH/runs/job-hdr/prompt.md" || fail "he
 grep -qF "$HDRCWD" "$OUTH/runs/job-hdr/prompt.md" && fail "header original gone from prompt"
 grep -qF "/nonexistent/nowhere/xyz" "$OUTH/runs/job-hdr/prompt.md" && fail "resume cwd never leaks into prompt"
 
-# --- collect_notes matches outward commands only at command position ---
-sed -n '/^collect_notes() {/,/^}/p' "$REPLAY" >"$T/collect_notes.sh"
+# --- outward actions are detected by shim execution, not command text ---
+sed -n '/^err() {/,/^}/p;/^sb_quote() {/,/^}/p;/^sh_quote() {/,/^}/p;/^clean_recorded_tmpdir() {/,/^}/p;/^write_seal() {/,/^}/p;/^collect_notes() {/,/^}/p;/^run_tmp() {/,/^}/p' "$REPLAY" >"$T/shim-funcs.sh"
+SHIMT="$T/shimfix"
+mkdir -p "$SHIMT/fakereal" "$SHIMT/runs/s1" "$SHIMT/out"
+cat >"$SHIMT/fakereal/git" <<EOF
+#!/bin/sh
+printf 'real-git %s\n' "\$*" >>"$SHIMT/calls.log"
+exit 0
+EOF
+cat >"$SHIMT/fakereal/curl" <<EOF
+#!/bin/sh
+printf 'real-curl %s\n' "\$*" >>"$SHIMT/calls.log"
+exit 0
+EOF
+cat >"$SHIMT/fakereal/wget" <<EOF
+#!/bin/sh
+printf 'real-wget %s\n' "\$*" >>"$SHIMT/calls.log"
+exit 0
+EOF
+chmod +x "$SHIMT/fakereal/git" "$SHIMT/fakereal/curl" "$SHIMT/fakereal/wget"
+RUN_OUT="$SHIMT/out" RUN_REALTMP="${TMPDIR:-/tmp}" PATH="$SHIMT/fakereal:$PATH" \
+  bash -c '. "$1"; write_seal "$2"' _ "$T/shim-funcs.sh" "$SHIMT/runs/s1" || fail "write_seal fixture runs"
+[ -x "$SHIMT/runs/s1/shim/gh" ] || fail "gh shim written"
+[ -x "$SHIMT/runs/s1/shim/git" ] || fail "git shim written"
+[ -x "$SHIMT/runs/s1/shim/curl" ] || fail "curl shim written"
+[ -x "$SHIMT/runs/s1/shim/wget" ] || fail "wget shim written"
+grep -qF "$SHIMT/fakereal/git" "$SHIMT/runs/s1/shim/git" || fail "git shim bakes the real path"
+SAVED_SHIM_PATH="$PATH"
+PATH="$SHIMT/runs/s1/shim:$SHIMT/fakereal:$PATH"
+(cd "$SHIMT" && git -C . push origin HEAD) || fail "git push passes to the real git"
+grep -qF "git -C . push origin HEAD" "$SHIMT/runs/s1/outward.log" || fail "git -C . push logged"
+grep -qF "real-git -C . push origin HEAD" "$SHIMT/calls.log" || fail "git push reaches the real git"
+(cd "$SHIMT" && env git push) || fail "env git push passes through"
+grep -qF "git push" "$SHIMT/runs/s1/outward.log" || fail "env git push logged"
+grep -qF "real-git push" "$SHIMT/calls.log" || fail "env git push reaches the real git"
+: >"$SHIMT/runs/s1/outward.log"; : >"$SHIMT/calls.log"
+(cd "$SHIMT" && git status) || fail "git status passes through"
+grep -q "status" "$SHIMT/runs/s1/outward.log" && fail "git status is not outward"
+grep -qF "real-git status" "$SHIMT/calls.log" || fail "git status reaches the real git"
+(cd "$SHIMT" && gh pr create) >/dev/null 2>&1 && fail "gh shim exits 1"
+grep -qF "gh pr create" "$SHIMT/runs/s1/outward.log" || fail "gh pr create logged"
+(cd "$SHIMT" && curl -s https://example.com) || fail "curl passes through"
+grep -qF "curl -s https://example.com" "$SHIMT/runs/s1/outward.log" || fail "curl logged"
+grep -qF "real-curl -s https://example.com" "$SHIMT/calls.log" || fail "curl reaches the real curl"
+(cd "$SHIMT" && wget -q https://example.com) || fail "wget passes through"
+grep -qF "wget -q https://example.com" "$SHIMT/runs/s1/outward.log" || fail "wget logged"
+PATH="$SAVED_SHIM_PATH"
+# a missing real binary logs and exits 127
+mkdir -p "$SHIMT/nocurl" "$SHIMT/tools" "$SHIMT/runs/s2"
+ln -s "$SHIMT/fakereal/git" "$SHIMT/nocurl/git"
+ln -s "$SHIMT/fakereal/wget" "$SHIMT/nocurl/wget"
+for t in mkdir cat chmod mktemp rm bash sed; do ln -s "$(command -v "$t")" "$SHIMT/tools/$t"; done
+RUN_OUT="$SHIMT/out" RUN_REALTMP="${TMPDIR:-/tmp}" PATH="$SHIMT/nocurl:$SHIMT/tools" \
+  bash -c '. "$1"; write_seal "$2"' _ "$T/shim-funcs.sh" "$SHIMT/runs/s2" || fail "write_seal without curl runs"
+SAVED_SHIM_PATH="$PATH"
+PATH="$SHIMT/runs/s2/shim:$SHIMT/nocurl:$PATH"
+if (cd "$SHIMT" && curl -s https://example.com) >/dev/null 2>&1; then fail "curl without a real binary exits 127"; else [ $? -eq 127 ] || fail "curl without a real binary exits 127"; fi
+grep -qF "curl -s https://example.com" "$SHIMT/runs/s2/outward.log" || fail "missing curl still logged"
+PATH="$SAVED_SHIM_PATH"
+# collect_notes: the execution log becomes notes, command text alone does not
 CNOTES="$T/cnotes"; RCOUT="$T/cnotes-out"
 mkdir -p "$CNOTES/scratch" "$RCOUT/runs/cn1"
 printf '{"status":"DONE","resume":{"sessionId":"cn-sid-1"}}' >"$RCOUT/runs/cn1/record.json"
 mkdir -p "$RCOUT/fiber-home/projects/p/sessions/cn-sid-1"
-cat >"$RCOUT/fiber-home/projects/p/sessions/cn-sid-1/events.jsonl" <<'EOF'
-{"kind":"tool_call_requested","session_id":"cn-sid-1","ts":1,"schema_version":1,"action_id":"c1","payload":{"name":"shell","arguments":{"command":"git commit -m \"through the high road\""}}}
-{"kind":"tool_call_requested","session_id":"cn-sid-1","ts":2,"schema_version":1,"action_id":"c2","payload":{"name":"shell","arguments":{"command":"cd x && git push origin HEAD"}}}
-{"kind":"tool_call_requested","session_id":"cn-sid-1","ts":3,"schema_version":1,"action_id":"c3","payload":{"name":"shell","arguments":{"command":"gh pr create"}}}
-{"kind":"tool_call_requested","session_id":"cn-sid-1","ts":4,"schema_version":1,"action_id":"c4","payload":{"name":"shell","arguments":{"command":"echo; curl -s u"}}}
-{"kind":"tool_call_requested","session_id":"cn-sid-1","ts":5,"schema_version":1,"action_id":"c5","payload":{"name":"shell","arguments":{"command":"GH_TOKEN=replay-invalid gh pr view 7"}}}
-{"kind":"tool_call_requested","session_id":"cn-sid-1","ts":6,"schema_version":1,"action_id":"c6","payload":{"name":"shell","arguments":{"command":"env git push up HEAD"}}}
-{"kind":"tool_call_requested","session_id":"cn-sid-1","ts":7,"schema_version":1,"action_id":"c7","payload":{"name":"shell","arguments":{"command":"echo \"run gh later\""}}}
+cat >"$RCOUT/fiber-home/projects/p/sessions/cn-sid-1/events.jsonl" <<EOF
+{"kind":"tool_call_requested","session_id":"cn-sid-1","ts":1,"schema_version":1,"action_id":"c1","payload":{"name":"shell","arguments":{"command":"echo \\"example; gh pr create\\""}}}
+{"kind":"tool_call_requested","session_id":"cn-sid-1","ts":2,"schema_version":1,"action_id":"c2","payload":{"name":"shell","arguments":{"command":"git push origin HEAD"}}}
+{"kind":"tool_call_requested","session_id":"cn-sid-1","ts":3,"schema_version":1,"action_id":"c3","payload":{"name":"read","arguments":{"path":"$HOME/work/other/file.ts"}}}
+{"kind":"tool_call_requested","session_id":"cn-sid-1","ts":4,"schema_version":1,"action_id":"c4","payload":{"name":"read","arguments":{"path":"$CNOTES/scratch/file.ts"}}}
 EOF
-RUN_OUT="$RCOUT" bash -c '. "$1"; collect_notes cn1 "$2/runs/cn1" "$3/scratch"' _ "$T/collect_notes.sh" "$RCOUT" "$CNOTES" || fail "collect_notes runs"
-grep -q "through the high road" "$RCOUT/runs/cn1/notes.txt" && fail "commit message with gh inside a word is not outward"
-grep -q "git push origin HEAD" "$RCOUT/runs/cn1/notes.txt" || fail "git push after && is outward"
-grep -q "gh pr create" "$RCOUT/runs/cn1/notes.txt" || fail "gh pr create is outward"
-grep -q "curl -s u" "$RCOUT/runs/cn1/notes.txt" || fail "curl after ; is outward"
-grep -q "gh pr view 7" "$RCOUT/runs/cn1/notes.txt" || fail "gh after an env assignment is outward"
-grep -q "env git push up HEAD" "$RCOUT/runs/cn1/notes.txt" || fail "git push behind env is outward"
-grep -q "run gh later" "$RCOUT/runs/cn1/notes.txt" && fail "gh inside a quoted echo is not outward"
+printf 'gh pr create\ncurl -s u\n' >"$RCOUT/runs/cn1/outward.log"
+RUN_OUT="$RCOUT" bash -c '. "$1"; collect_notes cn1 "$2/runs/cn1" "$3/scratch"' _ "$T/shim-funcs.sh" "$RCOUT" "$CNOTES" || fail "collect_notes runs"
+grep -qF "note: outward: gh pr create" "$RCOUT/runs/cn1/notes.txt" || fail "outward log becomes notes"
+grep -qF "note: outward: curl -s u" "$RCOUT/runs/cn1/notes.txt" || fail "curl log becomes notes"
+grep -q "example;" "$RCOUT/runs/cn1/notes.txt" && fail "quoted gh text is not outward"
+grep -q "push origin HEAD" "$RCOUT/runs/cn1/notes.txt" && fail "command text alone is not outward"
+grep -q "work/other/file.ts" "$RCOUT/runs/cn1/notes.txt" || fail "outside-scratch path still noted"
+grep -q "scratch/file.ts" "$RCOUT/runs/cn1/notes.txt" && fail "scratch path is not outward"
 
 echo "run cases passed"
 
