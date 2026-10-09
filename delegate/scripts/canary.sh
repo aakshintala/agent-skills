@@ -281,6 +281,39 @@ write_prompt() {
   }
 }
 
+# canary_worktree CLONE TICKET SIDE: the worktree path for one side, next
+# to the clone and named after it.
+canary_worktree() {
+  local clone="$1" ticket="$2" side="$3"
+  printf '%s/%s-canary-%s-%s' "$(dirname "$clone")" "$(basename "$clone")" "$ticket" "$side"
+}
+
+# clean_ticket CLONE TICKET OUT [--force]: remove whatever exists of the
+# ticket's two worktrees and two branches, then the <side>/worktree files.
+# Without --force a dirty worktree refuses (git's message, return 1).
+# Idempotent: with nothing left it returns 0.
+clean_ticket() {
+  local clone="$1" ticket="$2" out="$3" force="${4:-}" side wt branch
+  for side in pi fiber; do
+    wt="$(canary_worktree "$clone" "$ticket" "$side")"
+    [ -e "$wt" ] || continue
+    if [ "$force" = "--force" ]; then
+      git -C "$clone" worktree remove --force "$wt" || return 1
+    else
+      git -C "$clone" worktree remove "$wt" || return 1
+    fi
+  done
+  git -C "$clone" worktree prune || return 1
+  for side in pi fiber; do
+    branch="canary/$ticket-$side"
+    if git -C "$clone" show-ref --verify --quiet "refs/heads/$branch"; then
+      git -C "$clone" branch -D "$branch" >/dev/null || return 1
+    fi
+  done
+  rm -f "$out/pi/worktree" "$out/fiber/worktree"
+  return 0
+}
+
 cmd_run() {
   [ $# -ge 2 ] || { usage; return 2; }
   local ticket="$1" brief="$2"
@@ -305,11 +338,11 @@ cmd_run() {
   [ -z "$out" ] && out="$HOME/.cache/agents/canary/$ticket"
   git -C "$clone" rev-parse --git-common-dir >/dev/null 2>&1 \
     || { err "clone $clone is not a git checkout"; return 2; }
+  clone="$(cd "$clone" && pwd)"
   local pi_branch="canary/$ticket-pi" fiber_branch="canary/$ticket-fiber"
-  local parent pi_wt fiber_wt
-  parent="$(dirname "$clone")"
-  pi_wt="$parent/${repo_name}-canary-$ticket-pi"
-  fiber_wt="$parent/${repo_name}-canary-$ticket-fiber"
+  local pi_wt fiber_wt
+  pi_wt="$(canary_worktree "$clone" "$ticket" pi)"
+  fiber_wt="$(canary_worktree "$clone" "$ticket" fiber)"
   local b
   for b in "$pi_branch" "$fiber_branch"; do
     if git -C "$clone" show-ref --verify --quiet "refs/heads/$b"; then
@@ -325,6 +358,9 @@ cmd_run() {
     err "a previous run exists in $out; run 'canary.sh clean $ticket' first"
     return 2
   fi
+  # Record the clone before any git mutation, so clean can always find it.
+  mkdir -p "$out"
+  printf '%s\n' "$clone" >"$out/clone"
   git -C "$clone" fetch origin >/dev/null 2>&1 \
     || { err "git fetch origin failed in $clone"; return 2; }
   local base
@@ -337,25 +373,19 @@ cmd_run() {
     fi
     mkdir -p "$out/$side"
   done
-  mkdir -p "$parent"
-  if ! git -C "$clone" worktree add -b "$pi_branch" "$pi_wt" "$base" >/dev/null 2>&1; then
-    err "worktree add failed for $pi_wt"
-    git -C "$clone" branch -D "$pi_branch" >/dev/null 2>&1 || true
-    return 2
-  fi
-  printf '%s' "$pi_wt" >"$out/pi/worktree"
-  if ! git -C "$clone" worktree add -b "$fiber_branch" "$fiber_wt" "$base" >/dev/null 2>&1; then
-    err "worktree add failed for $fiber_wt"
-    git -C "$clone" branch -D "$fiber_branch" >/dev/null 2>&1 || true
-    if git -C "$clone" worktree remove --force "$pi_wt" >/dev/null 2>&1 \
-      && git -C "$clone" branch -D "$pi_branch" >/dev/null 2>&1; then
-      rm -f "$out/pi/worktree"
-    else
-      err "cleanup of $pi_wt failed; run 'canary.sh clean $ticket' after fixing the cause"
+  mkdir -p "$(dirname "$clone")"
+  for side in pi fiber; do
+    local wt branch
+    wt="$(canary_worktree "$clone" "$ticket" "$side")"
+    branch="canary/$ticket-$side"
+    if ! git -C "$clone" worktree add -b "$branch" "$wt" "$base" >/dev/null 2>&1; then
+      err "worktree add failed for $wt"
+      clean_ticket "$clone" "$ticket" "$out" --force \
+        || err "cleanup failed; run 'canary.sh clean $ticket' after fixing the cause"
+      return 2
     fi
-    return 2
-  fi
-  printf '%s' "$fiber_wt" >"$out/fiber/worktree"
+    printf '%s' "$wt" >"$out/$side/worktree"
+  done
   write_prompt "$brief" "$pi_wt" "$pi_branch" >"$out/pi/prompt.md"
   write_prompt "$brief" "$fiber_wt" "$fiber_branch" >"$out/fiber/prompt.md"
 
@@ -622,30 +652,15 @@ cmd_clean() {
   done
   [[ "$ticket" =~ ^[0-9A-Za-z._-]+$ ]] || { err "bad ticket '$ticket'"; return 2; }
   [ -z "$out" ] && out="$HOME/.cache/agents/canary/$ticket"
-  local side wt clone="" wts=()
-  for side in pi fiber; do
-    [ -f "$out/$side/worktree" ] || continue
-    wt="$(cat "$out/$side/worktree")"
-    [ -n "$wt" ] && [ -d "$wt" ] || continue
-    clone_for="$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
-      || continue
-    [ -z "$clone" ] && clone="$clone_for"
-    wts+=("$wt")
-  done
-  if [ "${#wts[@]}" -eq 0 ]; then
+  if [ ! -f "$out/clone" ]; then
+    printf 'canary: nothing to clean for %s (no %s/clone)\n' "$ticket" "$out"
     return 0
   fi
-  for wt in "${wts[@]}"; do
-    git -C "$clone" worktree remove "$wt" || return 1
-  done
-  local branch
-  for side in pi fiber; do
-    branch="canary/$ticket-$side"
-    if git -C "$clone" show-ref --verify --quiet "refs/heads/$branch"; then
-      git -C "$clone" branch -D "$branch" >/dev/null || return 1
-    fi
-  done
-  rm -f "$out/pi/worktree" "$out/fiber/worktree"
+  local clone
+  clone="$(cat "$out/clone")"
+  git -C "$clone" rev-parse --git-common-dir >/dev/null 2>&1 \
+    || { err "clone $clone (from $out/clone) is not a git checkout"; return 1; }
+  clean_ticket "$clone" "$ticket" "$out" || return 1
   return 0
 }
 

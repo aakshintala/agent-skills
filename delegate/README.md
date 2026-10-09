@@ -82,10 +82,15 @@ with a line telling each agent to commit locally and never push or open a PR.
 Output goes to `~/.cache/agents/canary/<ticket>/` (or `--out`): a `pi/` and a
 `fiber/` directory, each holding `worktree`, `prompt.md`, `diff.patch`,
 `gate.log`, `gate.exit` and `metrics.json`, plus a top-level `summary.md`
-with the two-column comparison table. Exit codes: 0 means both runs finished
-(whatever their gates did), 1 means a run errored in the harness, 2 means a
-usage or setup error. `clean <ticket> [--out DIR]` removes both worktrees and
-branches (metrics stay) so the ticket can run again.
+with the two-column comparison table and a `clone` file naming the clone,
+written before any git change. The worktrees sit next to the clone as
+`<clone name>-canary-<ticket>-pi` and `-fiber`. Exit codes: 0 means both runs
+finished (whatever their gates did), 1 means a run errored in the harness, 2
+means a usage or setup error; a setup failure cleans up as `clean` does.
+`clean <ticket> [--out DIR]` works from the ticket and the `clone` file alone:
+it removes whichever of the two worktrees and branches exist (metrics stay) so
+the ticket can run again. It refuses a worktree with uncommitted changes
+(exit 1), and running it twice is safe.
 
 ## Skill
 

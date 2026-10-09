@@ -12,6 +12,22 @@ fail() {
   exit 1
 }
 
+# assert_clean_leaves_nothing TICKET OUT: clean exits 0 and leaves no
+# canary/<ticket>-* branch, worktree or tracking file; a second clean exits 0.
+assert_clean_leaves_nothing() {
+  local ticket="$1" out="$2" clone="$HOME/work/fiber" side
+  bash "$CANARY" clean "$ticket" --out "$out" || fail "clean $ticket exits 0"
+  for side in pi fiber; do
+    git -C "$clone" show-ref --verify --quiet "refs/heads/canary/$ticket-$side" \
+      && fail "clean $ticket leaves no $side branch"
+    [ ! -e "$HOME/work/fiber-canary-$ticket-$side" ] || fail "clean $ticket leaves no $side worktree"
+    [ ! -f "$out/$side/worktree" ] || fail "clean $ticket removes $side/worktree"
+  done
+  git -C "$clone" worktree list --porcelain | grep -q "canary-$ticket-" \
+    && fail "clean $ticket leaves no registered worktree"
+  bash "$CANARY" clean "$ticket" --out "$out" || fail "second clean $ticket exits 0"
+}
+
 # Keep the test root outside /tmp and /private/tmp: canary.sh treats those
 # as blanket allowed roots, so a HOME under /tmp (mktemp's default when the
 # outer TMPDIR is unset, as on CI) would make the task-3 `$HOME/x` write
@@ -118,6 +134,12 @@ chmod +x "$FBIN/gh"
 cat >"$FBIN/git" <<EOF
 #!/bin/sh
 printf 'git %s\n' "\$*" >>"$FAKE_LOGDIR/git.log"
+# Simulate a branch deletion that fails (e.g. a locked ref).
+if [ -n "\${CANARY_FAKE_BRANCH_DELETE_FAIL:-}" ]; then
+  case " \$* " in
+    *" branch -D "*) echo "fake git: cannot delete branch" >&2; exit 1 ;;
+  esac
+fi
 # Simulate native 'worktree add -b' leaving its branch when checkout fails
 # (e.g. an unwritable target): create the branch, then fail without a worktree.
 fail_side="\${CANARY_FAKE_WORKTREE_FAIL:-}"
@@ -398,6 +420,8 @@ git -C "$HOME/work/fiber" show-ref --verify --quiet refs/heads/canary/227-fiber 
 [ ! -e "$HOME/work/fiber-canary-227-pi" ] || fail "failed fiber add removes pi worktree"
 [ ! -e "$HOME/work/fiber-canary-227-fiber" ] || fail "failed fiber add creates no fiber worktree"
 [ ! -f "$OUT5/pi/worktree" ] || fail "failed fiber add keeps no pi tracking"
+[ "$(cat "$OUT5/clone")" = "$HOME/work/fiber" ] || fail "run records the clone"
+assert_clean_leaves_nothing 227 "$OUT5"
 FAKE_EVENTS="$T/ev2.jsonl" bash "$CANARY" run 227 "$T/brief.md" \
   --gate 'test -f work-marker' --out "$OUT5" || fail "rerun works after fiber worktree failure"
 [ "$(jq -r .outcome "$OUT5/pi/metrics.json")" = "DONE" ] || fail "rerun pi DONE after worktree failure"
@@ -414,10 +438,40 @@ else
 fi
 git -C "$HOME/work/fiber" show-ref --verify --quiet refs/heads/canary/228-pi && fail "failed pi add leaves no pi branch"
 git -C "$HOME/work/fiber" show-ref --verify --quiet refs/heads/canary/228-fiber && fail "failed pi add leaves no fiber branch"
+assert_clean_leaves_nothing 228 "$OUT6"
 FAKE_EVENTS="$T/ev2.jsonl" bash "$CANARY" run 228 "$T/brief.md" \
   --gate 'test -f work-marker' --out "$OUT6" || fail "rerun works after pi worktree failure"
 [ "$(jq -r .outcome "$OUT6/pi/metrics.json")" = "DONE" ] || fail "rerun pi DONE after pi failure"
 bash "$CANARY" clean 228 --out "$OUT6" || fail "clean after pi rerun exits 0"
+
+# --- Partial setup: fiber add fails, then branch deletion fails after the
+# pi worktree is removed. run exits 2; a later clean finishes the job. ---
+OUT7="$T/out7"
+if CANARY_FAKE_WORKTREE_FAIL=fiber CANARY_FAKE_BRANCH_DELETE_FAIL=1 FAKE_EVENTS="$T/ev2.jsonl" \
+  bash "$CANARY" run 229 "$T/brief.md" --gate 'test -f work-marker' --out "$OUT7" 2>/dev/null; then
+  fail "branch delete failure should not exit 0"
+else
+  [ $? -eq 2 ] || fail "branch delete failure exits 2"
+fi
+assert_clean_leaves_nothing 229 "$OUT7"
+FAKE_EVENTS="$T/ev2.jsonl" bash "$CANARY" run 229 "$T/brief.md" \
+  --gate 'test -f work-marker' --out "$OUT7" || fail "rerun works after branch delete failure"
+[ "$(jq -r .outcome "$OUT7/fiber/metrics.json")" = "DONE" ] || fail "rerun fiber DONE after branch delete failure"
+
+# clean refuses a dirty worktree (exit 1), then works once it is clean
+printf 'dirty\n' >"$HOME/work/fiber-canary-229-pi/uncommitted.txt"
+if bash "$CANARY" clean 229 --out "$OUT7" 2>/dev/null; then
+  fail "clean of a dirty worktree should not exit 0"
+else
+  [ $? -eq 1 ] || fail "clean of a dirty worktree exits 1"
+fi
+[ -d "$HOME/work/fiber-canary-229-pi" ] || fail "dirty worktree is kept"
+rm -f "$HOME/work/fiber-canary-229-pi/uncommitted.txt"
+assert_clean_leaves_nothing 229 "$OUT7"
+
+# clean with no recorded clone says so and exits 0
+msg="$(bash "$CANARY" clean 998 --out "$T/out-none" 2>&1)" || fail "clean without a clone file exits 0"
+printf '%s' "$msg" | grep -q 'nothing to clean' || fail "clean without a clone file says nothing to clean"
 
 echo "setup rollback cases passed"
 
