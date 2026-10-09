@@ -187,8 +187,9 @@ def classify(name, steps, text):
     return ("other", (errs[-1] if errs else (lines[-1] if lines else ""))[:160], [])
 
 
-def gh_api(path, escape=False):
-    cmd = ["gh", "api"] + (["--allow-escape-sequences"] if escape else []) + [path]
+def gh_api(path, escape=False, fields=()):
+    cmd = ["gh", "api"] + (["--allow-escape-sequences"] if escape else [])
+    cmd += [path] + [x for f in fields for x in ("-f", f)]
     p = subprocess.run(cmd, capture_output=True, text=True)
     if p.returncode != 0:
         err = (p.stderr or "").strip().splitlines()
@@ -214,6 +215,30 @@ def gh_paged(base, key):
     print("ci-friction: page cap hit for %s" % base.split("?")[0],
           file=sys.stderr)
     return items
+
+
+# GraphQL closer of the last close: the PR's merge commit, or a direct commit.
+# fix_lookup versions the cached result; bump it when the lookup changes so
+# null results from older versions are looked up again.
+FIX_LOOKUP = 2
+CLOSER_QUERY = ('{repository(owner:"%s",name:"%s"){issue(number:%s){'
+                'timelineItems(itemTypes:CLOSED_EVENT,last:1){nodes{...on ClosedEvent{'
+                'closer{__typename ...on PullRequest{mergeCommit{oid}} ...on Commit{oid}}}}}}}}')
+
+
+def closing_commit(repo, number):
+    owner, name = repo.split("/", 1)
+    out = gh_api("graphql", fields=["query=" + CLOSER_QUERY % (owner, name, number)])
+    try:
+        nodes = json.loads(out)["data"]["repository"]["issue"]["timelineItems"]["nodes"]
+    except (ValueError, KeyError, TypeError):
+        raise Fatal("gh api graphql returned no closer list for #%s" % number)
+    closer = (nodes[-1] or {}).get("closer") if nodes else None
+    if not isinstance(closer, dict):
+        return None
+    if closer.get("__typename") == "PullRequest":
+        return ((closer.get("mergeCommit") or {}).get("oid")) or None
+    return closer.get("oid") or None
 
 
 def load_state(path):
@@ -423,21 +448,15 @@ def main(argv):
         ent = issues_st.get(key, {})
         if not ent.get("issue") or ent.get("issue_state") != "closed":
             continue
-        if "fix_commit" not in ent:
+        if ent.get("fix_lookup") != FIX_LOOKUP:
             try:
-                evts = gh_paged("repos/%s/issues/%s/events" % (repo, ent["issue"]),
-                                None)
+                fix = closing_commit(repo, ent["issue"])
             except Fatal as e:
                 print("ci-friction: %s" % e, file=sys.stderr)
                 ok = False
                 continue
-            fix = None
-            if isinstance(evts, list):
-                for ev in evts:
-                    if ev.get("event") == "closed" and ev.get("commit_id"):
-                        fix = ev["commit_id"]
-                        break
             ent["fix_commit"] = fix
+            ent["fix_lookup"] = FIX_LOOKUP
         if not ent.get("fix_commit"):
             continue  # no fixing commit: closed_at fallback below
         kept = []
