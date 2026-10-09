@@ -539,6 +539,33 @@ bash -c '. "$1"; replace_cwd "$2" /old/job /S' _ "$T/replace_cwd.sh" "$T/rc.txt"
 printf 'a /S/x /old/job-2/y /old/job+2/z /old/job\303\251/w `/S` (/S) /S. /old/job.bak "/S" /S\n/S' >"$T/rc.want"
 cmp -s "$T/rc.txt" "$T/rc.want" || fail "replace_cwd rewrites only complete prefixes (got: $(cat "$T/rc.txt"))"
 
+# --- seal probe: a pre-existing fixed-path file survives a sealed run ---
+printf 'sentinel' >"$HOME/.replay-seal-probe"
+bash "$REPLAY" run --out "$OUT7" --job job-sib --fresh >/dev/null || fail "sentinel run exits 0"
+[ "$(cat "$HOME/.replay-seal-probe")" = "sentinel" ] || fail "pre-existing seal probe survives"
+rm -f "$HOME/.replay-seal-probe"
+[ -z "$(ls "$HOME"/.replay-seal-probe.* 2>/dev/null)" ] || fail "unique seal probe cleaned up"
+
+# --- session header cwd wins over resume.cwd ---
+JOBSH="$T/jobsh"; SESSH="$T/sessh"; OUTH="$T/outh"
+mkdir -p "$JOBSH" "$SESSH"
+HDRCWD="$T/wt/header-job"
+SESS_SAVED="$SESS"; SESS="$SESSH"; JOBS_SAVED="$JOBS"; JOBS="$JOBSH"
+make_session "sid-hdr" "2026-10-02T00:05:00.000Z" "$HDRCWD" "See $HDRCWD/NOTES.md.\\n\\n---\\n\\nEnd STATUS: DONE" >/dev/null
+make_record "job-hdr" "$MUSE_ID" DONE "true" "$SHA" "sid-hdr" "/nonexistent/nowhere/xyz"
+SESS="$SESS_SAVED"; JOBS="$JOBS_SAVED"
+REPLAY_JOBS_DIR="$JOBSH" REPLAY_PI_SESSIONS="$SESSH" \
+  bash "$REPLAY" select --out "$OUTH" --total 30 >/dev/null || fail "select header-cwd tree exits 0"
+[ "$(wc -l <"$OUTH/manifest.tsv" | tr -d ' ')" -eq 1 ] || fail "header-cwd tree admits 1 row"
+grep -q "^job-hdr"$'\t' "$OUTH/manifest.tsv" || fail "header-cwd row admitted"
+grep -qF "$HDRCWD" "$OUTH/manifest.tsv" || fail "manifest records the header cwd"
+grep -qF "aakshintala/fiber" "$OUTH/manifest.tsv" || fail "header cwd resolves the header repo"
+grep -q "^job-hdr"$'\t' "$OUTH/skipped.tsv" && fail "header-cwd row not skipped"
+bash "$REPLAY" run --out "$OUTH" --share muse --batch 3 >/dev/null || fail "header-cwd run exits 0"
+grep -qF "$OUTH/runs/job-hdr/scratch" "$OUTH/runs/job-hdr/prompt.md" || fail "header path rewritten to scratch"
+grep -qF "$HDRCWD" "$OUTH/runs/job-hdr/prompt.md" && fail "header original gone from prompt"
+grep -qF "/nonexistent/nowhere/xyz" "$OUTH/runs/job-hdr/prompt.md" && fail "resume cwd never leaks into prompt"
+
 echo "run cases passed"
 
 # --- Task 4: report and all ---
@@ -693,6 +720,19 @@ RB="$T/report-bare.txt"
 grep -q '2 unread: not met' "$RB" || fail "unread failures block the bar"
 grep -q 'unread: not met' "$RB" || fail "unread denials block the bar"
 grep -q 'verdict: unread' "$RB" || fail "unread verdicts render"
+# typo verdicts fail closed: neither failure nor denial counts as read
+cat >"$T/verdicts-typo.tsv" <<'EOF'
+jobB	failure	fibre	typo for fiber
+jobC	failure	not-fiber	pre-existing crash
+jobB	a1	rightt	typo for right
+jobB	a9	right	agreed
+EOF
+REPLAY_JOBS_DIR="$RJOBS" bash "$REPLAY" report --out "$ROUT" --verdicts "$T/verdicts-typo.tsv" >"$T/report-typo.txt" || fail "typo report exits 0"
+RT="$T/report-typo.txt"
+grep -q 'invalid verdict: fibre' "$RT" || fail "failure typo renders invalid"
+grep -q 'invalid verdict: rightt' "$RT" || fail "denial typo renders invalid"
+grep -q 'Failures: .*unread.*: not met' "$RT" || fail "failure typo blocks the bar"
+grep -q 'Denials: .*unread.*: not met' "$RT" || fail "denial typo blocks the bar"
 
 # missing or ambiguous events leave fiber tokens and cost unknown
 RJOBSH="$T/rjobsh"; RSESH="$T/rsesh"; ROUTH="$T/rout-h"

@@ -123,6 +123,11 @@ session_ts() {
   jq -r 'select(.type=="session") | .timestamp // ""' "$1" 2>/dev/null | head -n 1
 }
 
+# session_cwd FILE: cwd of the session header line (type == "session").
+session_cwd() {
+  jq -r 'select(.type=="session") | .cwd // ""' "$1" 2>/dev/null | head -n 1
+}
+
 # brief_text FILE: text of the first user message (string or text parts).
 brief_text() {
   jq -rs '[.[] | select(.type=="message" and .message.role=="user")
@@ -231,7 +236,10 @@ select_job() {
     session="$(find_session "$sid")"
   fi
   if [ -z "$session" ]; then printf 'SKIP\t%s\tno pi session %s\n' "$id" "${sid:-none}"; return 0; fi
-  cwd="$(jq -r '.resume.cwd // ""' "$job" 2>/dev/null)"
+  cwd="$(session_cwd "$session")"
+  if [ -z "$cwd" ] || [ "$cwd" = "null" ]; then
+    cwd="$(jq -r '.resume.cwd // ""' "$job" 2>/dev/null)"
+  fi
   case "$cwd" in
     *review-pr.run.*) printf 'SKIP\t%s\treview-pr temp cwd\n' "$id"; return 0 ;;
   esac
@@ -494,14 +502,18 @@ run_in_seal() {
 
 # seal_check RUNDIR SCRATCH REPO: every probe must fail; else the seal is open.
 seal_check() {
-  local rundir="$1" scratch="$2" repo="$3" probe="$HOME/.replay-seal-probe"
-  rm -f "$probe"
-  if run_in_seal "$rundir" sh -c 'touch "$HOME/.replay-seal-probe"' 2>/dev/null; then
+  local rundir="$1" scratch="$2" repo="$3" base probe
+  base=".replay-seal-probe.$$.${RANDOM:-0}"
+  probe="${HOME:-/tmp}/$base"
+  if [ -e "$probe" ]; then
+    err "seal probe $probe exists; refusing"
+    return 1
+  fi
+  if run_in_seal "$rundir" sh -c 'touch "$1"' _ "$probe" 2>/dev/null; then
     rm -f "$probe"
     err "seal open: home write probe succeeded"
     return 1
   fi
-  rm -f "$probe"
   if run_in_seal "$rundir" gh auth status >/dev/null 2>&1; then
     err "seal open: gh probe succeeded"
     return 1
@@ -1085,8 +1097,11 @@ cmd_report() {
         elif [ "${fail_verdict%%$TAB*}" = "fiber" ]; then
           fail_fiber=$((fail_fiber + 1))
           fail_note="fiber (${fail_verdict#*$TAB})"
-        else
+        elif [ "${fail_verdict%%$TAB*}" = "not-fiber" ]; then
           fail_note="not-fiber (${fail_verdict#*$TAB})"
+        else
+          fail_unread=$((fail_unread + 1))
+          fail_note="invalid verdict: ${fail_verdict%%$TAB*}"
         fi
       fi
       # denials
@@ -1109,8 +1124,11 @@ cmd_report() {
         elif [ "${dverdict%%$TAB*}" = "wrong" ]; then
           deny_wrong=$((deny_wrong + 1))
           dnote="wrong (${dverdict#*$TAB})"
+        elif [ "${dverdict%%$TAB*}" = "right" ]; then
+          dnote="right (${dverdict#*$TAB})"
         else
-          dnote="${dverdict%%$TAB*} (${dverdict#*$TAB})"
+          deny_unread=$((deny_unread + 1))
+          dnote="invalid verdict: ${dverdict%%$TAB*}"
         fi
         denials="$denials- $id $aid: \`$cmd\` (decided by $decided, reason: $reason) verdict: $dnote\\n"
       done <<<"$(denials_for "$f_rec")"
