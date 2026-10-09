@@ -236,20 +236,23 @@ if [ "$strict" = 0 ] && [ -n "$gate" ]; then
   if ! git -C "$worktree" merge-base --is-ancestor origin/main "$pin"; then
     say "gating the PR merged with current origin/main"
     guard_restore() {
-      if [ -e "$(git -C "$worktree" rev-parse --git-path MERGE_HEAD)" ]; then
-        git -C "$worktree" merge --abort >&2 || true
-      fi
-      git -C "$worktree" reset -q --hard "$pin" >&2 || true
+      git -C "$worktree" reset -q --hard "$pin" >&2 || die 1 "failed to restore pinned head ${pin:0:8}"
     }
+    trap 'guard_rc=$?; trap - EXIT INT TERM; guard_restore; exit "$guard_rc"' EXIT
+    trap 'trap - EXIT INT TERM; guard_restore; exit 143' TERM
+    trap 'trap - EXIT INT TERM; guard_restore; exit 130' INT
     if ! git -C "$worktree" -c user.name=ship-pr -c user.email=ship-pr@localhost merge --no-ff --no-edit origin/main >&2; then
+      trap - EXIT INT TERM
       guard_restore
       die 3 "PR conflicts with current origin/main; rebase, then rerun"
     fi
     if ! gate_out="$(cd "$worktree" && bash -c "$gate" </dev/null 2>&1)"; then
       printf '%s\n' "$gate_out" | tail -n 20
+      trap - EXIT INT TERM
       guard_restore
       die 1 "the PR merged with current origin/main fails the gate"
     fi
+    trap - EXIT INT TERM
     guard_restore
     say "gate passes on the PR merged with current origin/main"
   fi
