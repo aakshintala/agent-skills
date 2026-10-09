@@ -61,6 +61,9 @@ case "$path" in
     key="$(printf '%s' "$q" | sed -E 's/[^A-Za-z0-9]+/-/g')"
     f="search/$key.json"
     if [ -e "$scen/$f" ]; then cat "$scen/$f"; else printf '{"total_count":0,"items":[]}'; fi;;
+  *issues/*/events)
+    n="$(printf '%s' "$path" | sed -E 's/.*issues\/([0-9]+).*/\1/')"
+    serve "events/$n.json" "events-$n";;
   *repos/*/issues/*)
     n="$(printf '%s' "$path" | sed -E 's/.*issues\/([0-9]+).*/\1/')"
     serve "issues/$n.json" "issues-$n";;
@@ -69,6 +72,10 @@ case "$path" in
     key="$(printf '%s' "$br" | sed -E 's/[^A-Za-z0-9]+/-/g')"
     f="pulls-$key.json"
     if [ -e "$scen/$f" ]; then cat "$scen/$f"; else printf '[]'; fi;;
+  *compare/*)
+    pair="$(printf '%s' "$path" | sed -E 's/.*compare\/([^.]+)\.\.\.(.+)/\1 \2/')"
+    set -- $pair
+    serve "compare-${1:0:8}-${2:0:8}.json" "compare-$1-$2";;
   *) echo "fake gh: unknown path $path" >&2; exit 2;;
 esac
 FAKEGH
@@ -184,6 +191,32 @@ run_friction --json
 [ "$CODE" = "0" ] || fail "no-log exits 0 (got $CODE): [$OUT]"
 [ "$(jget "d['design']")" = "[{'cause': 'no-log', 'count': 2, 'lanes': ['#1405']}]" ] \
   || fail "no-log design: [$OUT]"
+
+# --- 18f: SIGTERM/SIGKILL collateral never yields a test; panic lines do ---
+setup signals
+run_friction --min-lanes 1 --json
+[ "$CODE" = "1" ] || fail "signals exits 1 (got $CODE): [$OUT]"
+[ "$(jget "sorted(r['test'] for r in d['repeats'])")" = "['fiber-core base::works', 'fiber-core doors::boom']" ] \
+  || fail "only FAIL and panic tests counted: [$OUT]"
+grep -q "other::" <<<"$OUT" && fail "signal collateral excluded: [$OUT]"
+[ "$(jget "d['design']")" = "[]" ] || fail "no design causes: [$OUT]"
+
+# --- 18g: pre-fix sighting dropped, post-fix sighting kept (and recurs) ---
+setup fixcommit
+run_friction --min-lanes 1 --json
+[ "$CODE" = "1" ] || fail "fixcommit exits 1 (got $CODE): [$OUT]"
+[ "$(jget "[r['lanes'] for r in d['repeats']]")" = "[['#1502']]" ] \
+  || fail "pre-fix lane dropped: [$OUT]"
+[ "$(jget "d['recurred_after_close'][0]['issue']")" = "1470" ] || fail "recur issue: [$OUT]"
+[ "$(jget "d['recurred_after_close'][0]['lanes']")" = "['#1502']" ] \
+  || fail "recur lanes: [$OUT]"
+setup fixcommit
+run_friction --min-lanes 1 --json >/dev/null
+run_friction --min-lanes 1 --json >/dev/null
+[ "$(grep -c 'compare/ffffffff' "$FAKE_GH_LOG")" = "2" ] \
+  || fail "one compare per pair, cached: [$(cat "$FAKE_GH_LOG")]"
+[ "$(grep -c 'issues/1470/events' "$FAKE_GH_LOG")" = "1" ] \
+  || fail "events fetched once: [$(cat "$FAKE_GH_LOG")]"
 
 # --- exits: 2 on usage and on listing failures, state still written ---
 OUT="$(python3 "$FRICTION" --since 24h 2>"$T/stderr.txt")"; CODE=$?

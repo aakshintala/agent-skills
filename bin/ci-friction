@@ -27,8 +27,9 @@ BOUND = {"Selection": 5, "Linux x86_64 checks": 5, "Tests macos": 15,
          "CI verdict": 5, "Report a failed backstop": 5}
 ANSI = re.compile(r"(\x1b|\^\[)\[[0-9;]*[A-Za-z]")
 TS = re.compile(r"^\S+Z ")
-NX = re.compile(r"^\s*(FAIL|TIMEOUT|SIGABRT|SIGSEGV|SIGKILL|SIGTERM) \[\s*[\d.]+s\]\s+"
+NX = re.compile(r"^\s*(FAIL|TIMEOUT) \[\s*[\d.]+s\]\s+"
                 r"(?:\(\s*\d+/\d+\)\s+)?(\S+)\s+(\S+)", re.M)
+PANIC = re.compile(r"thread '([^']+)' panicked at")
 USAGE = ("usage: ci-friction --repo owner/name [--since 24h] [--state PATH] "
          "[--min-lanes 2] [--json]")
 
@@ -108,6 +109,7 @@ def classify(name, steps, text):
             and "aborting" not in l and "could not compile" not in l and "warning" not in l]
     crates = re.findall(r"could not compile `([^`]+)`", body)
     nx = NX.findall(body)
+    panics = sorted(set(PANIC.findall(body)))
     missed = re.findall(r"^MISSED\s+(\S+)", body, re.M)
     mtimeout = re.findall(r"^TIMEOUT\s+(\S+:\d+:\d+.*)$", body, re.M)
     bench = ([l for l in lines if l.startswith("bench-report:")
@@ -141,9 +143,7 @@ def classify(name, steps, text):
                 key = "compile %s: %s" % (",".join(sorted(set(crates))), first[:120])
                 return ("mutants-baseline-compile", "%s: %s" % (
                     ",".join(sorted(set(crates))), comp[0].strip()[:120]), [key])
-            names = tests_of(re.findall(
-                r"^\s*(FAIL|TIMEOUT|SIGABRT|SIGSEGV|SIGKILL|SIGTERM) \[\s*[\d.]+s\]\s+"
-                r"(?:\(\s*\d+/\d+\)\s+)?(\S+)\s+(\S+)", body, re.M))
+            names = sorted(set(tests_of(NX.findall(body))) | set(PANIC.findall(body)))
             return ("mutants-baseline-test", "%d: %s" % (len(names), "; ".join(names[:3])), names)
     if nofile and "127" in exitc:
         return ("ci-script-missing-at-base", nofile[0].split(": ", 1)[-1][:120], [])
@@ -165,10 +165,10 @@ def classify(name, steps, text):
         return ("compile", "%s: %s" % (",".join(sorted(set(crates))), comp[0].strip()[:140]), [key])
     if missed:
         return ("missed-mutant", "%d missed, first %s" % (len(missed), missed[0]), [])
-    if nx:
-        names = tests_of(nx)
-        kinds = sorted({a for a, _, _ in nx})
-        return ("test-" + "/".join(k.lower() for k in kinds),
+    if nx or panics:
+        names = sorted(set(tests_of(nx)) | set(panics))
+        kinds = sorted({a.lower() for a, _, _ in nx} | ({"panic"} if panics else set()))
+        return ("test-" + "/".join(kinds),
                 "%d: %s" % (len(names), "; ".join(names[:3])), names)
     if mtimeout:
         return ("mutant-timeout", "%d timeouts, first %s" % (len(mtimeout), mtimeout[0][:100]), [])
@@ -264,6 +264,7 @@ def main(argv):
     jobs_st = st.get("jobs") if isinstance(st.get("jobs"), dict) else {}
     issues_st = st.get("issues") if isinstance(st.get("issues"), dict) else {}
     branches_st = st.get("branches") if isinstance(st.get("branches"), dict) else {}
+    compares = st.get("compares") if isinstance(st.get("compares"), dict) else {}
     owner = repo.split("/")[0]
     ok = True  # becomes exit 2 after state is written
 
@@ -340,7 +341,8 @@ def main(argv):
                         cls, det, tests = classify(j.get("name"), j.get("steps"), log)
                     jobs_st[jid] = {"class": cls, "detail": det, "tests": tests,
                                     "lane": lane, "os": osof(j.get("labels")),
-                                    "completed_at": done_at}
+                                    "completed_at": done_at,
+                                    "head_sha": r.get("head_sha")}
                 ent = jobs_st[jid]
                 if cls.startswith("test-") or cls in ("mutants-baseline-test", "compile",
                                                       "mutants-baseline-compile"):
@@ -351,7 +353,8 @@ def main(argv):
                     for key in keys:
                         seen.setdefault(key, []).append(
                             (ent.get("lane", lane), ent.get("os", osof(j.get("labels"))),
-                             ent.get("completed_at", done_at)))
+                             ent.get("completed_at", done_at),
+                             ent.get("head_sha", r.get("head_sha"))))
                         resight.add(key)
                 elif cls not in ("missed-mutant", "other"):
                     c, laneset = design.get(cls, (0, set()))
@@ -391,6 +394,49 @@ def main(argv):
             except Fatal as e:
                 print("ci-friction: %s" % e, file=sys.stderr)
                 ok = False
+
+    # 18g: a closed issue naming a fixing commit drops pre-fix sightings.
+    # compare/<fix>...<head> ahead/identical keeps, behind/diverged drops.
+    for key in sorted(seen):
+        ent = issues_st.get(key, {})
+        if not ent.get("issue") or ent.get("issue_state") != "closed":
+            continue
+        if "fix_commit" not in ent:
+            try:
+                evts = json.loads(gh_api("repos/%s/issues/%s/events"
+                                           % (repo, ent["issue"])))
+            except Fatal as e:
+                print("ci-friction: %s" % e, file=sys.stderr)
+                ok = False
+                continue
+            fix = None
+            if isinstance(evts, list):
+                for ev in evts:
+                    if ev.get("event") == "closed" and ev.get("commit_id"):
+                        fix = ev["commit_id"]
+                        break
+            ent["fix_commit"] = fix
+        if not ent.get("fix_commit"):
+            continue  # no fixing commit: closed_at fallback below
+        kept = []
+        for s in seen[key]:
+            if not s[3]:
+                kept.append(s)  # head unknown: fail open
+                continue
+            pair = "%s...%s" % (ent["fix_commit"], s[3])
+            if pair not in compares:
+                try:
+                    cmpj = json.loads(gh_api("repos/%s/compare/%s" % (repo, pair)))
+                    compares[pair] = cmpj.get("status")
+                except Fatal as e:
+                    print("ci-friction: %s" % e, file=sys.stderr)
+                    ok = False
+                    kept.append(s)
+                    continue
+            if compares[pair] in ("ahead", "identical"):
+                kept.append(s)
+        seen[key] = kept
+    seen = {k: v for k, v in seen.items() if v}
 
     repeats, recurred = [], []
     for key in sorted(seen):
@@ -432,7 +478,8 @@ def main(argv):
                 if not (isinstance(v, dict) and parse_ts(v.get("completed_at") or "")
                         and parse_ts(v["completed_at"]) >= cutoff)]:
         jobs_st.pop(jid, None)
-    st.update({"jobs": jobs_st, "issues": issues_st, "branches": branches_st})
+    st.update({"jobs": jobs_st, "issues": issues_st, "branches": branches_st,
+               "compares": compares})
     save_state(state_path, st)
 
     if not ok:

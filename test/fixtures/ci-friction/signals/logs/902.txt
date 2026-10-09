@@ -1,0 +1,1 @@
+2026-10-09T17:30:01Z thread 'fiber-core doors::boom' panicked at 'assertion failed', src/lib.rs:10
