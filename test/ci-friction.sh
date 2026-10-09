@@ -43,6 +43,15 @@ serve() { # serve <file> <key>: cat it, or fail when flagged
   echo "fake gh: no fixture $f for $path" >&2
   exit 2
 }
+if [[ "$*" == *graphql* ]]; then
+  n="$(printf '%s' "$*" | sed -nE 's/.*issue\(number:([0-9]+)\).*/\1/p')"
+  if [ -e "$T/fail-graphql-$n" ] || [ -e "$scen/graphql/$n.json" ]; then
+    serve "graphql/$n.json" "graphql-$n"
+  else
+    printf '{"data":{"repository":{"issue":{"timelineItems":{"nodes":[]}}}}}'
+  fi
+  exit 0
+fi
 case "$path" in
   *actions/runs\?created=*)
     if [ -e "$T/fail-runs" ]; then cat "$T/fail-runs" >&2; exit 1; fi
@@ -223,8 +232,29 @@ run_friction --min-lanes 1 --json >/dev/null
 run_friction --min-lanes 1 --json >/dev/null
 [ "$(grep -c 'compare/ffffffff' "$FAKE_GH_LOG")" = "2" ] \
   || fail "one compare per pair, cached: [$(cat "$FAKE_GH_LOG")]"
-[ "$(grep -c 'issues/1470/events' "$FAKE_GH_LOG")" = "1" ] \
-  || fail "events fetched once: [$(cat "$FAKE_GH_LOG")]"
+[ "$(grep -c 'graphql' "$FAKE_GH_LOG")" = "1" ] \
+  || fail "closer fetched once: [$(cat "$FAKE_GH_LOG")]"
+
+# --- 224: no closer keeps every sighting on the closed_at fallback ---
+setup nocloser
+run_friction --min-lanes 1 --json
+[ "$CODE" = "1" ] || fail "nocloser exits 1 (got $CODE): [$OUT]"
+[ "$(jget "sorted(set(l for r in d['repeats'] for l in r['lanes']))")" = "['#1501', '#1502']" ] \
+  || fail "no closer: pre-fix lane kept: [$OUT]"
+grep -q "compare/" "$FAKE_GH_LOG" && fail "no closer: no compare: [$(cat "$FAKE_GH_LOG")]"
+
+# --- 224: a null cached by an older version is looked up again ---
+setup fixcommit
+mkdir -p "$HOME/.cache/switchyard"
+python3 -c "import json; json.dump({'jobs': {}, 'issues': {'fiber-core doors::watch': {'issue': 1470, 'issue_state': 'closed', 'closed_at': '2026-10-09T10:00:00Z', 'updated_at': '2026-10-09T10:00:00Z', 'fix_commit': None}}, 'branches': {}}, open('$HOME/.cache/switchyard/ci-friction.json', 'w'))"
+run_friction --min-lanes 1 --json
+[ "$(grep -c 'graphql' "$FAKE_GH_LOG")" = "1" ] || fail "stale null re-looked-up: [$(cat "$FAKE_GH_LOG")]"
+[ "$(jget "[r['lanes'] for r in d['repeats']]")" = "[['#1502']]" ] \
+  || fail "stale null recovered, pre-fix lane dropped: [$OUT]"
+setup fixcommit
+run_friction --min-lanes 1 --json >/dev/null
+run_friction --min-lanes 1 --json >/dev/null
+[ "$(grep -c 'graphql' "$FAKE_GH_LOG")" = "1" ] || fail "current-version lookup cached: [$(cat "$FAKE_GH_LOG")]"
 
 # --- 18g: post-fix sighting before closure is still a recurrence ---
 setup fixlate
