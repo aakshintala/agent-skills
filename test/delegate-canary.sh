@@ -295,7 +295,7 @@ echo "task 2 cases passed"
 # --- Task 3 fixture: every sandbox class, plus one deny ---
 cat >"$T/ev3.jsonl" <<EOF
 {"kind":"usage_recorded","session_id":"s1","ts":1,"schema_version":1,"action_id":"a0","seq":1,"payload":{"generation_id":"gM","model":"m","tokens":{"input":10,"output":1,"cache_read":1,"cache_write":{}},"cost":1}}
-{"kind":"usage_recorded","session_id":"s1","ts":2,"schema_version":1,"seq":2,"payload":{"generation_id":"gR","model":"m","tokens":{"input":500,"output":100,"cache_read":150,"cache_write":{"warm":50}},"cost":0.5}}
+{"kind":"usage_recorded","session_id":"s1","ts":2,"schema_version":1,"seq":2,"payload":{"generation_id":"gR","model":"m","tokens":{"input":2000,"output":100,"cache_read":150,"cache_write":{"warm":50}},"cost":0.5}}
 {"kind":"tool_call_requested","session_id":"s1","ts":3,"schema_version":1,"action_id":"c1","seq":3,"payload":{"name":"bash","arguments":{"command":"cargo test"}}}
 {"kind":"permission_resolved","session_id":"s1","ts":4,"schema_version":1,"action_id":"c1","seq":4,"payload":{"decision":"allow","decided_by":"reviewer"}}
 {"kind":"tool_call_requested","session_id":"s1","ts":5,"schema_version":1,"action_id":"c2","seq":5,"payload":{"name":"write","arguments":{"path":"\$TMPDIR/x.txt"}}}
@@ -310,7 +310,37 @@ cat >"$T/ev3.jsonl" <<EOF
 {"kind":"permission_resolved","session_id":"s1","ts":14,"schema_version":1,"action_id":"n4","seq":14,"payload":{"decision":"allow","decided_by":"reviewer"}}
 {"kind":"tool_call_requested","session_id":"s1","ts":15,"schema_version":1,"action_id":"u1","seq":15,"payload":{"name":"bash","arguments":{"command":"cat /etc/hosts | python3 -"}}}
 {"kind":"permission_resolved","session_id":"s1","ts":16,"schema_version":1,"action_id":"u1","seq":16,"payload":{"decision":"allow","decided_by":"reviewer"}}
-{"kind":"permission_resolved","session_id":"s1","ts":17,"schema_version":1,"action_id":"u9","seq":17,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":17,"schema_version":1,"action_id":"n5","seq":17,"payload":{"name":"bash","arguments":{"command":"git -C \$PWD fetch origin"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":18,"schema_version":1,"action_id":"n5","seq":18,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":19,"schema_version":1,"action_id":"n6","seq":19,"payload":{"name":"bash","arguments":{"command":"git -c foo.bar=baz fetch origin"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":20,"schema_version":1,"action_id":"n6","seq":20,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":21,"schema_version":1,"action_id":"n7","seq":21,"payload":{"name":"bash","arguments":{"command":"git --git-dir=\$TMPDIR/g.git fetch origin"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":22,"schema_version":1,"action_id":"n7","seq":22,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":23,"schema_version":1,"action_id":"n8","seq":23,"payload":{"name":"bash","arguments":{"command":"git --work-tree \$TMPDIR/wt pull"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":24,"schema_version":1,"action_id":"n8","seq":24,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":25,"schema_version":1,"action_id":"n9","seq":25,"payload":{"name":"bash","arguments":{"command":"git --no-pager push origin main"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":26,"schema_version":1,"action_id":"n9","seq":26,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":27,"schema_version":1,"action_id":"u2","seq":27,"payload":{"name":"bash","arguments":{"command":"cat </etc/hosts"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":28,"schema_version":1,"action_id":"u2","seq":28,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":29,"schema_version":1,"action_id":"n10","seq":29,"payload":{"name":"bash","arguments":{"command":"echo hi>/etc/out"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":30,"schema_version":1,"action_id":"n10","seq":30,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":31,"schema_version":1,"action_id":"n11","seq":31,"payload":{"name":"bash","arguments":{"command":"echo hi >>/etc/out"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":32,"schema_version":1,"action_id":"n11","seq":32,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":33,"schema_version":1,"action_id":"n12","seq":33,"payload":{"name":"bash","arguments":{"command":"echo hi 2>/etc/err"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":34,"schema_version":1,"action_id":"n12","seq":34,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":35,"schema_version":1,"action_id":"c3","seq":35,"payload":{"name":"bash","arguments":{"command":"echo hi 2>/dev/null"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":36,"schema_version":1,"action_id":"c3","seq":36,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":37,"schema_version":1,"action_id":"u3","seq":37,"payload":{"name":"bash","arguments":{"command":"cat /etc/hosts|cat"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":38,"schema_version":1,"action_id":"u3","seq":38,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":39,"schema_version":1,"action_id":"u4","seq":39,"payload":{"name":"bash","arguments":{"command":"echo a;cat /etc/hosts"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":40,"schema_version":1,"action_id":"u4","seq":40,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":41,"schema_version":1,"action_id":"u5","seq":41,"payload":{"name":"bash","arguments":{"command":"true && cat /etc/hosts"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":42,"schema_version":1,"action_id":"u5","seq":42,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":43,"schema_version":1,"action_id":"u6","seq":43,"payload":{"name":"bash","arguments":{"command":"(cat /etc/hosts)"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":44,"schema_version":1,"action_id":"u6","seq":44,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":45,"schema_version":1,"action_id":"u7","seq":45,"payload":{"name":"bash","arguments":{"command":"x=/etc/y"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":46,"schema_version":1,"action_id":"u7","seq":46,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"permission_resolved","session_id":"s1","ts":47,"schema_version":1,"action_id":"u9","seq":47,"payload":{"decision":"allow","decided_by":"reviewer"}}
 EOF
 
 # --- Task 3: the gate passes on pi only; the run still exits 0 ---
@@ -324,11 +354,11 @@ grep -q '| gate | pass | fail |' "$OUT3/summary.md" || fail "summary gate row"
 M3="$OUT3/fiber/metrics.json"
 [ "$(jq -r .cost.main "$M3")" = "1" ] || fail "task3 main cost"
 [ "$(jq -r .cost.reviewer "$M3")" = "0.5" ] || fail "task3 reviewer cost"
-[ "$(jq -r .reviewed_calls "$M3")" = "8" ] || fail "task3 reviewed calls"
+[ "$(jq -r .reviewed_calls "$M3")" = "23" ] || fail "task3 reviewed calls"
 [ "$(jq -r .per_review_tokens_est "$M3")" = "100" ] || fail "task3 per-review tokens"
-[ "$(jq -r .sandbox.contained.count "$M3")" = "2" ] || fail "task3 contained 2"
-[ "$(jq -r .sandbox.needs_out.count "$M3")" = "4" ] || fail "task3 needs_out 4"
-[ "$(jq -r .sandbox.unknown.count "$M3")" = "2" ] || fail "task3 unknown 2"
+[ "$(jq -r .sandbox.contained.count "$M3")" = "3" ] || fail "task3 contained 3"
+[ "$(jq -r .sandbox.needs_out.count "$M3")" = "12" ] || fail "task3 needs_out 12"
+[ "$(jq -r .sandbox.unknown.count "$M3")" = "8" ] || fail "task3 unknown 8"
 jq -e '.sandbox.contained.commands | any(contains("cargo test"))' "$M3" >/dev/null || fail "contained lists cargo test"
 jq -e '.sandbox.contained.commands | any(contains("x.txt"))' "$M3" >/dev/null || fail "contained lists tmp write"
 jq -e '.sandbox.needs_out.commands | any(contains("curl"))' "$M3" >/dev/null || fail "needs_out lists curl"
@@ -336,6 +366,12 @@ jq -e '.sandbox.needs_out.commands | any(contains("git push"))' "$M3" >/dev/null
 jq -e '.sandbox.needs_out.commands | any(contains("/etc/foo"))' "$M3" >/dev/null || fail "needs_out lists outside redirect"
 jq -e '.sandbox.unknown.commands | any(contains("python3"))' "$M3" >/dev/null || fail "unknown lists piped interpreter"
 jq -e '.sandbox.unknown.commands | any(. == "unknown")' "$M3" >/dev/null || fail "unknown lists the unmatched call"
+jq -e '.sandbox.needs_out.commands | any(contains("git -C"))' "$M3" >/dev/null || fail "needs_out lists git -C"
+jq -e '.sandbox.needs_out.commands | any(contains("--no-pager"))' "$M3" >/dev/null || fail "needs_out lists git --no-pager"
+jq -e '.sandbox.needs_out.commands | any(contains("/etc/err"))' "$M3" >/dev/null || fail "needs_out lists 2> outside redirect"
+jq -e '.sandbox.contained.commands | any(contains("2>/dev/null"))' "$M3" >/dev/null || fail "contained keeps 2>/dev/null"
+jq -e '.sandbox.unknown.commands | any(contains("</etc/hosts"))' "$M3" >/dev/null || fail "unknown lists < redirect path"
+jq -e '.sandbox.unknown.commands | any(contains("x=/etc/y"))' "$M3" >/dev/null || fail "unknown lists =-attached path"
 [ "$(jq -r '.denials | length' "$M3")" = "1" ] || fail "one denial"
 [ "$(jq -r '.denials[0].action_id' "$M3")" = "n2" ] || fail "denial action"
 [ "$(jq -r '.denials[0].decided_by' "$M3")" = "reviewer" ] || fail "denial decider"

@@ -33,7 +33,7 @@ TOK_QT="\"[^\"]*\"|'[^']*'"
 SANDBOX_NEEDS_OUT="$(printf '%s\n' \
   "needs_out${TAB}bash${TAB}(^|[^[:alnum:]_])(curl|wget)([^[:alnum:]_]|\$)" \
   "needs_out${TAB}bash${TAB}(^|[^[:alnum:]_])gh([^[:alnum:]_]|\$)" \
-  "needs_out${TAB}bash${TAB}(^|[^[:alnum:]_])git[[:space:]]+(fetch|push|clone|pull|ls-remote|submodule[[:space:]]+update)([^[:alnum:]_]|\$)" \
+  "needs_out${TAB}bash${TAB}(^|[^[:alnum:]_])git([[:space:]]+(-C[[:space:]]+[^[:space:]]+|-c[[:space:]]+[^[:space:]]+|--[A-Za-z-]+=[^[:space:]]+|--[A-Za-z-]+[[:space:]]+[^[:space:]]+|--[A-Za-z-]+|-[A-Za-z]+))*[[:space:]]+(fetch|push|clone|pull|ls-remote|submodule[[:space:]]+update)([^[:alnum:]_]|\$)" \
   "needs_out${TAB}bash${TAB}(^|[^[:alnum:]_])(npm|pnpm|yarn|bun)[[:space:]]+(install|i|ci|add|update)([^[:alnum:]_-]|\$)" \
   "needs_out${TAB}bash${TAB}(^|[^[:alnum:]_])npx([^[:alnum:]_-]|\$)" \
   "needs_out${TAB}bash${TAB}(^|[^[:alnum:]_])pip3?[[:space:]]+install([^[:alnum:]_]|\$)" \
@@ -66,10 +66,10 @@ now_ms() {
 
 # match_table TABLE TEXT TOOL: true when a row for TOOL (or *) matches TEXT.
 match_table() {
-  local table="$1" text="$2" tool="$3" line cls rest row_tool ere
+  local table="$1" text="$2" tool="$3" line rest row_tool ere
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
-    cls="${line%%$TAB*}"; rest="${line#*$TAB}"
+    rest="${line#*$TAB}"
     row_tool="${rest%%$TAB*}"; ere="${rest#*$TAB}"
     if [ "$row_tool" = "*" ] || [ "$row_tool" = "$tool" ]; then
       if printf '%s' "$text" | grep -Eq "$ere"; then return 0; fi
@@ -204,13 +204,14 @@ cd_outside() {
 # abs_outside TEXT WORKTREE TMPDIR: true when any absolute path in TEXT lies
 # outside the allowed roots.
 abs_outside() {
-  local text="$1" wt="$2" tmp="$3" tok
+  local text="$1" wt="$2" tmp="$3" tok sanitized
+  sanitized="$(printf '%s' "$text" | sed -E 's/([()<>|;&=])/ \1 /g')"
   while IFS= read -r tok || [ -n "$tok" ]; do
     [ -n "$tok" ] || continue
     case "$tok" in /*)
       if path_outside "$tok" "$wt" "$tmp"; then return 0; fi ;;
     esac
-  done < <(operands_of "$text")
+  done < <(operands_of "$sanitized")
   return 1
 }
 emit_decision() {
@@ -373,7 +374,6 @@ cmd_run() {
     fi
     mkdir -p "$out/$side"
   done
-  mkdir -p "$(dirname "$clone")"
   for side in pi fiber; do
     local wt branch
     wt="$(canary_worktree "$clone" "$ticket" "$side")"
