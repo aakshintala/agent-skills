@@ -73,6 +73,9 @@ gh() (
         fi
         printf '{"number":%s}\n' "$2"; exit 0
       fi
+      if [ "${5:-}" = "--json" ] && [ "${6:-}" = "isDraft" ]; then
+        if [ -e "$T/state/draft" ]; then echo true; else echo false; fi; exit 0
+      fi
       h="$FAKE_SHA"
       if [ -f "$T/state/heads.txt" ]; then
         h="$(head -1 "$T/state/heads.txt")"
@@ -149,7 +152,7 @@ write_record() {
 
 reset_state() {
   rm -f "$T/state/runs.txt" "$T/state/watch.txt" "$T/state/comment.md" "$T/state/comment-pr.txt"
-  rm -f "$T/state"/fail-* "$T/state/not-pr" "$T/state/heads.txt" "$T/state/sleeps.txt"
+  rm -f "$T/state"/fail-* "$T/state/not-pr" "$T/state/draft" "$T/state/heads.txt" "$T/state/sleeps.txt"
   rm -f "$T/state"/prompt-*.md "$TMPDIR"/delegate-jobs/*.json "$TMPDIR"/review-pr/* 2>/dev/null || true
 }
 
@@ -364,6 +367,33 @@ start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
 out="$(bash "$REVIEW" collect job-review job-overbuild 2>/dev/null)" && fail "no-verdict collect exits 1"
 grep -q "^UNFINISHED review DONE gate=3 .*/job-review.json$" <<<"$out" || fail "no-verdict UNFINISHED with gate"
 grep -q "^CI $SHORT none$" <<<"$out" || fail "empty checks CI none"
+
+# --- case: a draft PR with no check runs prints CI draft; a non-draft one stays none
+reset_state
+: >"$T/checks.txt"
+: >"$T/state/draft"
+write_record review DONE "all good, nothing to report
+VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
+  --model M --overbuild-model M2 >/dev/null 2>&1 || fail "draft start exits 0"
+out="$(bash "$REVIEW" collect job-review job-overbuild 2>/dev/null)" || true
+grep -qx "CI $SHORT draft" <<<"$out" || fail "draft PR with no runs prints CI draft, got [$(grep '^CI ' <<<"$out")]"
+reset_state
+: >"$T/checks.txt"
+write_record review DONE "all good, nothing to report
+VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+start_review 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
+  --model M --overbuild-model M2 >/dev/null 2>&1 || fail "non-draft start exits 0"
+out="$(bash "$REVIEW" collect job-review job-overbuild 2>/dev/null)" || true
+grep -qx "CI $SHORT none" <<<"$out" || fail "non-draft PR with no runs prints CI none, got [$(grep '^CI ' <<<"$out")]"
 
 # --- case: a decorated verdict is accepted
 reset_state
