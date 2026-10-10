@@ -287,15 +287,12 @@ cmd_start() {
     # Start-only flags are ignored in verify mode, one note per flag.
     if [ "$issue_count" -gt 0 ]; then
       echo "review-pr: --issue is not used with --verify; ignored" >&2
-      issue_count=0
     fi
     if [ -n "$specn" ]; then
       echo "review-pr: --spec is not used with --verify; ignored" >&2
-      specn=""
     fi
     if [ -n "$omodel" ]; then
       echo "review-pr: --overbuild-model is not used with --verify; ignored" >&2
-      omodel=""
     fi
   else
     mode="review"
