@@ -10,10 +10,18 @@
 #     with every id spelled out, and returns at once. Wait for the ids with the
 #     delegation tool's wait command (delegate watch), in the wait mode your
 #     harness instructions prescribe.
+#     --verify ignores --issue, --spec and --overbuild-model, one stderr note each.
 #   review-pr collect <job-id>...
 #     posts the one PR comment with the patch-id, prints the verdict digest,
 #     removes the worktrees, and exits 1 when any job is unfinished or wrote a
 #     verdict outside the shared vocabulary below.
+#   review-pr run <same args as start>
+#     start, then delegate watch on every job id start launched, then collect on
+#     those ids. Prints start's lines, then collect's output, and exits with
+#     collect's code. If the watch times out or fails it exits non-zero after
+#     printing the ids and the "collect: review-pr collect <id>..." line, so the
+#     caller can resume with collect. Use start and collect instead when the
+#     caller must do other work while the reviews run.
 set -euo pipefail
 
 # Verdict vocabulary. This block is the one place every verdict line the
@@ -32,6 +40,7 @@ set -euo pipefail
 usage() {
   echo "usage: review-pr start <pr> --repo OWNER/NAME --cwd CLONE [--issue N]... [--spec N] --model M --overbuild-model M2 [--workflow-doc PATH] [--head SHA]" >&2
   echo "       review-pr start <pr> --repo OWNER/NAME --cwd CLONE --model M --verify FINDINGS_FILE --since SHA [--workflow-doc PATH] [--head SHA]" >&2
+  echo "       review-pr run <same args as start>" >&2
   echo "       review-pr collect <job-id>..." >&2
   exit 2
 }
@@ -275,7 +284,19 @@ cmd_start() {
     mode="verify"
     [ -n "$since" ] || usage
     [ -f "$verify" ] || usage
-    { [ "$issue_count" -eq 0 ] && [ -z "$specn" ] && [ -z "$omodel" ]; } || usage
+    # Start-only flags are ignored in verify mode, one note per flag.
+    if [ "$issue_count" -gt 0 ]; then
+      echo "review-pr: --issue is not used with --verify; ignored" >&2
+      issue_count=0
+    fi
+    if [ -n "$specn" ]; then
+      echo "review-pr: --spec is not used with --verify; ignored" >&2
+      specn=""
+    fi
+    if [ -n "$omodel" ]; then
+      echo "review-pr: --overbuild-model is not used with --verify; ignored" >&2
+      omodel=""
+    fi
   else
     mode="review"
     [ -n "$omodel" ] || usage
@@ -451,6 +472,7 @@ cmd_start() {
   fi
 
   jids=""
+  started_ids=()
   for role in $roles; do
     wt="$run_dir/wt-$role"
     git -C "$clone" worktree add --detach "$wt" "$sha" >&2
@@ -492,12 +514,29 @@ cmd_start() {
 
     printf '%s %s\n' "$role" "$jid"
     jids="$jids $jid"
+    started_ids[${#started_ids[@]}]="$jid"
   done
   printf 'watch: delegate watch%s\n' "$jids"
   printf 'collect: review-pr collect%s\n' "$jids"
 
   started_ok="1"
   trap - EXIT
+}
+
+# cmd_run: start, wait on the ids start launched, then collect them. Calls
+# start and collect in-process; the ids come from started_ids, not from
+# start's stdout.
+cmd_run() {
+  cmd_start "$@"
+  local watch_rc=0 ids
+  delegate watch ${started_ids[@]+"${started_ids[@]}"} >/dev/null || watch_rc=$?
+  if [ "$watch_rc" -ne 0 ]; then
+    ids="${started_ids[*]}"
+    echo "review-pr: delegate watch did not finish (exit $watch_rc); the jobs may still be running. Resume with:" >&2
+    echo "collect: review-pr collect $ids" >&2
+    exit "$watch_rc"
+  fi
+  cmd_collect ${started_ids[@]+"${started_ids[@]}"}
 }
 
 cmd_collect() {
@@ -728,6 +767,7 @@ cmd_collect() {
 sub="$1"; shift
 case "$sub" in
   start) cmd_start "$@";;
+  run) cmd_run "$@";;
   collect) cmd_collect "$@";;
   *) usage;;
 esac

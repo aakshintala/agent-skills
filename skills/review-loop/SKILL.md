@@ -12,10 +12,10 @@ The loop for one PR. Reviews run on models from a different family than the PR's
 ### 1. Review
 
 ```
-~/.agents/bin/review-pr start <pr> --repo <owner/name> --cwd <clone> --head <pushed sha> [--issue <n>]... [--spec <n>] --model <correctness> --overbuild-model <over-engineering> [--workflow-doc <path>]
+~/.agents/bin/review-pr run <pr> --repo <owner/name> --cwd <clone> --head <pushed sha> [--issue <n>]... [--spec <n>] --model <correctness> --overbuild-model <over-engineering> [--workflow-doc <path>]
 ```
 
-`--head` is the full SHA of the PR head you expect reviewed, usually the commit you just pushed (`git rev-parse HEAD`): `review-pr` waits for GitHub to report it and reviews exactly that commit, so a push never gets reviewed at its old head. Pass `--issue` once per ticket the PR resolves. A PR with no ticket leaves out `--issue` and `--spec` and is reviewed against its own description. It launches the correctness review (`code-review`) and the over-engineering review (`overbuild-review`) as separate jobs, prints one `<role> <job-id>` line per job, then a `watch:` and a `collect:` line with every id written out, and returns at once. Run the `watch:` command, in the wait mode your harness instructions prescribe, then the `collect:` command; paste them as printed rather than passing the ids through a shell variable:
+`--head` is the full SHA of the PR head you expect reviewed, usually the commit you just pushed (`git rev-parse HEAD`): `review-pr` waits for GitHub to report it and reviews exactly that commit, so a push never gets reviewed at its old head. Pass `--issue` once per ticket the PR resolves. A PR with no ticket leaves out `--issue` and `--spec` and is reviewed against its own description. `run` launches the correctness review (`code-review`) and the over-engineering review (`overbuild-review`), waits for both, collects them, and exits with collect's code; if the wait fails it exits non-zero and prints the `collect:` line to resume with. The split form, `start` then `collect`, is for a caller that must do other work while the reviews run: `start` returns at once with one `<role> <job-id>` line per job, you wait with `delegate watch` on those ids, then run collect with the ids as printed.
 
 ```
 ~/.agents/bin/review-pr collect <job-id>...
@@ -33,11 +33,10 @@ Done when the fix round covers every open finding: dispatched as a gated job, or
 
 ### 3. Verify
 
-Judge the repair by its diff (`git range-diff origin/main <reviewed head> <new head>`; after a rebase, a plain diff counts the base's own merges) and gate output, never the fix worker's report. A finding the worker refuted has no fix in the diff: copy its `refuted: <evidence>` line under that finding in the findings file, so the verify checks the evidence against the code. Then start the scoped verify (it returns its job id at once), wait as in step 1, and collect it:
+Judge the repair by its diff (`git range-diff origin/main <reviewed head> <new head>`; after a rebase, a plain diff counts the base's own merges) and gate output, never the fix worker's report. A finding the worker refuted has no fix in the diff: copy its `refuted: <evidence>` line under that finding in the findings file, so the verify checks the evidence against the code. Then run the scoped verify, which starts it, waits and collects it, as in step 1:
 
 ```
-~/.agents/bin/review-pr start <pr> --repo <owner/name> --cwd <clone> --head <pushed sha> --model <correctness> --verify <findings file> --since <reviewed head>
-~/.agents/bin/review-pr collect <job-id>
+~/.agents/bin/review-pr run <pr> --repo <owner/name> --cwd <clone> --head <pushed sha> --model <correctness> --verify <findings file> --since <reviewed head>
 ```
 
 `FIX-OK`: the loop is done. `FIX-INCOMPLETE`: back to step 2 with the open findings, while the counter is below 2.
