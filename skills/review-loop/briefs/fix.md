@@ -15,6 +15,7 @@ __FINDINGS__
 - When the same check fails twice after your fixes, stop: report the assumption your fixes share, and start no third patch.
 - Refer to issues as `see #N` or `#N's case` in commit messages; a closing keyword (close, fix, resolve and their forms) before an issue number closes that issue on merge.
 - Commit your work before any command that discards changes (`git reset --hard`, `git checkout -- <path>`, `git restore`, a rebase). Make a scratch commit, such as one kept as evidence, on a throwaway branch (`git switch -c scratch/<name>`), then switch back to the lane branch and delete the scratch one.
+- Run only the gate and the tests your findings name. Suites the workflow doc gives to CI, such as mutation testing (`cargo mutants`), benchmarks and backstops, run in CI: read their result from the CI log, and report when you need one reproduced.
 - Before pushing, the gate passes: `__GATE__`. Commit and push.
 
 ## Report
