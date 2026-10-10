@@ -210,6 +210,21 @@ OTHER="$(git -C "$C" rev-parse HEAD)"
 run 7 --repo O/N --reviewed "$OTHER" --worktree "$WT"; expect 4 "patch-id mismatch"; untouched "patch-id mismatch"
 no_merge "mismatch"
 
+# ===== --reviewed is the old head: a pushed head with the same patch-id is accepted,
+# ===== and one whose patch-id differs exits 4 before any merge
+setup
+git -C "$WT" commit -q --amend -m 'feature, reworded'
+[ "$(git -C "$WT" rev-parse HEAD)" != "$HEAD0" ] || fail "amend moved the head"
+git -C "$WT" push -q --force-with-lease origin HEAD:refs/heads/feature
+ship; expect 0 "pushed head whose patch-id matches --reviewed is accepted"
+grep -q '^gh pr merge' "$ST/gh.log" || fail "same patch-id: merged"
+
+setup
+echo changed >"$WT/feature.txt"; git -C "$WT" commit -q --amend --no-edit -a
+git -C "$WT" push -q --force-with-lease origin HEAD:refs/heads/feature
+ship; expect 4 "pushed head whose patch-id differs from --reviewed exits 4"
+no_merge "pushed head with a changed patch"
+
 # ===== exit 1: gate
 setup
 ship --gate 'echo gate-line-1; echo gate-line-2; exit 3'

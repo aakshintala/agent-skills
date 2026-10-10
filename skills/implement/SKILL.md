@@ -87,8 +87,8 @@ When the workflow doc's merge rule allows a squash merge and the merge terms cov
 
 - 124: CI is still pending. Rerun as is.
 - 1: read stderr. Failing checks go to step 7, a failed gate goes back to the lane, and `origin/main moved during CI` means ship-pr already retried 3 times itself, so rerun it. After a failed merge or MERGED wait, check `gh pr view <pr> --json state` before rerunning: if it reads `MERGED`, finish the by-hand cleanup below instead.
-- 3: `ship-pr` aborted the rebase, or found the PR conflicting with `origin/main` after its push. Run `git rebase origin/main` again, resolve with `resolving-merge-conflicts`, push with `--force-with-lease`, and take the new head through `review-loop`'s verify.
-- 4: the rebase changed the diff, and the rebased head is local only. Push it with `--force-with-lease`, take it through `review-loop`'s verify, and rerun with it as `--reviewed`.
+- 3: `ship-pr` aborted the rebase, or found the PR conflicting with `origin/main` after its push. Run `git rebase origin/main` again, resolve with `resolving-merge-conflicts`, push with `--force-with-lease`, then rerun it with the same `--reviewed`. Take the new head through `review-loop`'s verify only when it then exits 4.
+- 4: the patch changed (a rebase changed the diff, or a commit was added after review), and the new head may be local only. Push it with `--force-with-lease`, then run `review-loop`'s scoped verify, never a full re-review: `~/.agents/bin/review-pr start <pr> --repo <owner/name> --cwd <clone> --head <new full sha> --model <correctness> --verify <findings file> --since <reviewed head>`, then collect it. With no open findings, pass an empty file. Rerun with the new head as `--reviewed` once the verify prints `FIX-OK`.
 - 5: handle the printed matches as the next paragraph says. For printed `missing body line:` lines, add each to the PR body.
 - 2: a precondition failed; stderr names it.
 
