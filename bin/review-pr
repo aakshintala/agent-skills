@@ -284,6 +284,10 @@ cmd_start() {
     mode="verify"
     [ -n "$since" ] || usage
     [ -f "$verify" ] || usage
+    if ! grep -q '[^[:space:]]' "$verify"; then
+      echo "review-pr: findings file $verify is empty; write the open findings, or \"no open findings\"" >&2
+      exit 2
+    fi
     # Start-only flags are ignored in verify mode, one note per flag.
     if [ "$issue_count" -gt 0 ]; then
       echo "review-pr: --issue is not used with --verify; ignored" >&2

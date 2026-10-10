@@ -828,6 +828,22 @@ grep -q -- "--since $MISSING_SINCE is not fetchable" <<<"$err" || fail "missing 
 [ -z "$(ls -d "$TMPDIR"/review-pr.run.* 2>/dev/null)" ] || fail "missing --since leaves no run dir"
 [ ! -e "$T/state/runs.txt" ] || fail "missing --since launches no job"
 
+# --- case: an empty or whitespace-only --verify findings file exits 2 before launch
+for blank in '' '  \n\t \n'; do
+  reset_state
+  printf "$blank" >"$T/findings-blank.txt"
+  err="$(start_review 7 --repo O/N --cwd "$T/clone" --model M \
+    --verify "$T/findings-blank.txt" --since "$FAKE_SHA" 2>&1 >/dev/null)"
+  st=$?
+  [ "$st" -eq 2 ] || fail "empty --verify findings file exits 2 (got $st)"
+  grep -Fxq "review-pr: findings file $T/findings-blank.txt is empty; write the open findings, or \"no open findings\"" <<<"$err" || \
+    fail "empty --verify findings file names the file and the fix"
+  [ "$(git -C "$T/clone" worktree list | grep -c 'wt-' || true)" = "0" ] || \
+    fail "empty --verify findings file creates no worktree"
+  [ -z "$(ls "$TMPDIR/review-pr" 2>/dev/null)" ] || fail "empty --verify findings file saves no state"
+  [ ! -e "$T/state/runs.txt" ] || fail "empty --verify findings file launches no job"
+done
+
 # --- case: collect unregisters the run's worktrees after --cwd is gone, and
 # leaves another run's worktrees alone
 reset_state
