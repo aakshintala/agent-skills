@@ -530,8 +530,13 @@ run_side_metrics() {
     harness=1
   fi
   if [ "$run_ok" -eq 0 ]; then harness=1; fi
-  if [ -n "$id" ] && [ -f "$jobs_dir/$id.json" ]; then
-    rec="$jobs_dir/$id.json"
+  # The job record is saved into the side's dir, so report still has it
+  # after $TMPDIR is cleaned; a saved copy is preferred.
+  if [ -n "$id" ] && [ ! -f "$dir/job.json" ] && [ -f "$jobs_dir/$id.json" ]; then
+    cp "$jobs_dir/$id.json" "$dir/job.json"
+  fi
+  if [ -n "$id" ] && [ -f "$dir/job.json" ]; then
+    rec="$dir/job.json"
   elif [ "$run_ok" -eq 1 ] && [ "$wrc" -eq 0 ]; then
     printf 'job record missing: %s/%s.json\n' "$jobs_dir" "$id" >>"$notes"
     harness=1
@@ -561,6 +566,15 @@ run_side_metrics() {
     rc="0"
   else
     if [ -n "$rec" ]; then
+      # Save the run's event log beside the record: report reads the copy
+      # when the Fiber home is gone. A copy already there is kept.
+      if [ ! -f "$out/fiber/events.jsonl" ]; then
+        saved_sid="$(jq -r '.resume.sessionId // ""' "$rec" 2>/dev/null)"
+        if [ -n "$saved_sid" ] && [ "$saved_sid" != "null" ]; then
+          saved_ev="$(fiber_events "$saved_sid")"
+          if [ -n "$saved_ev" ]; then cp "$saved_ev" "$out/fiber/events.jsonl"; fi
+        fi
+      fi
       m_total="$(fiber_metrics "$rec" | sed -n 3p)"
       m_in="$(fiber_metrics "$rec" | sed -n 4p)"
       m_out="$(fiber_metrics "$rec" | sed -n 5p)"
@@ -754,7 +768,44 @@ cmd_report() {
   line="$(awk -F "$bt" '/^Fiber / { print $2 "\t" $6; exit }' "$out/summary.md" 2>/dev/null)"
   if [ -n "$line" ]; then fiber_bin="${line%%"$TAB"*}"; fiber_version="${line#*"$TAB"}"; fi
   local jobs_dir="${TMPDIR:-/tmp}/delegate-jobs" tmp_root="${TMPDIR:-/tmp}"
-  FIBER_EVENTS_ROOT="${FIBER_HOME:-$HOME/.fiber}"
+  export FIBER_EVENTS_ROOT="${FIBER_HOME:-$HOME/.fiber}"
+  # Check every source before any write, so a missing one leaves the saved
+  # metrics.json and summary.md byte-identical. A run's saved copies (its
+  # job records and Fiber event log) come first; $TMPDIR and the Fiber home
+  # are the fallback.
+  local missing="" chk_side chk_id
+  for chk_side in pi fiber; do
+    chk_id="$(jq -r '.job_id // ""' "$out/$chk_side/metrics.json" 2>/dev/null)"
+    if [ -z "$chk_id" ] || [ "$chk_id" = "null" ]; then
+      missing="$missing $chk_side job id;"
+    elif [ ! -f "$out/$chk_side/job.json" ] && [ ! -f "$jobs_dir/$chk_id.json" ]; then
+      missing="$missing $chk_side job record;"
+    fi
+    [ -f "$out/$chk_side/gate.exit" ] || missing="$missing $chk_side gate.exit;"
+  done
+  local fiber_rec="$out/fiber/job.json" fiber_sid="" fiber_ev=""
+  if [ ! -f "$fiber_rec" ]; then
+    fiber_rec="$jobs_dir/$(jq -r '.job_id // ""' "$out/fiber/metrics.json" 2>/dev/null).json"
+  fi
+  if [ -f "$out/fiber/events.jsonl" ]; then
+    fiber_ev="$out/fiber/events.jsonl"
+  elif [ -f "$fiber_rec" ]; then
+    fiber_sid="$(jq -r '.resume.sessionId // ""' "$fiber_rec" 2>/dev/null)"
+    if [ -n "$fiber_sid" ] && [ "$fiber_sid" != "null" ]; then
+      fiber_ev="$(fiber_events "$fiber_sid")"
+    fi
+  fi
+  if [ -z "$fiber_ev" ] || ! jq empty "$fiber_ev" >/dev/null 2>&1; then
+    missing="$missing fiber event log;"
+  fi
+  if [ -n "$missing" ]; then
+    err "cannot report $ticket:$missing nothing was written to $out"
+    return 1
+  fi
+  if [ -f "$out/fiber/events.jsonl" ]; then
+    CANARY_FIBER_EVENTS="$out/fiber/events.jsonl"
+    export CANARY_FIBER_EVENTS
+  fi
   for side in pi fiber; do
     if [ -f "$out/$side/worktree" ]; then
       wt="$(cat "$out/$side/worktree")"

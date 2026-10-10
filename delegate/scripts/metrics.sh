@@ -65,8 +65,13 @@ pi_metrics() {
 }
 
 # fiber_events SID: the single events file, or "" when missing/ambiguous.
+# report sets CANARY_FIBER_EVENTS to a run's saved copy of its event log.
 fiber_events() {
   local sid="$1" ev="" f root="${FIBER_EVENTS_ROOT:-${FIBER_HOME:-$HOME/.fiber}}"
+  if [ -n "${CANARY_FIBER_EVENTS:-}" ]; then
+    printf '%s' "$CANARY_FIBER_EVENTS"
+    return 0
+  fi
   for f in "$root"/projects/*/sessions/"$sid"/events.jsonl; do
     [ -e "$f" ] || continue
     if [ -n "$ev" ]; then

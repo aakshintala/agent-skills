@@ -709,4 +709,39 @@ else
   [ $? -eq 2 ] || fail "report with no run exits 2"
 fi
 
+# --- report sources (#238 fix round). Red: with the job record gone from
+# both the saved copy and $TMPDIR, report exits 1 and touches nothing.
+REPM="$T/rep-missing"
+cp -R "$OUT" "$REPM"
+rm -f "$REPM/pi/job.json" "$REPM/fiber/job.json"
+mkdir -p "$T/aside"
+mv "$TMPDIR/delegate-jobs/$PI_ID.json" "$T/aside/pi.json"
+mv "$TMPDIR/delegate-jobs/$FIBER_ID.json" "$T/aside/fiber.json"
+SNAPM="$T/snap-missing"
+cp -R "$REPM" "$SNAPM"
+bash "$CANARY" report 223 --out "$REPM" >/dev/null 2>"$T/rep-missing.err"
+RC_MISS=$?
+mv "$T/aside/pi.json" "$TMPDIR/delegate-jobs/$PI_ID.json"
+mv "$T/aside/fiber.json" "$TMPDIR/delegate-jobs/$FIBER_ID.json"
+[ "$RC_MISS" -eq 1 ] || fail "report with no job record exits 1 (got $RC_MISS)"
+grep -q 'job record' "$T/rep-missing.err" || fail "report names the missing job record"
+cmp -s "$SNAPM/pi/metrics.json" "$REPM/pi/metrics.json" || fail "report leaves pi metrics.json unchanged"
+cmp -s "$SNAPM/fiber/metrics.json" "$REPM/fiber/metrics.json" || fail "report leaves fiber metrics.json unchanged"
+cmp -s "$SNAPM/summary.md" "$REPM/summary.md" || fail "report leaves summary.md unchanged"
+
+# Green: a run's saved job record and event log are enough. Tmp records
+# and the Fiber home are both gone; the report still succeeds.
+REPG="$T/rep-saved"
+cp -R "$OUT" "$REPG"
+[ -f "$REPG/pi/job.json" ] && [ -f "$REPG/fiber/job.json" ] || fail "run saves a job record copy per side"
+[ -f "$REPG/fiber/events.jsonl" ] || fail "run saves the Fiber event log"
+mv "$TMPDIR/delegate-jobs/$PI_ID.json" "$T/aside/pi.json"
+mv "$TMPDIR/delegate-jobs/$FIBER_ID.json" "$T/aside/fiber.json"
+FIBER_HOME="$T/no-fiber" bash "$CANARY" report 223 --out "$REPG" \
+  || fail "report succeeds from saved copies alone"
+mv "$T/aside/pi.json" "$TMPDIR/delegate-jobs/$PI_ID.json"
+mv "$T/aside/fiber.json" "$TMPDIR/delegate-jobs/$FIBER_ID.json"
+[ "$(jq -r .cost.main "$REPG/fiber/metrics.json")" = "0.875" ] || fail "saved-copy report rebuilds fiber main cost"
+[ "$(jq -r .reviewed_calls "$REPG/fiber/metrics.json")" = "2" ] || fail "saved-copy report rebuilds reviewed calls"
+
 echo "report cases passed"
