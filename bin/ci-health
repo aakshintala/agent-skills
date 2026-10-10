@@ -39,6 +39,8 @@ ANSI = re.compile(r"(\x1b|\^\[)\[[0-9;]*[A-Za-z]")
 TS = re.compile(r"^\S+Z ")
 ERR = re.compile(r"\s*error(\[E\d+\])?: ")
 NX = re.compile(r"^\s*(FAIL|TIMEOUT) \[\s*[\d.]+s\]\s+(?:\(\s*\d+/\d+\)\s+)?(\S+)\s+(\S+)", re.M)
+# bench-report budget breach: the budget name and its ceiling; the measured value is dropped
+BUDGET = re.compile(r"^\s*bench-report: (.+?): over budget: .* is over (\d[\d.,]* \S+)", re.M)
 USAGE = ("usage: ci-health --repo owner/name [--window 75m] [--state PATH] "
          "[--queue-p90 10] [--queue-max 15] [--sat-min 30] [--sat-jobs 38] "
          "[--backstop-age 2h] [--cache-max 9.5] [--json]")
@@ -162,7 +164,7 @@ def run_causes(log_text):
     nx = NX.findall(text)
     if nx:
         return sorted({"test %s %s" % (b, c) for _, b, c in nx})
-    return []
+    return sorted({"budget %s over %s" % (b, c) for b, c in BUDGET.findall(text)})
 
 
 class GH:

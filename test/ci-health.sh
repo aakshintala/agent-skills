@@ -299,6 +299,24 @@ run_health --json
 [ "$(jget "d['backstop']['red_causes']")" = "['test fiber-core doors::open', 'test fiber-core doors::watch']" ] \
   || fail "red causes: [$OUT]"
 
+# --- backstop-broken: two reds, same bench-report budget (medians differ) ---
+setup budget-same
+run_health
+expect 1 "BREACH backstop-broken"
+setup budget-same
+run_health --json
+[ "$(jget "d['backstop']['red_causes']")" = "['budget Terminal, idle over 9048 KiB']" ] \
+  || fail "budget red causes: [$OUT]"
+
+# --- same jobs, different budgets: red but not broken ---
+setup budget-diff
+run_health
+expect 0 "^ci-health O/N: OK"
+grep -q 'backstop-broken' <<<"$OUT" && fail "different budgets not broken: [$OUT]"
+setup budget-diff
+run_health --json
+[ "$(jget "d['backstop']['red_streak']")" = "2" ] || fail "budget-diff streak 2: [$OUT]"
+
 # --- state: second run fetches no jobs; corrupt state warns and runs ---
 setup calm
 run_health
