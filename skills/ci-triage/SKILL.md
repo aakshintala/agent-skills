@@ -7,7 +7,7 @@ Failed CI is evidence. Classify it before touching code or rerunning anything. T
 
 ### 1. Read
 
-`gh-ci snapshot <pr>` for the head SHA and status, then `gh-ci failures --pr <pr>` for every failed or cancelled job on that head, each failed job with the tail of its failed-step log. Read the digest before opening any raw log. A cancelled job has no log: a newer push or run superseded it, or it hit its job timeout; check which before calling it red.
+`gh-ci snapshot <pr> --repo <owner/name>` for the head SHA and status, then `gh-ci failures --pr <pr> --repo <owner/name>` for every failed or cancelled job on that head, each failed job with the tail of its failed-step log. Read the digest before opening any raw log. A cancelled job has no log: a newer push or run superseded it, or it hit its job timeout; check which before calling it red.
 
 Done when every red leg has its failing test or step named.
 
@@ -27,6 +27,6 @@ Done when every red leg has a class, posted as a PR comment with its evidence.
 
 ### 3. Act and re-enter
 
-Take each class's action. Any commit this makes re-enters `review-loop` at its verify step, on the same counter, so the merged head is one a verdict covers. Wait with `gh-ci wait <pr> [--timeout <s>]`, in the wait mode your harness instructions prescribe: it blocks until no required check on the PR's current head is pending (a required check with no run on the head counts as pending), then exits 0 when all are green, 1 printing each `failing: <name>`, 3 when the PR still has merge conflicts after about 30 s of re-checks (or once the timeout budget is spent), or 124 on timeout. Use it rather than a loop of your own over `gh-ci snapshot`.
+Take each class's action. Any commit this makes re-enters `review-loop` at its verify step, on the same counter, so the merged head is one a verdict covers. Wait with `gh-ci wait <pr> --repo <owner/name> [--timeout <s>]`, in the wait mode your harness instructions prescribe: it blocks until no required check on the PR's current head is pending (a required check with no run on the head counts as pending), then exits 0 when all are green, 1 printing each `failing: <name>`, 3 when the PR still has merge conflicts after about 30 s of re-checks (or once the timeout budget is spent), or 124 on timeout. Use it rather than a loop of your own over `gh-ci snapshot`.
 
 Done when the required checks are green on the PR's current head SHA, or the failure is reported with its class, run id and SHA.

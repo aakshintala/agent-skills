@@ -757,4 +757,45 @@ reset_state
 run_failures abc; [ "$CODE" = "2" ] || fail "failures abc exits 2 (got $CODE)"
 [ ! -s "$T/state/gh-args.txt" ] || fail "failures abc makes no gh call: [$(cat "$T/state/gh-args.txt")]"
 
+# --- cases: --repo. From a non-git cwd with no GH_CI_REPO, the flag alone
+# --- names the repo (leading position here), and it never asks gh for the
+# --- checkout's origin
+reset_state
+set_heads "$A"; echo "$RULES_CI" >"$T/state/rules"
+set_checks '[{"bucket":"pass","name":"ci"}]'
+OUT="$(cd "$(mktemp -d)" && env -u GH_CI_REPO bash "$GHCI" --repo O/N wait 7 2>"$T/stderr.txt")"; CODE=$?
+[ "$CODE" = "0" ] || fail "--repo from a non-git cwd waits to pass (got $CODE): [$OUT] [$(cat "$T/stderr.txt")]"
+grep -q 'gh api repos/O/N/pulls/7 --jq' "$T/state/gh-args.txt" || fail "--repo names the repo for the REST reads"
+! grep -q 'repo view' "$T/state/gh-args.txt" || fail "--repo skips gh repo view"
+
+# --- case: --repo overrides GH_CI_REPO and the origin (trailing position)
+(
+  gh() { echo "gh $*" >>"$T/state/repo-args.txt"; exit 1; }
+  export -f gh
+  rm -f "$T/state/repo-args.txt"
+  GH_CI_REPO=O/N bash "$GHCI" snapshot 7 --repo P/Q >/dev/null 2>&1 || true
+  grep -q 'repos/P/Q/pulls/7' "$T/state/repo-args.txt" || fail "--repo beats GH_CI_REPO: [$(cat "$T/state/repo-args.txt")]"
+  ! grep -q 'O/N' "$T/state/repo-args.txt" || fail "GH_CI_REPO unused when --repo is set"
+  ! grep -q 'repo view' "$T/state/repo-args.txt" || fail "--repo skips the origin lookup"
+) || exit 1
+
+# --- case: no --repo, no GH_CI_REPO, no checkout: exit 2 with one line naming --repo
+(
+  gh() ( exit 1 )
+  export -f gh
+  cd "$(mktemp -d)" || exit 1
+  OUT="$(env -u GH_CI_REPO bash "$GHCI" snapshot 7 2>"$T/stderr.txt")"; CODE=$?
+  [ "$CODE" = "2" ] || fail "no repo from anywhere exits 2 (got $CODE)"
+  [ "$(wc -l <"$T/stderr.txt" | tr -d ' ')" = "1" ] || fail "no repo prints one line: [$(cat "$T/stderr.txt")]"
+  grep -q -- '--repo' "$T/stderr.txt" || fail "no repo message names --repo: [$(cat "$T/stderr.txt")]"
+) || exit 1
+
+# --- case: --repo without a value, or not OWNER/NAME, is a usage error
+reset_state
+OUT="$(bash "$GHCI" snapshot 7 --repo 2>"$T/stderr.txt")"; CODE=$?
+[ "$CODE" = "2" ] || fail "--repo with no value exits 2 (got $CODE)"
+OUT="$(bash "$GHCI" snapshot 7 --repo nameonly 2>"$T/stderr.txt")"; CODE=$?
+[ "$CODE" = "2" ] || fail "--repo not OWNER/NAME exits 2 (got $CODE)"
+[ ! -s "$T/state/gh-args.txt" ] || fail "bad --repo makes no gh call"
+
 echo "gh-ci: all cases passed"
