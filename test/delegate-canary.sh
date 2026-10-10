@@ -116,7 +116,12 @@ case "\$cmd" in
     esac
     printf '%s\n' "\$id" ;;
   watch)
+    # The job runs until its watch completes: the watch takes a moment, then
+    # logs its completion. A watch sent to the background would log after the
+    # next run, which the ordering check catches.
     printf 'watch %s\n' "\$*" >>"\$FAKE_LOGDIR/calls.log"
+    sleep 1
+    printf 'watch-done %s\n' "\$*" >>"\$FAKE_LOGDIR/calls.log"
     exit 0 ;;
   *)
     echo "fake delegate: unknown command \$cmd" >&2
@@ -291,16 +296,19 @@ jq -e '(.wall_ms | type) == "number"' "$OUT/fiber/metrics.json" >/dev/null || fa
 [ "$(jq -r .sandbox.contained.count "$OUT/pi/metrics.json")" = "0" ] || fail "pi sandbox zeros"
 [ "$(jq -r '.notes | length' "$OUT/pi/metrics.json")" = "0" ] || fail "pi notes empty"
 
-# sequential (#244): pi's run and watch finish before Fiber's run starts.
+# sequential (#244): Fiber's run starts only after pi's job has finished.
 # assert_order PI_MODEL FIBER_MODEL PI_ID FIBER_ID PI_WT FIBER_WT: the call
-# log holds exactly run pi, watch pi, run fiber, watch fiber, in that order.
+# log holds exactly run pi, watch pi, watch-done pi, run fiber, watch fiber,
+# watch-done fiber, in that order.
 assert_order() {
   local log="$FLOG/calls.log"
-  [ "$(wc -l <"$log" | tr -d ' ')" = "4" ] || fail "four delegate calls per canary run"
+  [ "$(wc -l <"$log" | tr -d ' ')" = "6" ] || fail "six delegate calls per canary run"
   [ "$(sed -n 1p "$log")" = "run $1 $5" ] || fail "pi run is the first call"
   [ "$(sed -n 2p "$log")" = "watch $3" ] || fail "pi watch follows pi run"
-  [ "$(sed -n 3p "$log")" = "run $2 $6" ] || fail "fiber run starts after pi's watch"
-  [ "$(sed -n 4p "$log")" = "watch $4" ] || fail "fiber watch follows fiber run"
+  [ "$(sed -n 3p "$log")" = "watch-done $3" ] || fail "pi job finishes before Fiber starts"
+  [ "$(sed -n 4p "$log")" = "run $2 $6" ] || fail "fiber run starts after pi's job finished"
+  [ "$(sed -n 5p "$log")" = "watch $4" ] || fail "fiber watch follows fiber run"
+  [ "$(sed -n 6p "$log")" = "watch-done $4" ] || fail "fiber job finishes"
 }
 assert_order "opencode-go/muse-spark-1.3-contributor" \
   "fiber/opencode-go/muse-spark-1.3-contributor" "$PI_ID" "$FIBER_ID" "$PI_WT" "$FIBER_WT"

@@ -653,7 +653,7 @@ fiber_side_split() {
 load_side() {
   local side="$1" out="$2" metrics
   metrics="$out/$side/metrics.json"
-  S_model="$(jq -r '.model // "unknown"' "$metrics")"
+  S_model="$(jq -r .model "$metrics")"
   S_outcome="$(jq -r .outcome "$metrics")"
   if [ "$(cat "$out/$side/gate.exit")" = "0" ]; then S_gate="pass"; else S_gate="fail"; fi
   S_wall="$(fmt_wall "$(jq -r .wall_ms "$metrics")")"
