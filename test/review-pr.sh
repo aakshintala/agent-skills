@@ -125,6 +125,7 @@ delegate() (
     watch)
       printf 'watch %s\n' "$*" >>"$T/state/watch.txt"
       while [ $# -gt 0 ]; do case "$1" in --timeout) shift 2;; *) break;; esac; done
+      if [ -e "$T/state/fail-watch" ]; then echo "fake delegate: watch timed out" >&2; exit 1; fi
       for id in "$@"; do cat "${TMPDIR:-/tmp}/delegate-jobs/$id.json"; done
       ;;
     *) echo "fake delegate: unknown $cmd" >&2; exit 2;;
@@ -285,14 +286,35 @@ for bad_issue in '#3' '3x'; do
   [ "$?" -eq 2 ] || fail "malformed --issue $bad_issue exits 2"
   [ ! -e "$T/state/runs.txt" ] || fail "malformed --issue $bad_issue starts no job"
 done
-reset_state
+# --- case: verify ignores start-only flags, one stderr note per flag, and launches
 printf 'P1 findings text\n' >"$T/findings.txt"
+write_record verify DONE "rechecked
+FIX-OK all repaired
+STATUS: DONE" 0
+for ignored in "--issue 1" "--spec 2" "--overbuild-model M2"; do
+  reset_state
+  flag="${ignored%% *}"
+  # shellcheck disable=SC2086
+  start_out="$(start_review 7 --repo O/N --cwd "$T/clone" --model M --verify "$T/findings.txt" \
+    --since "$FAKE_SHA" $ignored 2>"$T/stderr-ignored.txt")" || fail "verify with $flag exits 0"
+  [ "$start_out" = "verify job-verify
+watch: delegate watch job-verify
+collect: review-pr collect job-verify" ] || fail "verify with $flag prints the verify job lines: [$start_out]"
+  grep -Fxq "review-pr: $flag is not used with --verify; ignored" "$T/stderr-ignored.txt" || \
+    fail "verify with $flag prints its ignored note"
+  [ "$(wc -l <"$T/state/runs.txt" | tr -d ' ')" = "1" ] || fail "verify with $flag launches its job"
+  bash "$REVIEW" collect job-verify >/dev/null 2>&1 || fail "verify with $flag collects"
+done
+reset_state
 start_review 7 --repo O/N --cwd "$T/clone" --model M --verify "$T/findings.txt" \
-  --since "$FAKE_SHA" --issue 1 --issue 2 >/dev/null 2>&1
-[ "$?" -eq 2 ] || fail "verify rejects repeated --issue values"
-[ ! -e "$T/state/runs.txt" ] || fail "verify with --issue starts no job"
-[ "$(git -C "$T/clone" worktree list | grep -c 'wt-' || true)" = "0" ] || \
-  fail "verify with --issue creates no worktree"
+  --since "$FAKE_SHA" --issue 1 --issue 2 --spec 3 --overbuild-model M2 >/dev/null 2>"$T/stderr-ignored.txt" || \
+  fail "verify with every start-only flag exits 0"
+[ "$(grep -c '^review-pr: --issue is not used' "$T/stderr-ignored.txt")" = "1" ] || \
+  fail "verify repeated --issue prints one note"
+[ "$(grep -c 'is not used with --verify; ignored$' "$T/stderr-ignored.txt" || true)" = "3" ] || \
+  fail "verify prints one note for each ignored flag"
+[ "$(wc -l <"$T/state/runs.txt" | tr -d ' ')" = "1" ] || fail "verify with start-only flags runs exactly one job"
+bash "$REVIEW" collect job-verify >/dev/null 2>&1 || fail "verify with start-only flags collects"
 
 # --- case: a job that did not finish is UNFINISHED, never done; collect exits 1
 reset_state
@@ -403,6 +425,46 @@ grep -q '^verify M$' "$T/state/runs.txt" || fail "verify job role and model"
 grep -q "git diff $FAKE_SHA..HEAD" "$T/state/prompt-verify.md" || fail "verify brief SINCE filled"
 grep -q 'P2 findings text & more' "$T/state/prompt-verify.md" || fail "verify brief FINDINGS filled"
 grep -q '^## verify (M)$' "$T/state/comment.md" || fail "comment verify heading"
+
+# --- case: run starts, waits on the started ids, collects; exits 0 on all APPROVE
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+run_out="$(bash "$REVIEW" run 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
+  --model M --overbuild-model M2 2>"$T/stderr-run.txt")" || fail "run exits 0 on all APPROVE"
+[ "$(head -4 <<<"$run_out")" = "review job-review
+overbuild job-overbuild
+watch: delegate watch job-review job-overbuild
+collect: review-pr collect job-review job-overbuild" ] || fail "run prints start's lines first: [$run_out]"
+[ "$(sed -n 5p <<<"$run_out")" = "patch-id $EXPECTED_PID" ] || fail "run prints collect's output after start's lines"
+grep -q "^VERDICT overbuild: APPROVE$" <<<"$run_out" || fail "run prints collect's verdicts"
+grep -q "^CI $SHORT pass$" <<<"$run_out" || fail "run prints collect's CI line"
+grep -qx 'watch job-review job-overbuild' "$T/state/watch.txt" || fail "run waits on every started job id"
+[ "$(cat "$T/state/comment-pr.txt")" = "7" ] || fail "run posts the comment through collect"
+[ "$(git -C "$T/clone" worktree list | grep -c 'wt-' || true)" = "0" ] || fail "run removes its worktrees through collect"
+
+# --- case: run with a watch failure prints the ids and collect line, exits non-zero, posts nothing
+reset_state
+printf 'ci\tpass\n' >"$T/checks.txt"
+write_record review DONE "VERDICT standards: APPROVE
+VERDICT spec: APPROVE
+STATUS: DONE" 0
+write_record overbuild DONE "VERDICT: APPROVE
+STATUS: DONE" 0
+touch "$T/state/fail-watch"
+bash "$REVIEW" run 7 --repo O/N --cwd "$T/clone" --issue 1 --spec 2 \
+  --model M --overbuild-model M2 >"$T/stdout-run.txt" 2>"$T/stderr-run.txt" && fail "run with a watch failure exits non-zero"
+grep -Fxq "collect: review-pr collect job-review job-overbuild" "$T/stderr-run.txt" || \
+  fail "run with a watch failure prints the collect line"
+grep -q 'job-review job-overbuild' "$T/stderr-run.txt" || fail "run with a watch failure prints the ids"
+[ ! -e "$T/state/comment.md" ] || fail "run with a watch failure posts no comment"
+[ -f "$TMPDIR/review-pr/job-review" ] || fail "run with a watch failure keeps state for the resume"
+rm -f "$T/state/fail-watch"
+bash "$REVIEW" collect job-review job-overbuild >/dev/null 2>&1 || fail "run with a watch failure resumes with collect"
 
 # --- case: bad usage exits 2
 bash "$REVIEW" >/dev/null 2>&1; [ "$?" = "2" ] || fail "no args exits 2"
