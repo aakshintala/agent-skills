@@ -21,12 +21,24 @@ pub fn derive_status(text: &str, raw_is_error: Option<bool>, clean_exit: bool) -
     RunStatus::Error
 }
 
+fn is_decoration(c: char) -> bool {
+    matches!(c, '*' | '`')
+}
+
+// The status token must end the line, whether it starts the line or follows
+// prose on it (#247). Trailing whitespace and markdown decoration around the
+// token are not part of it; a STATUS word with more text after it is ignored.
 fn status_line(last: &str) -> Option<&str> {
-    // /^STATUS:\s*([A-Z_]+)\s*$/
-    let rest = last.strip_prefix("STATUS:")?;
-    let rest = rest.trim_start_matches([' ', '\t']);
-    let token = rest.trim_end();
-    if token.chars().all(|c| c.is_ascii_uppercase() || c == '_') && !token.is_empty() {
+    const KEY: &str = "STATUS:";
+    let line = last.trim_end_matches(|c: char| c.is_whitespace() || is_decoration(c));
+    let at = line.rfind(KEY)?;
+    let before = &line[..at];
+    if !before.is_empty() && !before.ends_with(|c: char| c.is_whitespace() || is_decoration(c)) {
+        return None;
+    }
+    let token =
+        line[at + KEY.len()..].trim_matches(|c: char| c == ' ' || c == '\t' || is_decoration(c));
+    if !token.is_empty() && token.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
         Some(token)
     } else {
         None
@@ -113,6 +125,65 @@ mod tests {
         assert_eq!(
             derive_status(
                 "mentioned STATUS: NEEDS_CONTEXT in prose\nall good",
+                Some(false),
+                true
+            ),
+            RunStatus::Done
+        );
+    }
+
+    #[test]
+    fn inline_trailing_status_counts() {
+        // see #247: the status shares its line with the sentence before it.
+        assert_eq!(
+            derive_status(
+                "... and I did not commit. STATUS: BLOCKED",
+                Some(false),
+                true
+            ),
+            RunStatus::Blocked
+        );
+        assert_eq!(
+            derive_status(
+                "no new order test was needed. STATUS: DONE_WITH_CONCERNS",
+                Some(false),
+                true
+            ),
+            RunStatus::DoneWithConcerns
+        );
+    }
+
+    #[test]
+    fn decorated_inline_status_counts() {
+        // see #247: markdown decoration and trailing whitespace around the token.
+        assert_eq!(
+            derive_status("done. **STATUS: DONE_WITH_CONCERNS**  ", Some(false), true),
+            RunStatus::DoneWithConcerns
+        );
+        assert_eq!(
+            derive_status("gave up. `STATUS: BLOCKED`\n", Some(false), true),
+            RunStatus::Blocked
+        );
+        assert_eq!(
+            derive_status("gave up. **STATUS:** BLOCKED", Some(false), true),
+            RunStatus::Blocked
+        );
+    }
+
+    #[test]
+    fn mid_text_status_is_ignored() {
+        // see #247: a STATUS word with more text after it does not end the text.
+        assert_eq!(
+            derive_status(
+                "I will report STATUS: NEEDS_CONTEXT if it comes up, all done",
+                Some(false),
+                true
+            ),
+            RunStatus::Done
+        );
+        assert_eq!(
+            derive_status(
+                "work. STATUS: BLOCKED was my earlier guess. Final: fine",
                 Some(false),
                 true
             ),
