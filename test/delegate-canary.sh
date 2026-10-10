@@ -96,14 +96,10 @@ case "\$cmd" in
       fiber/*) cost="\${FAKE_FIBER_COST:-0.04}" ;;
       *) cost="0.05" ;;
     esac
+    # The job is RUNNING until its watch: run writes no result.
     jq -n --arg sid "\$sid" --arg model "\$model" --arg cwd "\$cwd" \
       --arg cost "\$cost" \
-      '{status:"DONE",
-        result:{status:"DONE",model:\$model,sessionId:\$sid,backend:"x",
-          usage:{inputTokens:1000,outputTokens:100,cacheReadTokens:500,cacheWriteTokens:0},
-          costUsd:(\$cost|tonumber),durationMs:null,
-          gateResult:null,
-          changeSet:{headBefore:"abc",headAfter:"abc"}},
+      '{status:"RUNNING", result:null, fakeCost:\$cost,
         supervisorPid:1,
         resume:{model:\$model,backend:"x",cwd:\$cwd,sessionId:\$sid,gate:"g"}}' \
       >"\$TMPDIR/delegate-jobs/\$id.json"
@@ -116,11 +112,19 @@ case "\$cmd" in
     esac
     printf '%s\n' "\$id" ;;
   watch)
-    # The job runs until its watch completes: the watch takes a moment, then
-    # logs its completion. A watch sent to the background would log after the
-    # next run, which the ordering check catches.
+    # The job stays RUNNING until its watch: the watch takes a moment, moves
+    # the record to DONE with its result, then logs its completion. A watch
+    # sent to the background would log after the next run, which the
+    # ordering check catches.
     printf 'watch %s\n' "\$*" >>"\$FAKE_LOGDIR/calls.log"
     sleep 1
+    job="\$TMPDIR/delegate-jobs/\$1.json"
+    jq '.status="DONE" | .result={status:"DONE",model:.resume.model,sessionId:.resume.sessionId,backend:"x",
+          usage:{inputTokens:1000,outputTokens:100,cacheReadTokens:500,cacheWriteTokens:0},
+          costUsd:(.fakeCost|tonumber),durationMs:null,
+          gateResult:null,
+          changeSet:{headBefore:"abc",headAfter:"abc"}}' "\$job" >"\$job.tmp" \
+      && mv "\$job.tmp" "\$job"
     printf 'watch-done %s\n' "\$*" >>"\$FAKE_LOGDIR/calls.log"
     exit 0 ;;
   *)
