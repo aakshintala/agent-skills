@@ -29,6 +29,7 @@ A plan is a sketch of contracts and invariants, never code: a function body in a
 ## Files                each file touched and what changes; this is the lane's fence. Sweep for it: search the repo for every changed symbol, signature, type, listed value and behaviour, and list every caller, test, rules or lint file, doc and dependency manifest the change reaches
 ## Tasks                in order; each: behaviour, test first, gate command, done-when
 ## Gate                 the lane's gate as one literal command line: format, lint and tests for every package Files touches, plus the checks the workflow doc requires before a push
+## Red commit           when the workflow doc gates `bug` fixes on a commit that fails first: the test files that commit holds alone (they must build without the fix); otherwise `none`
 ## Interfaces           signatures, invariants, one literal example per line on the wire; no bodies. Each existing hook, seam or helper a task or test relies on, with its file, function and visibility (e.g. `pub(crate)`)
 ## Review Focus         where reviewers look: input classes and failure modes the tests may not cover
 ## Rung                 the lane's rung (per the `delegate` skill) and the reason
@@ -45,7 +46,7 @@ Estimate tests from the testing rules the workflow doc states (every case, every
 
 Size each task as the smallest unit that carries its own test cycle. Tasks run in order in one lane, under one `review-loop` for the PR. A migration may break the callers it lists under Rulings instead of paying for interim compatibility.
 
-Done when every section is filled, every hit of the Files sweep is listed or ruled out, the Gate covers every package in Files, the size is estimated with any split it calls for, every ruling is tagged, and every known hazard is a ruling or an invariant.
+Done when every section is filled, every hit of the Files sweep is listed or ruled out, the Gate covers every package in Files, the Red commit is named when the workflow doc requires one, the size is estimated with any split it calls for, every ruling is tagged, and every known hazard is a ruling or an invariant.
 
 ### 3. Verify
 
