@@ -24,7 +24,7 @@ Every comment or issue posted to the issue tracker during triage **must** start 
 
 Three **category** roles:
 
-- `bug`: something is broken in the product
+- `bug`: something is broken in the product: its current behaviour contradicts a doc, a spec or a ruling. Behaviour no doc promises yet is `enhancement`
 - `enhancement`: new feature or improvement
 - `test-only`: the defect is in test code, such as a flaky test. Its fix proves itself by root cause and evidence (runs under load), since a fixed test passes on the base commit
 
