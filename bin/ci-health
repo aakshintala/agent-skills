@@ -22,11 +22,16 @@
 import json, math, os, re, subprocess, sys
 from datetime import datetime, timedelta, timezone
 
-BOUND = {"Selection": 5, "Linux x86_64 checks": 5, "Tests macos": 15,
-         "Tests linux-x64": 10, "Tests linux-arm": 10, "Mutants": 20,
-         "Release build and size (Linux x86_64)": 15,
+# Per-group time limits from fiber's ci.yml on main (timeout-minutes). Mutants
+# is the base of a size-dependent limit (select.rs), so 20 is a floor.
+BOUND = {"Selection": 5, "Linux x86_64 checks": 5, "Tests macos": 25,
+         "Tests linux-x64": 20, "Tests linux-arm": 20, "Mutants": 20,
+         "Release build and size (Linux x86_64)": 30,
          "Bug fix fails at the red commit": 10, "Benchmark comment": 5,
          "CI verdict": 5, "Report a failed backstop": 5}
+# GitHub's message on a job cut off by its time limit. Concurrency cancels say
+# "Canceling since a higher priority waiting request" instead.
+TIME_LIMIT = "has exceeded the maximum execution time"
 CORE = ("Linux x86_64 checks", "Tests linux-x64", "Tests linux-arm",
         "Tests macos", "Release build and size (Linux x86_64)")
 ANSI = re.compile(r"(\x1b|\^\[)\[[0-9;]*[A-Za-z]")
@@ -115,7 +120,13 @@ def osof(labels):
     return "linux-x64"
 
 
-def is_timeout(job):
+def is_timeout(job, annotations):
+    """annotations(job) -> list of messages, or None when the fetch failed.
+
+    A cancelled job in a BOUND group is a timeout only when its runtime reaches
+    the bound and its annotations carry the time-limit message. With no
+    annotations (fetch failed), the duration rule alone decides.
+    """
     g = group(job.get("name"))
     if g not in BOUND or not job.get("runner_name"):
         return False
@@ -124,7 +135,12 @@ def is_timeout(job):
     s, e = parse_ts(job.get("started_at")), parse_ts(job.get("completed_at"))
     if not s or not e:
         return False
-    return (e - s).total_seconds() >= BOUND[g] * 60 - 30
+    if (e - s).total_seconds() < BOUND[g] * 60 - 30:
+        return False
+    notes = annotations(job)
+    if notes is None:
+        return True
+    return any(TIME_LIMIT in n for n in notes)
 
 
 def clean_lines(text):
@@ -372,6 +388,18 @@ def main(argv):
     # timeouts + design failures (jobs completed inside the window, ci.yml)
     timeouts, design = [], []
     release_logs_needed = []
+
+    def annotations(j):
+        try:
+            notes = json.loads(gh.api("repos/%s/check-runs/%s/annotations?per_page=100"
+                                      % (repo, j.get("id"))))
+        except (subprocess.CalledProcessError, ValueError):
+            gh.partial = True
+            return None
+        if not isinstance(notes, list):
+            gh.partial = True
+            return None
+        return [str(n.get("message") or "") for n in notes if isinstance(n, dict)]
     for r in runs:
         if not ci(r):
             continue
@@ -379,7 +407,7 @@ def main(argv):
             comp = parse_ts(j.get("completed_at") or "")
             if not (comp and start <= comp <= now):
                 continue
-            if is_timeout(j):
+            if is_timeout(j, annotations):
                 s = parse_ts(j.get("started_at"))
                 mins = (comp - s).total_seconds() / 60
                 timeouts.append({"run_id": r.get("id"), "job_id": j.get("id"),
