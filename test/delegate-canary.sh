@@ -744,4 +744,26 @@ mv "$T/aside/fiber.json" "$TMPDIR/delegate-jobs/$FIBER_ID.json"
 [ "$(jq -r .cost.main "$REPG/fiber/metrics.json")" = "0.875" ] || fail "saved-copy report rebuilds fiber main cost"
 [ "$(jq -r .reviewed_calls "$REPG/fiber/metrics.json")" = "2" ] || fail "saved-copy report rebuilds reviewed calls"
 
+# --- report never replaces saved files with a bad rebuild (#240 round 3).
+# Red: a malformed or status-less job record exits 1 and every saved file
+# stays byte-identical (the pre-check passes both: the files exist).
+report_unchanged() { # DIR LABEL
+  local d="$1" label="$2" snap="$T/snap-$2"
+  rm -rf "$snap"; cp -R "$d" "$snap"
+  bash "$CANARY" report 223 --out "$d" >/dev/null 2>"$T/rep-$2.err"
+  local rc=$?
+  [ "$rc" -eq 1 ] || fail "report with $label exits 1 (got $rc)"
+  cmp -s "$snap/pi/metrics.json" "$d/pi/metrics.json" || fail "report with $label leaves pi metrics.json unchanged"
+  cmp -s "$snap/fiber/metrics.json" "$d/fiber/metrics.json" || fail "report with $label leaves fiber metrics.json unchanged"
+  cmp -s "$snap/summary.md" "$d/summary.md" || fail "report with $label leaves summary.md unchanged"
+}
+REPB="$T/rep-badjob"
+cp -R "$OUT" "$REPB"
+printf '{' >"$REPB/pi/job.json"
+report_unchanged "$REPB" malformed-job
+REPN="$T/rep-nostatus"
+cp -R "$OUT" "$REPN"
+jq 'del(.status)' "$OUT/pi/job.json" >"$REPN/pi/job.json"
+report_unchanged "$REPN" nostatus-job
+
 echo "report cases passed"

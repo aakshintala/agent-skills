@@ -759,20 +759,12 @@ cmd_report() {
   [ -z "$out" ] && out="$HOME/.cache/agents/canary/$ticket"
   [ -f "$out/pi/metrics.json" ] && [ -f "$out/fiber/metrics.json" ] \
     || { err "no finished run for $ticket in $out"; return 2; }
-  local base side wt id model wall run_ok note harness=0
-  base="$(jq -r .base "$out/pi/metrics.json")"
-  # The binary and version the run recorded; a summary from before #235 has
-  # no such line, so they read unknown.
-  # The line splits on backticks: Fiber, path, version (fields 2 and 6).
-  local fiber_bin="unknown" fiber_version="unknown" line bt='`'
-  line="$(awk -F "$bt" '/^Fiber / { print $2 "\t" $6; exit }' "$out/summary.md" 2>/dev/null)"
-  if [ -n "$line" ]; then fiber_bin="${line%%"$TAB"*}"; fiber_version="${line#*"$TAB"}"; fi
+  local base side wt id model wall run_ok note tmp
   local jobs_dir="${TMPDIR:-/tmp}/delegate-jobs" tmp_root="${TMPDIR:-/tmp}"
   export FIBER_EVENTS_ROOT="${FIBER_HOME:-$HOME/.fiber}"
-  # Check every source before any write, so a missing one leaves the saved
-  # metrics.json and summary.md byte-identical. A run's saved copies (its
-  # job records and Fiber event log) come first; $TMPDIR and the Fiber home
-  # are the fallback.
+  # Check that every source exists before any write. The saved copies (a
+  # run's job records and Fiber event log) come first; $TMPDIR and the Fiber
+  # home are the fallback. Contents are checked after the rebuild.
   local missing="" chk_side chk_id
   for chk_side in pi fiber; do
     chk_id="$(jq -r '.job_id // ""' "$out/$chk_side/metrics.json" 2>/dev/null)"
@@ -806,6 +798,20 @@ cmd_report() {
     CANARY_FIBER_EVENTS="$out/fiber/events.jsonl"
     export CANARY_FIBER_EVENTS
   fi
+  base="$(jq -r .base "$out/pi/metrics.json")"
+  # The binary and version the run recorded; a summary from before #235 has
+  # no such line, so they read unknown.
+  # The line splits on backticks: Fiber, path, version (fields 2 and 6).
+  local fiber_bin="unknown" fiber_version="unknown" line bt='`'
+  line="$(awk -F "$bt" '/^Fiber / { print $2 "\t" $6; exit }' "$out/summary.md" 2>/dev/null)"
+  if [ -n "$line" ]; then fiber_bin="${line%%"$TAB"*}"; fiber_version="${line#*"$TAB"}"; fi
+
+  # Rebuild in a scratch dir inside $out (the same filesystem), so the saved
+  # files are replaced only after every rebuilt file checks out.
+  tmp="$(mktemp -d "$out/.report.XXXXXX")" || { err "cannot make a scratch dir in $out"; return 1; }
+  if ! cp -R "$out/pi" "$out/fiber" "$tmp/"; then
+    rm -rf "$tmp"; err "cannot copy the saved outputs of $ticket"; return 1
+  fi
   for side in pi fiber; do
     if [ -f "$out/$side/worktree" ]; then
       wt="$(cat "$out/$side/worktree")"
@@ -820,11 +826,47 @@ cmd_report() {
       id=""; run_ok=0; note="no job id in the saved metrics"
     fi
     run_side_metrics "$side" "$wt" "$id" "$model" "$run_ok" "$note" 0 0 "$wall" \
-      "$out" "$base" "$jobs_dir" "$tmp_root"
-    if [ -f "$out/$side/.harness" ]; then harness=1; rm -f "$out/$side/.harness"; fi
+      "$tmp" "$base" "$jobs_dir" "$tmp_root"
   done
-  write_summary "$ticket" "$base" "$out" "$fiber_bin" "$fiber_version"
-  [ "$harness" -eq 0 ]
+  write_summary "$ticket" "$base" "$tmp" "$fiber_bin" "$fiber_version"
+
+  # Validate the rebuild. Any failure leaves the saved files as they were.
+  local problems="" notes_text=""
+  for side in pi fiber; do
+    if [ -f "$tmp/$side/.harness" ]; then
+      problems="$problems $side rebuild failed;"
+      notes_text="$notes_text$(cat "$tmp/$side/.notes.txt" 2>/dev/null)"
+    fi
+    if ! jq -e '(.status | type == "string") and (.status | length > 0)' \
+      "$tmp/$side/job.json" >/dev/null 2>&1; then
+      problems="$problems $side job record has no status or does not parse;"
+    fi
+    if ! jq empty "$tmp/$side/metrics.json" >/dev/null 2>&1; then
+      problems="$problems $side metrics.json does not parse;"
+    elif ! jq -e '(.outcome | type == "string") and (.outcome | length > 0)' \
+      "$tmp/$side/metrics.json" >/dev/null 2>&1; then
+      problems="$problems $side outcome is empty;"
+    fi
+    # Every number the saved file had for tokens or cost must still be one.
+    if ! jq -e -n --slurpfile o "$out/$side/metrics.json" --slurpfile b "$tmp/$side/metrics.json" '
+      [$o[0] | paths(type == "number") | select(.[0] == "tokens_main" or .[0] == "tokens_reviewer" or .[0] == "cost")] as $ps
+      | [$ps[] | . as $p | select(($b[0] | getpath($p) | type) != "number")] | length == 0' \
+      >/dev/null 2>&1; then
+      problems="$problems $side tokens or cost lost a number;"
+    fi
+  done
+  if [ -n "$problems" ]; then
+    rm -rf "$tmp"
+    err "cannot report $ticket:$problems nothing was replaced in $out"
+    [ -n "$notes_text" ] && printf '%s\n' "$notes_text" >&2
+    return 1
+  fi
+  for side in pi fiber; do
+    mv "$tmp/$side/metrics.json" "$out/$side/metrics.json" || { rm -rf "$tmp"; err "could not replace $out/$side/metrics.json"; return 1; }
+  done
+  mv "$tmp/summary.md" "$out/summary.md" || { rm -rf "$tmp"; err "could not replace $out/summary.md"; return 1; }
+  rm -rf "$tmp"
+  return 0
 }
 
 cmd="${1:-}"
