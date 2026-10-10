@@ -25,7 +25,7 @@ You need Rust (`cargo`), and `cursor-agent` on PATH with `cursor-agent login` be
 | `delegate models` | List configured model ids, labels, backends, prices, and tiers. |
 | `delegate doctor` | Check the binary, `cursor-agent`, login, and model menu drift. |
 
-Every job runs with writes enabled. A read task says "do not edit" in its brief; the record's `changeSet` shows any write. Parallel jobs need separate cwds (one clone per lane).
+Every job runs with writes enabled. A read task says "do not edit" in its brief; the record's `changeSet` shows any write. Parallel jobs need separate checkouts (one clone per lane).
 
 ## Backends
 
