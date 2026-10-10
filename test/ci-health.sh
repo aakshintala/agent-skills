@@ -190,7 +190,15 @@ run_health --json
 [ "$(jget "d['timeouts']")" = "[]" ] || fail "no timeouts on concurrency cancel: [$OUT]"
 [ "$(jget "d['design_failures']")" = "[]" ] || fail "no design failures: [$OUT]"
 grep -q "check-runs/41/annotations" "$FAKE_GH_LOG" || fail "arm annotations fetched: [$(cat "$FAKE_GH_LOG")]"
-grep -q "check-runs/51/annotations" "$FAKE_GH_LOG" && fail "Release 15m is under its bound: no fetch"
+grep -q "check-runs/51/annotations" "$FAKE_GH_LOG" || fail "Release 15m read for its annotations: [$(cat "$FAKE_GH_LOG")]"
+
+# --- below the bound: a 14.8m cancelled arm job (limit 20) whose annotation
+# --- says the time limit was exceeded is still a timeout ---
+setup early
+run_health --json
+[ "$CODE" = "1" ] || fail "below-bound time-limit annotation exits 1 (got $CODE): [$OUT]"
+[ "$(jget "len(d['timeouts'])")" = "1" ] || fail "below-bound timeout: [$OUT]"
+[ "$(jget "d['timeouts'][0]['minutes']")" = "14.8" ] || fail "below-bound minutes: [$OUT]"
 
 # --- annotation fetch fails: the duration rule decides, so the 20.0m arm
 # --- cancel is still a timeout breach, reported as partial ---

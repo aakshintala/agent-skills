@@ -32,6 +32,7 @@ BOUND = {"Selection": 5, "Linux x86_64 checks": 5, "Tests macos": 25,
 # GitHub's message on a job cut off by its time limit. Concurrency cancels say
 # "Canceling since a higher priority waiting request" instead.
 TIME_LIMIT = "has exceeded the maximum execution time"
+CONCURRENCY = "Canceling since a higher priority waiting request"
 CORE = ("Linux x86_64 checks", "Tests linux-x64", "Tests linux-arm",
         "Tests macos", "Release build and size (Linux x86_64)")
 ANSI = re.compile(r"(\x1b|\^\[)\[[0-9;]*[A-Za-z]")
@@ -123,24 +124,25 @@ def osof(labels):
 def is_timeout(job, annotations):
     """annotations(job) -> list of messages, or None when the fetch failed.
 
-    A cancelled job in a BOUND group is a timeout only when its runtime reaches
-    the bound and its annotations carry the time-limit message. With no
-    annotations (fetch failed), the duration rule alone decides.
+    A cancelled job in a BOUND group reads its annotations first. The time-limit
+    message makes it a timeout, and a concurrency-cancel message never is. With
+    neither (or no fetch), the duration rule decides: runtime at the bound.
     """
     g = group(job.get("name"))
     if g not in BOUND or not job.get("runner_name"):
         return False
     if job.get("conclusion") != "cancelled":
         return False
+    notes = annotations(job)
+    if notes is not None:
+        if any(TIME_LIMIT in n for n in notes):
+            return True
+        if any(CONCURRENCY in n for n in notes):
+            return False
     s, e = parse_ts(job.get("started_at")), parse_ts(job.get("completed_at"))
     if not s or not e:
         return False
-    if (e - s).total_seconds() < BOUND[g] * 60 - 30:
-        return False
-    notes = annotations(job)
-    if notes is None:
-        return True
-    return any(TIME_LIMIT in n for n in notes)
+    return (e - s).total_seconds() >= BOUND[g] * 60 - 30
 
 
 def clean_lines(text):
