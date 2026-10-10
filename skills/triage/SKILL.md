@@ -26,7 +26,7 @@ Three **category** roles:
 
 - `bug`: something is broken in the product: its current behaviour contradicts a doc, a spec or a ruling, or a user hits a hang, crash or lost data, which no doc needs to name. Other behaviour no doc promises yet is `enhancement`
 - `enhancement`: new feature or improvement
-- `test-only`: the defect is in test code, such as a flaky test. Its fix proves itself by root cause and evidence (runs under load), since a fixed test passes on the base commit
+- `test-only`: the defect is in test code, such as a flaky test. Its fix proves itself by its root cause and a deterministic repro: a test or pause point that forces the failing interleaving and fails without the fix, never repeated or loaded runs
 
 Five **state** roles:
 
