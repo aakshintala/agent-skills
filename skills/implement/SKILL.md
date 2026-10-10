@@ -29,7 +29,7 @@ Run step 1, skip steps 2–3, then build in a worktree cut from `origin/main`. T
 
 Take it when the ticket is **determined**: it adds no new type, event, config key or doc decision, and its files are named in the ticket or found by one grep. A move, a rename or a mechanical removal is determined; a refactor that chooses new boundaries is not.
 
-Run steps 1–2. When the preflight finds no `core` item, skip step 3: fill `../planning/briefs/lane.md` yourself, with a `PLAN` of three parts: Rung `standard`; Files (the preflight's file list); and Tasks (the ticket's acceptance criteria, each with the test or command that shows it met). `GATE` is the workflow doc's gate. Then run steps 4–9 as written. When a build fails twice on the same finding, write the plan (step 3) and continue from there.
+Run steps 1–2. When the preflight finds no `core` item, or step 2 skipped it as current, skip step 3: fill `../planning/briefs/lane.md` yourself, with a `PLAN` of three parts: Rung `standard`; Files (the preflight's file list, or the ticket's when step 2 skipped it); and Tasks (the ticket's acceptance criteria, each with the test or command that shows it met). `GATE` is the workflow doc's gate. Then run steps 4–9 as written. When a build fails twice on the same finding, write the plan (step 3) and continue from there.
 
 ### 1. Check setup
 
@@ -43,11 +43,19 @@ Done when you know the tracker, labels, workflow doc and models, and the task ha
 
 ### 2. Preflight
 
+Skip the preflight when a new ticket is **current**: the preflight exists to catch a stale ticket, and a current one cannot be stale. A ticket is current when all three hold, checked from an up-to-date clone:
+
+- It names every file it touches and leaves no decision open.
+- Every named file exists at `origin/main` (`git cat-file -e origin/main:<file>`).
+- `git log origin/main --since=<since> -- <named files> <docs it cites>` prints nothing. `<since>` is the later of the filing commit's date (the ticket body names it; without one, the ticket's creation time) and the body's last edit (`gh api graphql -f query='{repository(owner:"<o>",name:"<r>"){issue(number:<n>){createdAt lastEditedAt}}}'`).
+
+A ticket whose files all sit under a prototype path the workflow doc names checks its named files alone, not the docs it cites. Any miss runs the full preflight below. After a skip, whoever writes the plan gets the ticket in place of the preflight's report.
+
 Prepare the base first. A new ticket's base is `origin/main`. A re-plan's base is the PR's branch, brought up to date: merge `origin/main` into it in the PR's worktree and push, so the preflight and the Verifier never read a stale branch. Run the preflight and the Verifier in a checkout of the base: an up-to-date clone on `origin/main`, or the PR's worktree.
 
 Fill `../planning/briefs/preflight.md` with `fill-brief --out <absolute path>` (e.g. `~/.cache/agents/<repo>-<issue>-preflight.md`) and run it as its own job, on a `strong` model from a different family than yours, before any plan exists, using the printed line verbatim as the prompt, never a hand-written path. Save the preflight's report beside its brief as `<repo>-<issue>-preflight-out.md` and hand that path, never the brief's, to whoever writes the plan. A `core` item parks the ticket. `non-blocking` items and the file list go to the plan.
 
-Done when the preflight has returned and no `core` item is open.
+Done when the preflight has returned and no `core` item is open, or the ticket is current.
 
 ### 3. Plan
 
