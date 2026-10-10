@@ -108,9 +108,19 @@ fn probe_memberships(
     let available = parse_models_json(&r.stdout);
     configured_ids
         .iter()
-        .filter(|id| !available.contains(&model_reference(id).to_string()))
+        .filter(|id| !available.contains(&without_level(model_reference(id)).to_string()))
         .map(|id| format!("model {id} not found in fiber models --json"))
         .collect()
+}
+
+/// Drop a trailing `:<level>` from a reference. `fiber models --json` lists
+/// ids without a level, so `codex/gpt-6-luna:medium` is checked as
+/// `codex/gpt-6-luna`.
+fn without_level(reference: &str) -> &str {
+    match reference.rsplit_once(':') {
+        Some((base, "low" | "medium" | "high" | "xhigh" | "max")) => base,
+        _ => reference,
+    }
 }
 
 /// Parse `fiber models --json` output: one JSON object per line with a
@@ -352,5 +362,25 @@ mod tests {
         let (text, failed) = lines(&report);
         assert!(!failed);
         assert!(text.starts_with("warn  fiber: fiber not found"), "{text}");
+    }
+
+    #[test]
+    fn fill_leveled_model_matches_its_unleveled_listing() {
+        let run = |_: &str, args: &[String]| match args.join(" ").as_str() {
+            "version" => ok_result("fiber 0.0.0 (a903fb6f)\n"),
+            "models --json" => ok_result("{\"model\":\"codex/gpt-6-luna\"}\n"),
+            other => panic!("unexpected {other}"),
+        };
+        let (report, failures) = failures_for(&["fiber/codex/gpt-6-luna:medium"], &run);
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(report.failures.is_empty());
+    }
+
+    #[test]
+    fn without_level_strips_only_known_levels() {
+        assert_eq!(without_level("codex/gpt-6-luna:medium"), "codex/gpt-6-luna");
+        assert_eq!(without_level("codex/gpt-6-luna:xhigh"), "codex/gpt-6-luna");
+        assert_eq!(without_level("codex/gpt-6-luna"), "codex/gpt-6-luna");
+        assert_eq!(without_level("org/model:beta"), "org/model:beta");
     }
 }
