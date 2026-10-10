@@ -178,6 +178,17 @@ run_friction --json
 [ "$(jget "len(d['repeats'])")" = "1" ] || fail "upgrade: one repeat: [$OUT]"
 [ "$(jget "d['repeats'][0]['lanes']")" = "['#1401', 'main']" ] || fail "upgrade lanes: [$OUT]"
 
+# --- 279: a run rerun to green still yields its failed attempt-1 job; attempt-1 success is skipped ---
+setup rerun
+run_friction --json
+[ "$CODE" = "1" ] || fail "rerun exits 1 (got $CODE): [$OUT] [$(cat "$T/stderr.txt")]"
+[ "$(jget "[(r['test'], r['lanes']) for r in d['repeats']]")" = "[('fiber-core doors::watch', ['#1385', 'main'])]" ] \
+  || fail "rerun repeat from attempt 1: [$OUT]"
+[ "$(grep -c 'actions/runs/611/jobs?filter=all' "$FAKE_GH_LOG")" = "1" ] \
+  || fail "rerun jobs listed with filter=all: [$(cat "$FAKE_GH_LOG")]"
+grep -q 'actions/runs/613/jobs' "$FAKE_GH_LOG" && fail "attempt-1 success run not fetched: [$(cat "$FAKE_GH_LOG")]"
+[ "$(grep -c 'actions/jobs/811/logs' "$FAKE_GH_LOG")" = "1" ] || fail "rerun failed job logged once: [$(cat "$FAKE_GH_LOG")]"
+
 # --- one lane twice: not a repeat at 2, a repeat at 1 ---# --- one lane twice: not a repeat at 2, a repeat at 1 ---
 setup onelane
 run_friction

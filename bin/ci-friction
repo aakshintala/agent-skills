@@ -365,7 +365,8 @@ def main(argv):
                   file=sys.stderr)
     except Fatal as e:
         fail(str(e))
-    runs = [r for r in runs if (r.get("conclusion") in ("failure", "cancelled")
+    runs = [r for r in runs if ((r.get("conclusion") in ("failure", "cancelled")
+                                 or (r.get("run_attempt") or 1) > 1)
                                 and parse_ts(r.get("created_at") or "")
                                 and parse_ts(r["created_at"]) >= cutoff)]
 
@@ -397,8 +398,8 @@ def main(argv):
         for r in sorted(runs, key=lambda r: r.get("created_at") or ""):
             lane = lane_of(r)
             try:
-                jobs = gh_paged("repos/%s/actions/runs/%s/jobs" % (repo, r.get("id")),
-                                "jobs")
+                jobs = gh_paged("repos/%s/actions/runs/%s/jobs?filter=all"
+                                % (repo, r.get("id")), "jobs")
             except Fatal as e:
                 print("ci-friction: %s" % e, file=sys.stderr)
                 ok = False
