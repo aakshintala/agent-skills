@@ -17,7 +17,7 @@ __PLAN__
 - Commit your work before any command that discards changes (`git reset --hard`, `git checkout -- <path>`, `git restore`, a rebase). Make a scratch commit, such as one kept as evidence, on a throwaway branch (`git switch -c scratch/<name>`), then switch back to the lane branch and delete the scratch one.
 - When the plan names a Red commit, make it the branch's first commit, holding only those files.
 - To rebuild the branch's history, reset to the merge-base (`git reset --soft $(git merge-base HEAD origin/main)`), never to `origin/main` and never with `git checkout <branch> -- .`: both drop main's newer changes.
-- Set work aside with a commit. The stash stack is shared with every other worktree of the repo, so `git stash` can pop another agent's changes.
+- Set work aside with a commit. To compare against main, build main in a throwaway worktree (`git worktree add --detach ../cmp-<branch> origin/main`, then `git worktree remove` it). The stash stack is shared with every other worktree of the repo, so `git stash` can pop another agent's changes.
 - Before pushing, the gate passes: `__GATE__`.
 - Refer to other issues as `see #N` or `#N's case` in commit messages and PR text. GitHub closes any issue a closing keyword (close, fix, resolve and their forms) precedes, so the only issue reference you write with one is the PR body's closing line.
 - Push the branch. When no PR is open on it, open a draft PR whose body starts with `__CLOSING__`.
