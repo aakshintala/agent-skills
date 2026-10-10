@@ -61,6 +61,9 @@ case "$path" in
     jid="$(printf '%s' "$path" | sed -E 's/.*jobs\/([0-9]+).*/\1/')"
     if [ -e "$T/fail-log-$jid" ]; then cat "$T/fail-log-$jid" >&2; exit 1; fi
     serve "logs/$jid.txt" "log-$jid";;
+  *check-runs/*/annotations*)
+    jid="$(printf '%s' "$path" | sed -E 's/.*check-runs\/([0-9]+).*/\1/')"
+    serve "annotations-$jid.json" "ann-$jid";;
   *actions/caches\?*)
     case "$path" in *page=2*) serve caches-2.json caches2;; *) serve caches-1.json caches1;; esac;;
   *commits/main)
@@ -166,7 +169,8 @@ setup sat
 run_health
 expect 0 "^ci-health O/N: OK"
 
-# --- design: timeout (9.8m cancelled Tests linux-arm, limit 10) ---
+# --- design: timeout (20.0m cancelled Tests linux-arm, limit 20, annotation
+# --- says the time limit was exceeded) ---
 setup timeout
 run_health
 expect 1 "BREACH design"
@@ -174,8 +178,36 @@ setup timeout
 run_health --json
 [ "$CODE" = "1" ] || fail "timeout json exits 1 (got $CODE)"
 [ "$(jget "len(d['timeouts'])")" = "1" ] || fail "one timeout: [$OUT]"
-[ "$(jget "d['timeouts'][0]['minutes']")" = "9.8" ] || fail "timeout minutes: [$OUT]"
+[ "$(jget "d['timeouts'][0]['minutes']")" = "20.0" ] || fail "timeout minutes: [$OUT]"
 [ "$(jget "d['design_failures'][0]['kind']")" = "timeout" ] || fail "design kind: [$OUT]"
+
+# --- concurrency cancel: a 20.0m cancelled arm job whose annotation says a
+# --- higher priority request cancelled it is no breach; nor is a 15m Release
+# --- cancel (limit 30, where the stale 15 counted it as a timeout) ---
+setup concur
+run_health --json
+[ "$CODE" = "0" ] || fail "concurrency cancel exits 0 (got $CODE): [$OUT]"
+[ "$(jget "d['timeouts']")" = "[]" ] || fail "no timeouts on concurrency cancel: [$OUT]"
+[ "$(jget "d['design_failures']")" = "[]" ] || fail "no design failures: [$OUT]"
+grep -q "check-runs/41/annotations" "$FAKE_GH_LOG" || fail "arm annotations fetched: [$(cat "$FAKE_GH_LOG")]"
+grep -q "check-runs/51/annotations" "$FAKE_GH_LOG" || fail "Release 15m read for its annotations: [$(cat "$FAKE_GH_LOG")]"
+
+# --- below the bound: a 14.8m cancelled arm job (limit 20) whose annotation
+# --- says the time limit was exceeded is still a timeout ---
+setup early
+run_health --json
+[ "$CODE" = "1" ] || fail "below-bound time-limit annotation exits 1 (got $CODE): [$OUT]"
+[ "$(jget "len(d['timeouts'])")" = "1" ] || fail "below-bound timeout: [$OUT]"
+[ "$(jget "d['timeouts'][0]['minutes']")" = "14.8" ] || fail "below-bound minutes: [$OUT]"
+
+# --- annotation fetch fails: the duration rule decides, so the 20.0m arm
+# --- cancel is still a timeout breach, reported as partial ---
+setup timeout
+echo "HTTP 503 annotations" >"$T/fail-ann-41"
+run_health --json
+[ "$CODE" = "1" ] || fail "annotation fetch failure falls back to duration (got $CODE): [$OUT]"
+[ "$(jget "len(d['timeouts'])")" = "1" ] || fail "fallback timeout: [$OUT]"
+[ "$(jget "d['partial']")" = "True" ] || fail "fetch failure reported as partial: [$OUT]"
 
 # --- design: bench comment failure ---
 setup bench
