@@ -29,7 +29,7 @@ A plan is a sketch of contracts and invariants, never code: a function body in a
 ## Files                each file touched and what changes; this is the lane's fence. Sweep for it: search the repo for every changed symbol, signature, type, listed value and behaviour, and list every caller, test, rules or lint file, doc and dependency manifest the change reaches
 ## Tasks                in order; each: behaviour, test first, gate command, done-when
 ## Gate                 the lane's gate as one literal command line: format, lint and tests for every package Files touches, plus the checks the workflow doc requires before a push
-## Interfaces           signatures, invariants, one literal example per line on the wire; no bodies
+## Interfaces           signatures, invariants, one literal example per line on the wire; no bodies. Each existing hook, seam or helper a task or test relies on, with its file, function and visibility (e.g. `pub(crate)`)
 ## Review Focus         where reviewers look: input classes and failure modes the tests may not cover
 ## Rung                 the lane's rung (per the `delegate` skill) and the reason
 ## Size                 estimated lines of code and lines of tests, separately; the split, if any
