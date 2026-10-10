@@ -291,10 +291,19 @@ jq -e '(.wall_ms | type) == "number"' "$OUT/fiber/metrics.json" >/dev/null || fa
 [ "$(jq -r .sandbox.contained.count "$OUT/pi/metrics.json")" = "0" ] || fail "pi sandbox zeros"
 [ "$(jq -r '.notes | length' "$OUT/pi/metrics.json")" = "0" ] || fail "pi notes empty"
 
-# launch barrier: both runs before any watch
-awk '/^run /{runs[++n]=NR} /^watch /{watches[++m]=NR}
-  END{exit !((n==2) && (m==2) && (runs[1]<watches[1]) && (runs[2]<watches[1]))}' \
-  "$FLOG/calls.log" || fail "both runs precede both watches"
+# sequential (#244): pi's run and watch finish before Fiber's run starts.
+# assert_order PI_MODEL FIBER_MODEL PI_ID FIBER_ID PI_WT FIBER_WT: the call
+# log holds exactly run pi, watch pi, run fiber, watch fiber, in that order.
+assert_order() {
+  local log="$FLOG/calls.log"
+  [ "$(wc -l <"$log" | tr -d ' ')" = "4" ] || fail "four delegate calls per canary run"
+  [ "$(sed -n 1p "$log")" = "run $1 $5" ] || fail "pi run is the first call"
+  [ "$(sed -n 2p "$log")" = "watch $3" ] || fail "pi watch follows pi run"
+  [ "$(sed -n 3p "$log")" = "run $2 $6" ] || fail "fiber run starts after pi's watch"
+  [ "$(sed -n 4p "$log")" = "watch $4" ] || fail "fiber watch follows fiber run"
+}
+assert_order "opencode-go/muse-spark-1.3-contributor" \
+  "fiber/opencode-go/muse-spark-1.3-contributor" "$PI_ID" "$FIBER_ID" "$PI_WT" "$FIBER_WT"
 
 # summary table
 grep -q '^# Canary 223' "$OUT/summary.md" || fail "summary heading"
@@ -304,6 +313,37 @@ grep -q '| gate | pass | pass |' "$OUT/summary.md" || fail "summary gate row"
 grep -q '| reviewed calls | 0 | 2 |' "$OUT/summary.md" || fail "summary reviewed row"
 
 echo "task 2 cases passed"
+
+# --- Models (#244): --pi-model and --fiber-model reach delegate run; the
+# metrics and the summary name each side's model; a report of a run whose
+# metrics.json has no model still rebuilds, naming it unknown.
+: >"$FLOG/calls.log"
+OUT2="$T/out-models"
+FAKE_EVENTS="$T/ev2.jsonl" bash "$CANARY" run 224 "$T/brief.md" \
+  --gate 'test -f work-marker' \
+  --pi-model openai-codex/gpt-6-luna:medium --fiber-model fiber/codex/gpt-6-luna \
+  --out "$OUT2" || fail "canary run with model flags exits 0"
+PI_WT2="$(cat "$OUT2/pi/worktree")"
+FIBER_WT2="$(cat "$OUT2/fiber/worktree")"
+PI_ID2="$(jq -r .job_id "$OUT2/pi/metrics.json")"
+FIBER_ID2="$(jq -r .job_id "$OUT2/fiber/metrics.json")"
+[ "$(jq -r .model "$OUT2/pi/metrics.json")" = "openai-codex/gpt-6-luna:medium" ] || fail "pi metrics model from --pi-model"
+[ "$(jq -r .model "$OUT2/fiber/metrics.json")" = "fiber/codex/gpt-6-luna" ] || fail "fiber metrics model from --fiber-model"
+assert_order "openai-codex/gpt-6-luna:medium" "fiber/codex/gpt-6-luna" \
+  "$PI_ID2" "$FIBER_ID2" "$PI_WT2" "$FIBER_WT2"
+grep -q '| model | openai-codex/gpt-6-luna:medium | fiber/codex/gpt-6-luna |' "$OUT2/summary.md" \
+  || fail "summary names each side's model"
+
+# a run with no model in its metrics.json: report still rebuilds it
+REPM2="$T/rep-no-model"
+cp -R "$OUT2" "$REPM2"
+jq 'del(.model)' "$OUT2/pi/metrics.json" >"$REPM2/pi/metrics.json"
+bash "$CANARY" report 224 --out "$REPM2" || fail "report of a run without model exits 0"
+grep -q '| model | unknown | fiber/codex/gpt-6-luna |' "$REPM2/summary.md" \
+  || fail "report names a missing model unknown"
+assert_clean_leaves_nothing 224 "$OUT2"
+
+echo "model cases passed"
 
 # --- Task 3 fixture: every sandbox class, plus one deny ---
 cat >"$T/ev3.jsonl" <<EOF
