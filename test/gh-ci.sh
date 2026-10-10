@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Tests for bin/gh-ci wait, using stand-in gh and sleep functions
-# (no network). Fake gh serves successive heads and check responses
-# from state files (last line sticky) and logs its args.
+# (no network). The wait loop reads REST only: the pull request
+# (repos/O/N/pulls/n), the head's workflow runs and its check runs. Fake gh
+# serves those from state files (last line sticky) and logs its args. Any
+# gh pr view or gh pr checks call is refused and recorded, and every wait
+# case fails if one happened.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -22,24 +25,67 @@ export GH_CI_INTERVAL=7
 A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-# --- fake gh: pr view prints "<sha> <state>"; heads, merge states (default
-# --- CLEAN) and checks advance one line per call, last line sticky.
+# --- fake gh. pulls: head sha advances per head read (draft and base reads
+# --- do not); merge states (default CLEAN) advance with it, served lower-case
+# --- as REST does. check-runs and actions/runs: one state per poll, last line
+# --- sticky; the runs list peeks, the check-runs call advances both.
 gh() (
   set -euo pipefail
   echo "gh $*" >>"$T/state/gh-args.txt"
+  advance() {
+    local f="$1"
+    head -1 "$f"
+    if [ "$(wc -l <"$f")" -gt 1 ]; then
+      tail -n +2 "$f" >"$f.tmp"; mv "$f.tmp" "$f"
+    fi
+  }
+  if [ "$1" = "pr" ]; then
+    # the loop must read REST: a pr view or pr checks call is a failure
+    echo "gh $*" >>"$T/state/banned.txt"
+    echo "fake gh: gh pr $2 is refused: gh-ci wait reads REST (repos/O/N/pulls, commits/SHA/check-runs)" >&2
+    exit 9
+  fi
   if [ "$1" = "api" ]; then
-    # rules (default none) and classic protection (default 404) of the base branch
-    jq=""; for a in "$@"; do [ "${prev:-}" = "--jq" ] && jq="$a"; prev="$a"; done
-    case "$2" in
+    shift
+    path=""; jq=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --jq) jq="$2"; shift 2;;
+      --paginate|--allow-escape-sequences) shift;;
+      *) [ -n "$path" ] || path="$1"; shift;;
+    esac; done
+    case "$path" in
+      repos/O/N/pulls/7)
+        [ ! -e "$T/state/view-fail" ] || { echo "gh: API rate limit exceeded (HTTP 403)" >&2; exit 1; }
+        h="$(head -1 "$T/state/heads.txt")"; m=CLEAN
+        case "$jq" in *head*)
+          h="$(advance "$T/state/heads.txt")"
+          if [ -e "$T/state/merge-state.txt" ]; then m="$(advance "$T/state/merge-state.txt")"; fi;;
+        esac
+        draft=false
+        if [ -e "$T/state/draft" ]; then draft="$(cat "$T/state/draft")"; fi
+        m="$(printf '%s' "$m" | tr 'A-Z' 'a-z')"
+        jq -n --arg sha "$h" --arg m "$m" --argjson draft "$draft" \
+          '{head: {sha: $sha}, mergeable_state: $m, draft: $draft, base: {ref: "main"}}' \
+          | jq -r "$jq";;
       repos/O/N/rules/branches/main)
         [ ! -e "$T/state/rules-fail" ] || { echo "gh: forbidden (HTTP 403)" >&2; exit 1; }
-        json="$(cat "$T/state/rules" 2>/dev/null || echo '[]')";;
+        json="$(cat "$T/state/rules" 2>/dev/null || echo '[]')"
+        jq -r "$jq" <<<"$json";;
       repos/O/N/branches/main/protection/required_status_checks)
         [ -e "$T/state/classic" ] || { echo "gh: Branch not protected (HTTP 404)" >&2; exit 1; }
-        json="$(cat "$T/state/classic")";;
-      *) echo "fake gh: unknown api $2" >&2; exit 2;;
+        json="$(cat "$T/state/classic")"
+        jq -r "$jq" <<<"$json";;
+      repos/O/N/actions/runs*)
+        jq -c '{total_count: length, workflow_runs: .}' <<<"$(head -1 "$T/state/runs.txt")";;
+      repos/O/N/commits/*/check-runs*)
+        line="$(advance "$T/state/checks.txt")"
+        [ "$line" != "FAIL" ] || { echo "gh: HTTP 500 from check-runs" >&2; exit 1; }
+        advance "$T/state/runs.txt" >/dev/null
+        case "$path" in *filter=latest*) line="$(jq -c '[group_by(.name)[] | max_by(.id)]' <<<"$line")";; esac
+        jq -c '{total_count: length, check_runs: .}' <<<"$line";;
+      *) echo "fake gh: unknown api $path" >&2; exit 2;;
     esac
-    jq -r "$jq" <<<"$json"; exit 0
+    exit 0
   fi
   if [ "$1" = "run" ]; then
     shift
@@ -74,70 +120,55 @@ gh() (
         echo "fake gh: unknown run $1" >&2; exit 2;;
     esac
   fi
-  [ "$1" = "pr" ] || { echo "fake gh: only pr, run and api supported" >&2; exit 2; }
-  shift
-  advance() {
-    local f="$1"
-    head -1 "$f"
-    if [ "$(wc -l <"$f")" -gt 1 ]; then
-      tail -n +2 "$f" >"$f.tmp"; mv "$f.tmp" "$f"
-    fi
-  }
-  case "$1" in
-    view)
-      if [ -e "$T/state/view-fail" ]; then exit 3; fi
-      case " $* " in *" baseRefName "*) echo main; exit 0;; esac
-      case " $* " in *" isDraft "*)
-        if [ -e "$T/state/draft" ]; then cat "$T/state/draft"; else echo "false"; fi
-        exit 0;;
-      esac
-      h="$(advance "$T/state/heads.txt")"
-      m=CLEAN
-      if [ -e "$T/state/merge-state.txt" ]; then m="$(advance "$T/state/merge-state.txt")"; fi
-      printf '%s %s\n' "$h" "$m";;
-    checks)
-      resp="$(advance "$T/state/checks.txt")"
-      # With --required, gh serves only the required checks: when the
-      # required-filter state file lists names (one per line), keep those.
-      case " $* " in
-        *" --required "*)
-          if [ -e "$T/state/required-filter" ]; then
-            resp="$(printf '%s' "$resp" | jq -c --rawfile names "$T/state/required-filter" '
-              if type != "array" then . else
-                ($names | split("\n")) as $ns | map(select(.name as $n | $ns | index($n)))
-              end' 2>/dev/null || printf '%s' "$resp")"
-          fi;;
-      esac
-      printf '%s\n' "$resp"
-      case "$resp" in
-        *'"bucket":"cancel"'*|*'"bucket": "cancel"'*) exit 1;;
-        *'"bucket":"fail"'*|*'"bucket": "fail"'*) exit 1;;
-        *'"bucket":"pending"'*|*'"bucket": "pending"'*) exit 8;;
-      esac
-      exit 0;;
-    *) echo "fake gh: unknown $1" >&2; exit 2;;
-  esac
+  echo "fake gh: only pr, run and api supported" >&2; exit 2
 )
 sleep() ( echo "$*" >>"$T/state/sleeps.txt" )
 export T
 export -f gh sleep
 
 reset_state() {
-  rm -f "$T/state/sleeps.txt" "$T/state/gh-args.txt" "$T/state/merge-state.txt" "$T/state/view-fail"
-  rm -f "$T/state/heads.txt" "$T/state/checks.txt" "$T/state/rules" "$T/state/rules-fail" "$T/state/classic" "$T/state/draft"
+  rm -f "$T/state/sleeps.txt" "$T/state/gh-args.txt" "$T/state/banned.txt" "$T/state/merge-state.txt" "$T/state/view-fail"
+  rm -f "$T/state/heads.txt" "$T/state/checks.txt" "$T/state/runs.txt" "$T/state/rules" "$T/state/rules-fail" "$T/state/classic" "$T/state/draft"
   rm -f "$T/state/runs.json" "$T/state/runs-fail" "$T/state/jobs-fail"
-  rm -f "$T/state/required-filter"
   rm -f "$T/state"/jobs-*.json "$T/state"/run-name-*.txt "$T/state"/log-*.txt
   : >"$T/state/gh-args.txt"
 }
 
 set_heads() { printf '%s\n' "$@" >"$T/state/heads.txt"; }
 set_merge() { printf '%s\n' "$@" >"$T/state/merge-state.txt"; }
-set_checks() { printf '%s\n' "$@" >"$T/state/checks.txt"; }
+
+# set_checks <gh-shaped check list>...: one state per poll. Each list (name,
+# bucket, and for Actions runs the link and workflow/event) becomes REST check
+# runs with the matching conclusion, and the run list the loop reads for the
+# head. FAIL makes the check-runs call fail for that poll.
+set_checks() {
+  : >"$T/state/checks.txt"; : >"$T/state/runs.txt"
+  local s
+  for s in "$@"; do
+    if [ "$s" = FAIL ]; then echo FAIL >>"$T/state/checks.txt"; echo '[]' >>"$T/state/runs.txt"; continue; fi
+    printf '%s' "$s" | jq -c '[.[] | {
+        name: .name,
+        status: (if .bucket == "pending" then "in_progress" else "completed" end),
+        conclusion: ({pass: "success", fail: "failure", cancel: "cancelled", skipping: "skipped"}[.bucket] // null),
+        details_url: (.link // null)}] | to_entries | map(.value + {id: .key})' >>"$T/state/checks.txt"
+    printf '%s' "$s" | jq -c '[.[] | select((.link // "") | test("/actions/runs/[0-9]+/"))
+        | {id: (.link | capture("/actions/runs/(?<r>[0-9]+)/").r | tonumber), name: .workflow, event: .event}] | unique_by(.id)' \
+      >>"$T/state/runs.txt"
+  done
+}
+
+# set_rest <REST check-run list>: one raw state per poll, no runs list
+set_rest() {
+  printf '%s\n' "$@" >"$T/state/checks.txt"
+  : >"$T/state/runs.txt"
+  local i
+  for i in $(seq 1 "$#"); do echo '[]' >>"$T/state/runs.txt"; done
+}
 
 OUT=""; CODE=0
 run_wait() {
   OUT="$(bash "$GHCI" wait "$@" 2>"$T/stderr.txt")"; CODE=$?
+  [ ! -s "$T/state/banned.txt" ] || fail "wait called gh pr view or gh pr checks: [$(cat "$T/state/banned.txt")]"
 }
 
 RULES_CI='[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"ci"}]}}]'
@@ -155,10 +186,10 @@ grep -q "head: ${A:0:8} CI: pass" <<<"$OUT" || fail "pending-then-green pass lin
 grep -q "failing:" <<<"$OUT" && fail "passing names never listed as failing: [$OUT]"
 [ -s "$T/state/sleeps.txt" ] || fail "pending-then-green sleeps at least once"
 grep -q "^7$" "$T/state/sleeps.txt" || fail "sleep uses GH_CI_INTERVAL: [$(cat "$T/state/sleeps.txt")]"
-grep -q -- '--required --json name,bucket,workflow,event,link$' "$T/state/gh-args.txt" \
-  || fail "required set fetched with --required"
-grep -q '^gh pr checks 7 --repo O/N --json name,bucket,workflow,event,link$' "$T/state/gh-args.txt" \
-  || fail "newest-run map fetched without --required"
+grep -q "repos/O/N/commits/$A/check-runs?per_page=100&filter=latest" "$T/state/gh-args.txt" \
+  || fail "checks read over REST check runs of the head"
+grep -q "repos/O/N/actions/runs?head_sha=$A" "$T/state/gh-args.txt" \
+  || fail "run list read over REST for the newest-run map"
 
 # --- case: pending then one failure (plus one pass)
 reset_state
@@ -182,7 +213,7 @@ grep -q "^failing: ci$" <<<"$OUT" || fail "cancel named as failing: [$OUT]"
 
 # --- case: failing name with an embedded newline still fails (not timeout)
 reset_state
-set_heads "$A"; echo "$RULES_CI" >"$T/state/rules"
+set_heads "$A"; echo true >"$T/state/draft"
 set_checks '[{"bucket":"fail","name":"ci\nextra"},{"bucket":"pass","name":"ci"}]'
 run_wait 7 --timeout 0
 [ "$CODE" = "1" ] || fail "newline failing name exits 1 (got $CODE): [$OUT]"
@@ -190,7 +221,7 @@ grep -q "head: ${A:0:8} CI: fail" <<<"$OUT" || fail "newline failing name header
 
 # --- case: passing name with an embedded newline plus a fake record still passes
 reset_state
-set_heads "$A"
+set_heads "$A"; echo true >"$T/state/draft"
 set_checks '[{"bucket":"pass","name":"ok\nfail\u001fphantom"}]'
 run_wait 7
 [ "$CODE" = "0" ] || fail "injection passing name exits 0 (got $CODE): [$OUT]"
@@ -230,16 +261,16 @@ grep -q "head: ${A:0:8} timeout after 7200s" <<<"$OUT" || fail "default timeout 
 3600" ] || fail "default timeout sleeps twice with 3600: [$(cat "$T/state/sleeps.txt")]"
 export GH_CI_INTERVAL=7
 
-# --- case: empty list and non-JSON output never exit 0 early while a check is required
+# --- case: empty list and a failed check-runs call never exit 0 early while a check is required
 reset_state
 export GH_CI_INTERVAL=7
 set_heads "$A"; echo "$RULES_CI" >"$T/state/rules"
-set_checks '[]' 'no checks reported on this head yet' '[{"bucket":"pass","name":"ci"}]'
+set_checks '[]' FAIL '[{"bucket":"pass","name":"ci"}]'
 run_wait 7
 [ "$CODE" = "0" ] || fail "empty-then-green exits 0 (got $CODE): [$OUT]"
 grep -q "head: ${A:0:8} CI: pass" <<<"$OUT" || fail "empty-then-green pass line: [$OUT]"
-[ "$(grep -c '^gh pr checks' "$T/state/gh-args.txt")" -ge 3 ] \
-  || fail "empty outputs keep polling"
+[ "$(grep -c 'check-runs' "$T/state/gh-args.txt")" -ge 3 ] \
+  || fail "empty and failed polls keep polling"
 
 # --- case: head changes mid-wait waits on the new head
 reset_state
@@ -358,10 +389,9 @@ set_heads "$A"; set_checks "$PASS"; echo "$RULES_CI" >"$T/state/rules"
 run_wait 7
 [ "$CODE" = "0" ] || fail "green required check exits 0 (got $CODE): [$OUT]"
 [ ! -e "$T/state/sleeps.txt" ] || fail "green required check never sleeps"
-grep -q -- '--json name,bucket,workflow,event,link$' "$T/state/gh-args.txt" || fail "checks call asks for name,bucket,workflow,event,link"
 ! grep -q startedAt "$T/state/gh-args.txt" || fail "startedAt is never requested"
 
-# only a differently named (draft) check ran: --required lists nothing, ci is pending
+# only a differently named (draft) check ran: ci is absent, so it is pending
 reset_state
 set_heads "$A"; set_checks '[]'; echo "$RULES_CI" >"$T/state/rules"
 run_wait 7 --timeout 7
@@ -379,12 +409,12 @@ grep -q "^pending: ci$" <<<"$OUT" || fail "absent check named pending: [$OUT]"
 
 # no required names (classic 404, no rules): gh's "no checks" text passes at once (#155)
 reset_state
-set_heads "$A"; set_checks 'no checks reported on the '"'"'main'"'"' branch'
+set_heads "$A"; set_checks '[]'
 run_wait 7 --timeout 0
-[ "$CODE" = "0" ] || fail "no required names, no-checks text passes (got $CODE): [$OUT]"
+[ "$CODE" = "0" ] || fail "no required names passes (got $CODE): [$OUT]"
 grep -q "head: ${A:0:8} CI: pass" <<<"$OUT" || fail "no required names pass line: [$OUT]"
 [ ! -e "$T/state/sleeps.txt" ] || fail "no required names never sleeps"
-! grep -q '^gh pr checks' "$T/state/gh-args.txt" || fail "no required names never calls pr checks"
+! grep -q 'check-runs' "$T/state/gh-args.txt" || fail "no required names never reads check runs"
 
 # no required names while a non-required check is pending: still passes at once (#155)
 reset_state
@@ -399,12 +429,12 @@ reset_state
 set_heads "$A"; set_checks '[]'; touch "$T/state/rules-fail"
 run_wait 7 --timeout 0
 [ "$CODE" = "124" ] || fail "unreadable names, empty list is pending (got $CODE): [$OUT]"
-grep -q "gh-ci: cannot read required checks; absent ones are not detected" "$T/stderr.txt" \
+grep -q "gh-ci: cannot read required checks; judging every check on the head" "$T/stderr.txt" \
   || fail "lookup warning: [$(cat "$T/stderr.txt")]"
-grep -q -- '--required --json name,bucket,workflow,event,link$' "$T/state/gh-args.txt" \
-  || fail "fallback still uses --required: [$(cat "$T/state/gh-args.txt")]"
+grep -q 'check-runs' "$T/state/gh-args.txt" \
+  || fail "unreadable names still read the head's check runs: [$(cat "$T/state/gh-args.txt")]"
 
-# --- cases: draft PRs settle on the head's checks (no --required, no padding)
+# --- cases: draft PRs settle on the head's checks (no required names, no padding)
 # a draft whose only check is `CI (draft)` passes at once, though `CI` is required
 reset_state
 export GH_CI_INTERVAL=7
@@ -415,7 +445,6 @@ run_wait 7 --timeout 7
 grep -q "head: ${A:0:8} CI: pass (draft: required checks run once ready)" <<<"$OUT" \
   || fail "draft pass note: [$OUT]"
 [ ! -e "$T/state/sleeps.txt" ] || fail "draft green never sleeps"
-! grep -q -- --required "$T/state/gh-args.txt" || fail "draft: checks call drops --required"
 ! grep -q 'rules/branches' "$T/state/gh-args.txt" || fail "draft: required names never read"
 
 # a draft with a failing check fails
@@ -436,8 +465,8 @@ run_wait 7 --timeout 7
 [ "$CODE" = "0" ] || fail "superseded draft fail exits 0 (got $CODE): [$OUT]"
 grep -q "head: ${A:0:8} CI: pass (draft: required checks run once ready)" <<<"$OUT" \
   || fail "superseded draft pass line: [$OUT]"
-grep -q -- '--json name,bucket,workflow,event,link$' "$T/state/gh-args.txt" \
-  || fail "draft checks call asks for workflow,event,link"
+grep -q 'actions/runs?head_sha=' "$T/state/gh-args.txt" \
+  || fail "draft run list read for workflow and event"
 
 # a failing check from the current run still fails
 reset_state
@@ -447,7 +476,7 @@ run_wait 7
 [ "$CODE" = "1" ] || fail "current-run failure exits 1 (got $CODE): [$OUT]"
 grep -q "^failing: CI$" <<<"$OUT" || fail "current failing job named: [$OUT]"
 
-# a failing status context with a non-Actions link is kept
+# a failing check run with a non-Actions link is kept
 reset_state
 set_heads "$A"; echo true >"$T/state/draft"; echo "$RULES_CI" >"$T/state/rules"
 set_checks '[{"name":"third-party","bucket":"fail","link":"https://example.com/status/1"},{"name":"CI","bucket":"pass","workflow":"CI","event":"pull_request","link":"https://github.com/O/N/actions/runs/2/job/21"}]'
@@ -490,6 +519,55 @@ set_checks '[]'
 run_wait 7 --timeout 7
 [ "$CODE" = "124" ] || fail "draft empty stays pending (got $CODE): [$OUT]"
 grep -q "head: ${A:0:8} timeout after 7s" <<<"$OUT" || fail "draft empty timeout header: [$OUT]"
+
+# --- case: a rerun under the same run ID replaces its failed first attempt
+reset_state
+set_heads "$A"; echo "$RULES_CI" >"$T/state/rules"
+printf '%s\n' '[{"id":1,"name":"ci","status":"completed","conclusion":"failure","details_url":"https://github.com/O/N/actions/runs/5/job/11"},{"id":2,"name":"ci","status":"completed","conclusion":"success","details_url":"https://github.com/O/N/actions/runs/5/job/12"}]' >"$T/state/checks.txt"
+echo '[{"id":5,"name":"CI","event":"pull_request"}]' >"$T/state/runs.txt"
+run_wait 7 --timeout 0
+[ "$CODE" = "0" ] || fail "rerun of a failed check passes (got $CODE): [$OUT]"
+grep -q 'filter=latest' "$T/state/gh-args.txt" || fail "check runs read with filter=latest: [$(cat "$T/state/gh-args.txt")]"
+
+# --- cases: REST check-run conclusions map onto the buckets the verdict reads
+# the loop never calls gh pr view or gh pr checks (refused by the stand-in)
+reset_state
+set_heads "$A"; echo "$RULES_CI" >"$T/state/rules"
+set_rest '[{"name":"ci","status":"completed","conclusion":"neutral"},{"name":"lint","status":"completed","conclusion":"skipped"},{"name":"stale","status":"completed","conclusion":"stale"}]'
+run_wait 7 --timeout 0
+[ "$CODE" = "0" ] || fail "neutral, skipped and stale pass (got $CODE): [$OUT]"
+[ ! -s "$T/state/banned.txt" ] || fail "loop reads no gh pr view or gh pr checks"
+for c in timed_out startup_failure action_required cancelled; do
+  reset_state
+  set_heads "$A"; echo "$RULES_CI" >"$T/state/rules"
+  set_rest "[{\"name\":\"ci\",\"status\":\"completed\",\"conclusion\":\"$c\"}]"
+  run_wait 7 --timeout 0
+  [ "$CODE" = "1" ] || fail "conclusion $c fails (got $CODE): [$OUT]"
+  grep -q "^failing: ci$" <<<"$OUT" || fail "conclusion $c names ci: [$OUT]"
+done
+reset_state
+set_heads "$A"; echo "$RULES_CI" >"$T/state/rules"
+set_rest '[{"name":"ci","status":"queued","conclusion":null}]'
+run_wait 7 --timeout 0
+[ "$CODE" = "124" ] || fail "queued check is pending (got $CODE): [$OUT]"
+grep -q "^pending: ci$" <<<"$OUT" || fail "queued check named pending: [$OUT]"
+
+# a failed check-runs call polls again and never reports a verdict
+reset_state
+set_heads "$A"; echo "$RULES_CI" >"$T/state/rules"
+set_checks FAIL
+run_wait 7 --timeout 0
+[ "$CODE" = "124" ] || fail "failed check-runs call stays pending (got $CODE): [$OUT]"
+
+# a check run that is green on the head, and a loop that polls twice, never reads
+# gh pr view or gh pr checks
+reset_state
+set_heads "$A" "$A"; echo "$RULES_CI" >"$T/state/rules"
+set_checks "$PEND" "$PASS"
+run_wait 7
+[ "$CODE" = "0" ] || fail "pending then green over REST (got $CODE): [$OUT]"
+[ ! -e "$T/state/banned.txt" ] || fail "no banned gh pr call in the loop"
+grep -q 'gh api repos/O/N/pulls/7 --jq' "$T/state/gh-args.txt" || fail "head read over REST pulls"
 
 # --- case: usage errors exit 2
 reset_state

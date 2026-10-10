@@ -30,14 +30,33 @@ gh() (
     shift; [ "$1" != "--paginate" ] || shift; path="$1"; shift
     jq=""
     while [ $# -gt 0 ]; do [ "$1" = "--jq" ] && jq="$2"; shift; done
-    [ ! -e "$ST/api-fail" ] || { echo "gh: forbidden (HTTP 403)" >&2; exit 1; }
     case "$path" in
       */rules/branches/main)
+        [ ! -e "$ST/api-fail" ] || { echo "gh: forbidden (HTTP 403)" >&2; exit 1; }
         json="$(rd rules '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"ci"}]}}]')";;
       */protection/required_status_checks)
         [ ! -e "$ST/classic-fail" ] || { echo "gh: forbidden (HTTP 403)" >&2; exit 1; }
         [ -e "$ST/classic" ] || { echo "gh: Branch not protected (HTTP 404)" >&2; exit 1; }
         json="$(cat "$ST/classic")";;
+      */pulls/*)
+        # gh-ci's REST read of the PR: the same head and state as pr view
+        [ ! -e "$ST/view-fail" ] || { echo "gh: HTTP 502" >&2; exit 1; }
+        if h="$(git --git-dir="$ORIGIN" rev-parse refs/heads/feature 2>/dev/null)"; then
+          echo "$h" >"$ST/lasthead"
+        else
+          h="$(cat "$ST/lasthead")"
+        fi
+        json="$(jq -nc --arg h "$h" --arg d "$(rd draft false)" --arg ms "$(rd merge-state CLEAN | tr 'A-Z' 'a-z')" \
+          '{head: {sha: $h}, mergeable_state: $ms, draft: ($d == "true"), base: {ref: "main"}}')";;
+      */actions/runs*)
+        json='{"workflow_runs":[]}';;
+      */commits/*/check-runs*)
+        # gh-ci's REST poll of the head's checks: the hooks run here, once per poll
+        if [ -e "$ST/checks-hook" ]; then bash "$ST/checks-hook"; rm -f "$ST/checks-hook"; fi
+        if [ -e "$ST/checks-each" ]; then bash "$ST/checks-each"; fi
+        json="$(rd checks '[]' | jq -c '{total_count: length, check_runs: [.[] | {name: .name,
+          status: (if .bucket == "pending" then "in_progress" else "completed" end),
+          conclusion: ({pass: "success", fail: "failure", cancel: "cancelled", skipping: "skipped"}[.bucket] // null)}]}')";;
       *) echo "fake gh: unknown api $path" >&2; exit 2;;
     esac
     if [ -n "$jq" ]; then jq -r "$jq" <<<"$json"; else echo "$json"; fi
@@ -63,15 +82,6 @@ gh() (
       jq=""
       while [ $# -gt 0 ]; do [ "$1" = "--jq" ] && jq="$2"; shift; done
       if [ -n "$jq" ]; then jq -r "$jq" <<<"$json"; else echo "$json"; fi;;
-    checks)
-      if [ -e "$ST/checks-hook" ]; then bash "$ST/checks-hook"; rm -f "$ST/checks-hook"; fi
-      if [ -e "$ST/checks-each" ]; then bash "$ST/checks-each"; fi
-      resp="$(cat "$ST/checks")"
-      printf '%s\n' "$resp"
-      case "$resp" in
-        *'"bucket":"fail"'*) exit 1;;
-        *'"bucket":"pending"'*) exit 8;;
-      esac;;
     ready)
       [ ! -e "$ST/ready-fail" ] || exit 1
       echo false >"$ST/draft";;
@@ -122,9 +132,9 @@ advance_main() {
   git -C "$C" add . && git -C "$C" commit -qm "main $1"
   git -C "$C" push -q origin main
 }
-# checks_hook <shell>: runs once, inside the first `gh pr checks`.
+# checks_hook <shell>: runs once, inside the first CI poll (a check-runs call).
 checks_hook() { printf '%s\n' "$1" >"$ST/checks-hook"; }
-# checks_each <shell>: runs inside every `gh pr checks`.
+# checks_each <shell>: runs inside every CI poll (a check-runs call).
 checks_each() { printf '%s\n' "$1" >"$ST/checks-each"; }
 # BUMP_MAIN: an empty commit on origin's main, without a checkout.
 BUMP_MAIN='git --git-dir="$ORIGIN" update-ref refs/heads/main "$(git --git-dir="$ORIGIN" commit-tree "refs/heads/main^{tree}" -p refs/heads/main -m b)"'
@@ -262,7 +272,7 @@ grep -q 'origin/main moved during CI; rebasing again (retry 1 of 3)' <<<"$ERR" |
 PIN="$(sed -n 's/.*--match-head-commit //p' "$ST/gh.log")"
 [ -n "$PIN" ] && git --git-dir="$ORIGIN" merge-base --is-ancestor refs/heads/main "$PIN" \
   || fail "merge pinned to a head that descends from the moved main: [$PIN]"
-[ "$(grep -c '^gh pr checks.*--required' "$ST/gh.log")" -eq 2 ] || fail "two CI waits"
+[ "$(grep -c 'check-runs' "$ST/gh.log")" -eq 2 ] || fail "two CI waits"
 
 # the second push leases against the first pushed head, not the PR head read at the start
 setup; advance_main other.txt o; checks_hook "$BUMP_MAIN"
@@ -274,7 +284,7 @@ ship; expect 1 "main moves on every CI wait"; no_merge "main moves every wait"
 grep -q 'origin/main moved during CI after 3 retries; rerun ship-pr' <<<"$ERR" || fail "exhaustion message: [$ERR]"
 for k in 1 2 3; do grep -q "retry $k of 3" <<<"$ERR" || fail "retry $k line: [$ERR]"; done
 ! grep -q 'retry 4' <<<"$ERR" || fail "no fourth retry: [$ERR]"
-[ "$(grep -c '^gh pr checks.*--required' "$ST/gh.log")" -eq 4 ] || fail "exactly 4 CI waits"
+[ "$(grep -c 'check-runs' "$ST/gh.log")" -eq 4 ] || fail "exactly 4 CI waits"
 [ -d "$WT" ] || fail "worktree kept when main keeps moving"
 
 setup
@@ -297,7 +307,7 @@ ship; expect 4 "main moves during CI with a clean rebase that changes the patch"
 setup; checks_hook 'echo n >"$C/newfile.txt"; git -C "$C" add .; git -C "$C" commit -qm m; git -C "$C" push -q origin main'
 ship --gate 'test ! -e newfile.txt && echo x >>"$ST/gates"'; expect 0 "gate runs once, not again after a rebase"
 [ "$(wc -l <"$ST/gates")" -eq 1 ] || fail "gate ran exactly once"
-[ "$(grep -c '^gh pr checks.*--required' "$ST/gh.log")" -eq 2 ] || fail "2 CI waits"
+[ "$(grep -c 'check-runs' "$ST/gh.log")" -eq 2 ] || fail "2 CI waits"
 mh="$(grep -o 'match-head-commit [0-9a-f]*' "$ST/gh.log" | awk '{print $2}')"
 git --git-dir="$ORIGIN" merge-base --is-ancestor main "$mh" || fail "merge pinned to a head descending from the moved main"
 
@@ -330,13 +340,13 @@ ship; expect 0 "not strict, main moved before ship"
 grep -q 'rebasing feature' <<<"$ERR" && fail "no rebase: [$ERR]"
 ! grep -q 'pushing rebased' <<<"$ERR" || fail "no push: [$ERR]"
 grep -q "^gh pr merge 7 --repo O/N --squash --match-head-commit $HEAD0\$" "$ST/gh.log" || fail "merge pinned to HEAD0"
-[ "$(grep -c '^gh pr checks.*--required' "$ST/gh.log")" -eq 1 ] || fail "one CI wait"
+[ "$(grep -c 'check-runs' "$ST/gh.log")" -eq 1 ] || fail "one CI wait"
 
 setup; echo "$NOSTRICT" >"$ST/rules"; checks_hook "$BUMP_MAIN"
 ship; expect 0 "not strict, main moves during CI"
 grep -q 'retry' <<<"$ERR" && fail "no retry: [$ERR]"
 grep -q "^gh pr merge 7 --repo O/N --squash --match-head-commit $HEAD0\$" "$ST/gh.log" || fail "merge pinned to HEAD0 after a main move"
-[ "$(grep -c '^gh pr checks.*--required' "$ST/gh.log")" -eq 1 ] || fail "one CI wait despite the main move"
+[ "$(grep -c 'check-runs' "$ST/gh.log")" -eq 1 ] || fail "one CI wait despite the main move"
 
 # not strict: a reported conflict rebases, before the first push
 setup; echo "$NOSTRICT" >"$ST/rules"; echo CONFLICTING >"$ST/mergeable"; advance_main other.txt o
@@ -344,7 +354,7 @@ ship --gate 'test ! -e other.txt && echo x >>"$ST/gates"'; expect 0 "not strict,
 [ "$(wc -l <"$ST/gates")" -eq 1 ] || fail "gate ran once, on the pre-rebase head"
 mh="$(grep -o 'match-head-commit [0-9a-f]*' "$ST/gh.log" | awk '{print $2}')"
 [ "$mh" != "$HEAD0" ] && git --git-dir="$ORIGIN" merge-base --is-ancestor main "$mh" || fail "merge pinned to the rebased head"
-[ "$(grep -c '^gh pr checks.*--required' "$ST/gh.log")" -eq 1 ] || fail "one CI wait after the rebase"
+[ "$(grep -c 'check-runs' "$ST/gh.log")" -eq 1 ] || fail "one CI wait after the rebase"
 
 setup; echo "$NOSTRICT" >"$ST/rules"; echo CONFLICTING >"$ST/mergeable"; advance_main other.txt o
 run 7 --repo O/N --reviewed "$(git -C "$C" rev-parse HEAD)" --worktree "$WT"; expect 4 "not strict, rebase checks the patch-id"
@@ -474,7 +484,7 @@ ship --body-has 'Resolves #' --body-has 'Doc friction:'; expect 0 "body has ever
 # nothing_ran <name>: exit 5 left origin and worktree alone, made no CI call, kept the worktree.
 nothing_ran() {
   expect 5 "$1"; untouched "$1"; no_merge "$1"
-  ! grep -q '^gh pr checks' "$ST/gh.log" || fail "$1: no CI call"
+  ! grep -q 'check-runs' "$ST/gh.log" || fail "$1: no CI call"
   [ -d "$WT" ] || fail "$1: worktree kept"
 }
 setup; advance_main other.txt o; printf 'Resolves #97\n' >"$ST/body"
@@ -521,7 +531,7 @@ cd "$T" || fail "cd out"
 expect 0 "draft happy path"
 [ "$OUT" = "merged $MERGE_SHA" ] || fail "merged line: [$OUT]"
 grep -q "^gh pr merge 7 --repo O/N --squash --match-head-commit $HEAD0\$" "$ST/gh.log" || fail "merge call: [$(grep merge "$ST/gh.log")]"
-[ "$(grep -n '^gh pr ready 7 --repo O/N' "$ST/gh.log" | cut -d: -f1)" -lt "$(grep -n -m1 '^gh pr checks' "$ST/gh.log" | cut -d: -f1)" ] \
+[ "$(grep -n '^gh pr ready 7 --repo O/N' "$ST/gh.log" | cut -d: -f1)" -lt "$(grep -n -m1 'check-runs' "$ST/gh.log" | cut -d: -f1)" ] \
   || fail "ready runs before the first CI wait"
 [ "$(grep -c '^gh pr ready' "$ST/gh.log")" -eq 1 ] || fail "ready runs once"
 [ ! -e "$WT" ] || fail "worktree removed"
@@ -530,7 +540,7 @@ origin_head >/dev/null && fail "origin branch deleted"
 
 setup; ship; expect 0 "non-draft happy path"
 ! grep -q '^gh pr ready' "$ST/gh.log" || fail "non-draft never marked ready"
-grep -q -- '--json name,bucket,workflow,event,link$' "$ST/gh.log" || fail "non-draft: checks call asks for name,bucket,workflow,event,link"
+grep -q "check-runs?per_page=100&filter=latest" "$ST/gh.log" || fail "non-draft: CI read over REST check runs"
 ! grep -q startedAt "$ST/gh.log" || fail "non-draft: startedAt is never requested"
 [ ! -e "$WT" ] || fail "non-draft: worktree removed"
 
@@ -579,9 +589,9 @@ RULES_CI='[{"type":"required_status_checks","parameters":{"strict_required_statu
 
 setup; echo true >"$ST/draft"; echo "$RULES_CI" >"$ST/rules"
 ship; expect 0 "draft whose head already has a green required check"
-[ "$(grep -c '^gh pr checks.*--required' "$ST/gh.log")" -eq 1 ] || fail "green required check before ready satisfies the wait at once"
+[ "$(grep -c 'check-runs' "$ST/gh.log")" -eq 1 ] || fail "green required check before ready satisfies the wait at once"
 [ "$(grep -c '^gh pr ready' "$ST/gh.log")" -eq 1 ] || fail "draft marked ready once"
-[ "$(grep -n '^gh pr ready' "$ST/gh.log" | cut -d: -f1)" -lt "$(grep -n -m1 '^gh pr checks' "$ST/gh.log" | cut -d: -f1)" ] \
+[ "$(grep -n '^gh pr ready' "$ST/gh.log" | cut -d: -f1)" -lt "$(grep -n -m1 'check-runs' "$ST/gh.log" | cut -d: -f1)" ] \
   || fail "ready before the first checks call"
 ! grep -q '/events' "$ST/gh.log" || fail "ship-pr never reads the PR's events"
 ! grep -q startedAt "$ST/gh.log" || fail "draft: startedAt is never requested"
