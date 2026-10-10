@@ -559,6 +559,34 @@ grep -q "check-runs?per_page=100&filter=latest" "$ST/gh.log" || fail "non-draft:
 ! grep -q startedAt "$ST/gh.log" || fail "non-draft: startedAt is never requested"
 [ ! -e "$WT" ] || fail "non-draft: worktree removed"
 
+# lane_clone <path> [mark]: a clone of $C on feature with origin set to the bare
+# origin, the way a lane clone is made; marked lane.clone=true when a 2nd arg is given.
+lane_clone() {
+  git clone -q "$C" "$1" && git -C "$1" remote set-url origin "$ORIGIN" \
+    && git -C "$1" fetch -q origin && git -C "$1" checkout -q -b feature origin/feature \
+    || fail "lane clone fixture"
+  [ -z "${2:-}" ] || git -C "$1" config lane.clone true
+}
+
+# marked lane clone: after the merge the clone is gone and the remote branch is deleted
+setup; L="$S/lane"; lane_clone "$L" mark
+run 7 --repo O/N --reviewed "$HEAD0" --worktree "$L"; expect 0 "marked lane clone merges"
+[ "$OUT" = "merged $MERGE_SHA" ] || fail "lane clone merged line: [$OUT]"
+[ ! -e "$L" ] || fail "marked lane clone removed"
+origin_head >/dev/null && fail "marked lane clone: remote branch deleted"
+grep -q 'cleanup:' <<<"$ERR" && fail "marked lane clone: no cleanup message: [$ERR]"
+
+# unmarked clone: left in place with its local branch, the remote branch still goes,
+# and the exit status is that of a normal successful ship
+setup; L="$S/lane"; lane_clone "$L"
+run 7 --repo O/N --reviewed "$HEAD0" --worktree "$L"; expect 0 "unmarked clone merges"
+[ "$OUT" = "merged $MERGE_SHA" ] || fail "unmarked clone merged line: [$OUT]"
+[ -d "$L" ] || fail "unmarked clone kept"
+git -C "$L" rev-parse --verify -q refs/heads/feature >/dev/null || fail "unmarked clone: local branch kept"
+grep -q "cleanup: .*/lane is not a linked worktree or a marked lane clone; left in place" <<<"$ERR" \
+  || fail "unmarked clone: left-in-place line: [$ERR]"
+origin_head >/dev/null && fail "unmarked clone: remote branch deleted"
+
 setup; touch "$ST/merge-deletes-branch"; ship; expect 0 "remote branch already deleted"
 grep -q 'cleanup:' <<<"$ERR" && fail "a missing remote ref counts as done: [$ERR]"
 

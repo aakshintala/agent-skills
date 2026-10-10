@@ -9,8 +9,10 @@
 #        ready (once, before the first CI wait); `gh-ci wait` (--timeout, default
 #        7200); run pr-closes; on a non-strict base with --gate, gate the PR merged
 #        with current origin/main in a throwaway merge commit (step 7); squash-merge
-#        pinned to the checked head; wait for MERGED; remove the worktree and the
-#        local and remote branch.
+#        pinned to the checked head; wait for MERGED; clean up (step 9): a linked
+#        worktree goes with its local and remote branch; a lane clone (marked
+#        lane.clone=true) is deleted with its remote branch; any other checkout
+#        is left in place, and only its remote branch goes.
 #        The CI wait trusts the repo's required checks: one green on the exact
 #        head counts whenever it ran, so marking ready need not start a new run,
 #        and a run that starts after the wait passed does not hold the merge. An
@@ -287,17 +289,34 @@ for i in $(seq 1 12); do
 done
 [ -n "$merged" ] || die 1 "PR $pr is not MERGED after 12 polls; worktree left in place"
 
-# Step 9: clean up from the common git dir, never from inside the worktree being removed.
-common="$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir)"
-cd "$common"
-git --git-dir="$common" worktree remove "$worktree" >&2 || say "cleanup: worktree remove failed for $worktree"
-git --git-dir="$common" branch -D "$branch" >&2 || say "cleanup: branch -D $branch failed"
+# Step 9: clean up. Guard: only a linked worktree or a lane clone marked lane.clone=true
+# is removed; any other checkout is left in place (its remote branch still goes).
+# delete_remote <git...>: deletes the remote branch through that git command.
 # A missing remote ref counts as done, whatever the push error says: GitHub's
 # auto-delete on merge makes the push fail with "cannot lock ref".
-if ! del_out="$(git --git-dir="$common" push origin --delete "$branch" 2>&1)"; then
-  ls_rc=0
-  git --git-dir="$common" ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1 || ls_rc=$?
-  [ "$ls_rc" -eq 2 ] || say "cleanup: push origin --delete $branch failed: $del_out"
+delete_remote() {
+  local del_out ls_rc=0
+  if ! del_out="$("$@" push origin --delete "$branch" 2>&1)"; then
+    "$@" ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1 || ls_rc=$?
+    [ "$ls_rc" -eq 2 ] || say "cleanup: push origin --delete $branch failed: $del_out"
+  fi
+}
+gitdir="$(git -C "$worktree" rev-parse --path-format=absolute --git-dir)"
+common="$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir)"
+if [ "$gitdir" != "$common" ]; then
+  # Linked worktree: remove it from the common git dir, never from inside it.
+  cd "$common"
+  git --git-dir="$common" worktree remove "$worktree" >&2 || say "cleanup: worktree remove failed for $worktree"
+  git --git-dir="$common" branch -D "$branch" >&2 || say "cleanup: branch -D $branch failed"
+  delete_remote git --git-dir="$common"
+elif [ "$(git -C "$worktree" config --get lane.clone || true)" = true ]; then
+  # Lane clone: its branch goes with it, so delete the remote branch from inside it, then leave it.
+  delete_remote git -C "$worktree"
+  cd "$(dirname "$worktree")"
+  rm -rf "$worktree" || say "cleanup: rm -rf $worktree failed"
+else
+  say "cleanup: $worktree is not a linked worktree or a marked lane clone; left in place"
+  delete_remote git -C "$worktree"
 fi
 
 # Step 10
