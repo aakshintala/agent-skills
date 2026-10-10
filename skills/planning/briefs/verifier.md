@@ -13,9 +13,9 @@ Max 300 words, one line each: what, where, the smallest fix.
 2. Rulings the plan makes without listing them under Rulings.
 3. A rule under Rules this ticket implements that is not quoted word for word from its cited file and section, or a governing rule the ticket or its docs state that the plan leaves out.
 4. Design-level over-engineering: a new abstraction, dependency or configuration the ticket doesn't need.
-5. Each invariant under Interfaces: construct an input that breaks it. Report the breaking input, or the strongest input you tried and why the invariant holds against it.
+5. Each invariant under Interfaces: construct an input that breaks it. Read the build profiles first: `panic = "abort"` voids a panic-safety invariant. Report the breaking input, or the strongest input you tried and why the invariant holds against it.
 6. An open design choice in Review Focus: a hazard the plan names without a ruling or an invariant.
 7. A Rung lower than the plan's own Interfaces and Review Focus call for: `strong` for state carried across calls, concurrency or timing, replay, or a rule with several cases; `frontier` for cross-cutting design.
-8. A file the change reaches that Files leaves out: search the repo for each changed symbol, signature, type, listed value and behaviour, and name each caller, test, rules or lint file, doc or dependency manifest missing from Files. Also name each package in Files that the Gate line doesn't format, lint or test, and each Gate command that runs tests through a runner other than the one the workflow doc names.
+8. A file the change reaches that Files leaves out: search the repo for each changed symbol, signature, type, listed value and behaviour, and name each caller, test, rules or lint file, doc or dependency manifest missing from Files. Also name each package in Files that the Gate line doesn't format, lint or test, and each Gate command that runs tests through a runner other than the one the workflow doc names. Name each task whose gate fails on its own, such as one adding an API that only a later task uses (a dead-code lint fails).
 
 `PLAN OK` when items 1–4 and 6–8 find nothing and every invariant held under item 5; list the item 5 attempts above it. End with a STATUS line.
