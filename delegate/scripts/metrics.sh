@@ -65,8 +65,13 @@ pi_metrics() {
 }
 
 # fiber_events SID: the single events file, or "" when missing/ambiguous.
+# report sets CANARY_FIBER_EVENTS to a run's saved copy of its event log.
 fiber_events() {
   local sid="$1" ev="" f root="${FIBER_EVENTS_ROOT:-${FIBER_HOME:-$HOME/.fiber}}"
+  if [ -n "${CANARY_FIBER_EVENTS:-}" ]; then
+    printf '%s' "$CANARY_FIBER_EVENTS"
+    return 0
+  fi
   for f in "$root"/projects/*/sessions/"$sid"/events.jsonl; do
     [ -e "$f" ] || continue
     if [ -n "$ev" ]; then
@@ -174,6 +179,8 @@ denials_for() {
 # input + output + cache_read + cache_write (an object keyed by lifetime, or
 # a number) over reviewer lines, null when any line's tokens are unknown.
 # reviewed_calls counts permission_resolved with decided_by == reviewer.
+# main_io and reviewer_io give {input, output, cache_read} per group (each
+# null when a line's value is not a number; an empty group is 0).
 # A missing or unparsable file prints all nulls (never 0).
 reviewer_split() {
   local ev="$1" out
@@ -192,6 +199,11 @@ reviewer_split() {
           if ([$t.cache_write[]] | map(type) | any(. != "number")) then null
           else ($t.input + $t.output + $t.cache_read + ([$t.cache_write[]] | add // 0)) end
         else null end;
+    def sumk($ls; $k):
+      [$ls[] | (.payload.tokens | if type == "object" then .[$k] else null end)]
+      | if any(type != "number") then null else add // 0 end;
+    def io($ls): {input: sumk($ls; "input"), output: sumk($ls; "output"),
+      cache_read: sumk($ls; "cache_read")};
     (reduce (.[] | select(type == "object" and .kind == "usage_recorded")) as $l
       ({}; .[$l.payload.generation_id // ""] = $l) | [.[]]) as $usage
     | ([.[] | select(type == "object" and .kind == "permission_resolved"
@@ -212,7 +224,9 @@ reviewer_split() {
         reviewer_tokens: (if ($rev | length) == 0 then 0
           elif ([$rev[] | toksum] | any(. == null)) then null
           else ([$rev[] | toksum] | add) end),
-        reviewed_calls: $rc
+        reviewed_calls: $rc,
+        main_io: io($main),
+        reviewer_io: io($rev)
       }' "$ev" 2>/dev/null)" || {
     printf '{"main_cost":null,"reviewer_cost":null,"reviewer_tokens":null,"reviewed_calls":null}'
     return 0
