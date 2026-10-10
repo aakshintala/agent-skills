@@ -11,10 +11,10 @@ You are the orchestrator for one ticket. The **main orchestrator** is the sessio
 - **Park** a ticket when an open decision touches its core outcome: post the question on the ticket, label it `needs-info` (per `docs/agents/triage-labels.md`), and stop work on it.
 - **Hold** the merge, and only the merge, on an open decision that doesn't touch the core outcome (a name, a registry row, a message's wording): build and review everything with the recommended default in place, and merge once it's ruled.
 - **Judge by evidence.** Read the diff and the gate output, never a worker's report. Report success only with fresh output of the gate in the same message.
-- **The gate** is the lane's gate command plus three pre-push checks: the worktree's HEAD descends from the remote branch's tip, every changed file is in the plan's Files, and `git log origin/main..<branch> --stat` shows only this ticket's commits.
+- **The gate** is the lane's gate command plus three pre-push checks: the clone's HEAD descends from the remote branch's tip, every changed file is in the plan's Files, and `git log origin/main..<branch> --stat` shows only this ticket's commits.
 - **Fix by churn.** Make a trivial change (a one-line deletion, a rename, a PR-body or label fix) inline, then run the gate yourself and state its output. Send a change that may start a run-and-fix loop (new behaviour, a fix whose cause isn't confirmed, an edit across several files) to a gated job.
 - **The category follows the cause.** A project may gate `bug` fixes on a test that goes red first. When the confirmed cause turns out to be in test code, or the ticket adds behaviour no doc promised and fixes no hang, crash or lost data, relabel it (`test-only` or `enhancement`, per `docs/agents/triage-labels.md`) with a comment giving the cause, before the PR opens.
-- **One worktree per job**, named for its branch, deleted on merge.
+- **One clone per job**, named for its branch under `~/work/<repo>-worktrees/`, deleted on merge. A clone has its own stash, refs and config, so parallel jobs can't touch each other's work. Make it with `git clone -q ~/work/<repo> <path>`, `git -C <path> remote set-url origin <the main checkout's origin URL>`, `git -C <path> config lane.clone true` (ship-pr deletes only a marked clone), then `git -C <path> fetch -q origin` and `git -C <path> switch -c <branch> origin/main`.
 
 ## Fast paths
 
@@ -24,7 +24,7 @@ Planning is spent where the ticket leaves something to decide. Two kinds of tick
 
 Take it when the root cause is **confirmed**: a red test, or a `diagnosing-bugs` result, names the faulty code, and the fix stays in the faulty module, the call sites a signature change forces, and its test. A small diff whose cause is a guess takes the full path. The cause decides, not the size.
 
-Run step 1, skip steps 2–3, then build in a worktree cut from `origin/main`. The fence is that module, those call sites and the test, and it stands in for the plan's Files in the gate. Use an existing confirming test, or add one that goes red before the fix. Make the fix inline when **Fix by churn** allows, otherwise as a gated job whose brief names the cause, the fence and the gate, and has the job push, open a draft PR with the ticket's `Resolves` line, and report its URL and head SHA. Inline, do those three yourself. Then run steps 5–9 as written. Leave the fast path for step 2 when the fix spreads past the fence or the test won't go red.
+Run step 1, skip steps 2–3, then build in a clone cut from `origin/main`. The fence is that module, those call sites and the test, and it stands in for the plan's Files in the gate. Use an existing confirming test, or add one that goes red before the fix. Make the fix inline when **Fix by churn** allows, otherwise as a gated job whose brief names the cause, the fence and the gate, and has the job push, open a draft PR with the ticket's `Resolves` line, and report its URL and head SHA. Inline, do those three yourself. Then run steps 5–9 as written. Leave the fast path for step 2 when the fix spreads past the fence or the test won't go red.
 
 ### Determined ticket
 
@@ -52,7 +52,7 @@ Skip the preflight when a new ticket is **current**: the preflight exists to cat
 
 A ticket whose files all sit under a prototype path the workflow doc names checks its named files alone, not the docs it cites. Any miss runs the full preflight below. After a skip, whoever writes the plan gets the ticket in place of the preflight's report.
 
-Prepare the base first. A new ticket's base is `origin/main`. A re-plan's base is the PR's branch, brought up to date: merge `origin/main` into it in the PR's worktree and push, so the preflight and the Verifier never read a stale branch. Run the preflight and the Verifier in a checkout of the base: an up-to-date clone on `origin/main`, or the PR's worktree.
+Prepare the base first. A new ticket's base is `origin/main`. A re-plan's base is the PR's branch, brought up to date: merge `origin/main` into it in the PR's clone and push, so the preflight and the Verifier never read a stale branch. Run the preflight and the Verifier in a checkout of the base: an up-to-date clone on `origin/main`, or the PR's worktree.
 
 Fill `../planning/briefs/preflight.md` with `fill-brief --out <absolute path>` (e.g. `~/.cache/agents/<repo>-<issue>-preflight.md`) and run it as its own job, on a `strong` model from a different family than yours, before any plan exists, using the printed line verbatim as the prompt, never a hand-written path. Save the preflight's report beside its brief as `<repo>-<issue>-preflight-out.md` and hand that path, never the brief's, to whoever writes the plan. A `core` item parks the ticket. `non-blocking` items and the file list go to the plan.
 
@@ -66,7 +66,7 @@ Done when the lane brief is filled.
 
 ### 4. Lane
 
-For a new ticket, cut a worktree from `origin/main`; a re-plan's lane works in the PR's worktree. Dispatch the lane brief on a model at the plan's Rung (per the `delegate` skill). The lane brief was filled with `fill-brief --out <absolute path>`; use the printed line verbatim as the lane's prompt, never a hand-written path.
+For a new ticket, make a clone cut from `origin/main`; a re-plan's lane works in the PR's clone. Dispatch the lane brief on a model at the plan's Rung (per the `delegate` skill). The lane brief was filled with `fill-brief --out <absolute path>`; use the printed line verbatim as the lane's prompt, never a hand-written path.
 
 A plan split into parts runs each part through steps 4–8 in order, the next lane cut once the previous part has merged.
 
@@ -92,7 +92,7 @@ Done when CI is green on the head a verdict covers.
 
 ### 8. Merge
 
-When the workflow doc's merge rule allows a squash merge and the merge terms cover this PR, run `~/.agents/bin/ship-pr <pr> --repo <owner/name> --reviewed <head the verdict covers> --worktree <worktree> --gate '<gate command>'` (keep its default CI `--timeout`), in the wait mode `ci-triage` gives. It gates the head first, then rebases (when `main`'s required checks are strict: if `origin/main` moved; otherwise only on a reported conflict; a rebase does not rerun the gate), marks a draft PR ready, waits on CI (required checks green on the exact head count, whenever they ran), runs `pr-closes`, squash-merges and cleans up, and prints `merged <sha>`. Add `--body-has '<prefix>'` once for each line the workflow doc requires in a PR body; `ship-pr` checks them first. Route any other exit, then rerun it:
+When the workflow doc's merge rule allows a squash merge and the merge terms cover this PR, run `~/.agents/bin/ship-pr <pr> --repo <owner/name> --reviewed <head the verdict covers> --worktree <clone> --gate '<gate command>'` (keep its default CI `--timeout`), in the wait mode `ci-triage` gives. It gates the head first, then rebases (when `main`'s required checks are strict: if `origin/main` moved; otherwise only on a reported conflict; a rebase does not rerun the gate), marks a draft PR ready, waits on CI (required checks green on the exact head count, whenever they ran), runs `pr-closes`, squash-merges and cleans up, and prints `merged <sha>`. Add `--body-has '<prefix>'` once for each line the workflow doc requires in a PR body; `ship-pr` checks them first. Route any other exit, then rerun it:
 
 - 124: CI is still pending. Rerun as is.
 - 1: read stderr. Failing checks go to step 7, a failed gate goes back to the lane, and `origin/main moved during CI` means ship-pr already retried 3 times itself, so rerun it. After a failed merge or MERGED wait, check `gh pr view <pr> --json state` before rerunning: if it reads `MERGED`, finish the by-hand cleanup below instead.
@@ -105,7 +105,7 @@ The rest of this step is the by-hand merge, for the cases `ship-pr` doesn't cove
 
 Run `~/.agents/bin/pr-closes <pr> --repo <owner/name>` first. Exit 1 lists each issue a closing keyword would close outside the PR's `Resolves` lines. Reword a title or body match and rerun. When only commit-message matches remain, merge with `gh pr merge --subject <title> --body <body>` so the squash commit carries the PR text alone.
 
-Promote the draft PR to ready, then merge by the workflow doc's rule, plus any session terms the flywheel confirmed. Close the issues in the PR's `Resolves` lines, and no others: a `Part of` ticket stays open until its last part merges. Once `gh pr view <pr> --json state` reads `MERGED`, clean up by hand, since `gh pr merge --delete-branch` fails on a branch checked out in a worktree: delete the worktree, then the local branch (`git branch -D <branch>`), then the remote branch (`git push origin --delete <branch>`); a `remote ref does not exist` error means the repo already deleted it on merge, which counts as done.
+Promote the draft PR to ready, then merge by the workflow doc's rule, plus any session terms the flywheel confirmed. Close the issues in the PR's `Resolves` lines, and no others: a `Part of` ticket stays open until its last part merges. Once `gh pr view <pr> --json state` reads `MERGED`, clean up by hand: delete the remote branch (`git -C <clone> push origin --delete <branch>`), then the clone (`rm -rf <clone>`, only when `git -C <clone> config --get lane.clone` prints `true`); a `remote ref does not exist` error means the repo already deleted it on merge, which counts as done.
 
 Done when the PR is merged with `pr-closes` clean (OK, or only commit-message matches kept out of the squash), or escalated as the rules above say.
 

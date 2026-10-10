@@ -18,7 +18,7 @@ When earlier findings are passed in, skip to **Scoped verify**.
 
 ### 1. Pin the fixed point
 
-Run `git fetch origin`, then take the diff against the remote base: `git diff origin/<base>...HEAD` (three-dot, so the comparison is against the merge-base). A worktree's local `main` may predate landed merges, and diffing against it both fabricates scope creep and hides real creep. List the commits with `git log <fixed-point>..HEAD --oneline`.
+Run `git fetch origin`, then take the diff against the remote base: `git diff origin/<base>...HEAD` (three-dot, so the comparison is against the merge-base). A checkout's local `main` may predate landed merges, and diffing against it both fabricates scope creep and hides real creep. List the commits with `git log <fixed-point>..HEAD --oneline`.
 
 Done when the fixed point resolves (`git rev-parse <fixed-point>`) and the diff is non-empty.
 

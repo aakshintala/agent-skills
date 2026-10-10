@@ -1,4 +1,4 @@
-Answer the review findings on PR #__PR__ in __REPO__, in worktree `__WORKTREE__` on branch `__BRANCH__`. Do not delegate further.
+Answer the review findings on PR #__PR__ in __REPO__, in clone `__WORKTREE__` on branch `__BRANCH__`. Do not delegate further.
 
 The project's workflow doc is __WORKFLOW_DOC__; it wins where it speaks.
 
@@ -21,7 +21,7 @@ __FINDINGS__
 - A CI-reported mutant that no test can tell apart (equivalent, or its condition redundant) is fixed in the code: delete the condition or restructure it so the mutated operator is gone, with every test still passing. CI fails on it until then, so report it as `removed: <why>`, never as equivalent.
 - Run only the gate and the tests your findings name. Suites the workflow doc gives to CI, such as mutation testing (`cargo mutants`), benchmarks and backstops, run in CI: read their result from the CI log, and report when you need one reproduced.
 - Run every command in the foreground, so it ends before your turn does; start no background or detached process.
-- Set work aside with a commit. The stash stack is shared with every other worktree of the repo, so `git stash` can pop another agent's changes.
+- Set work aside with a commit.
 - Before pushing, the gate passes: `__GATE__`. Fold every fix from this round into one push, since each push restarts CI.
 
 ## Report

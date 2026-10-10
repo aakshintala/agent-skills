@@ -1,4 +1,4 @@
-Implement issue #__ISSUE__ in __REPO__ in worktree `__WORKTREE__` on branch `__BRANCH__`, starting from __BASE__. Do not delegate further.
+Implement issue #__ISSUE__ in __REPO__ in clone `__WORKTREE__` on branch `__BRANCH__`, starting from __BASE__. Do not delegate further.
 
 The project's workflow doc is __WORKFLOW_DOC__; it wins where it speaks.
 
@@ -14,7 +14,7 @@ __PLAN__
 - Run the tasks in order, each test first, and pass each task's gate and commit before starting the next.
 - Run only the gate and the tests your tasks name. Suites the workflow doc gives to CI, such as mutation testing (`cargo mutants`), benchmarks and backstops, run in CI: read their result from the CI log, and report when you need one reproduced.
 - Run every command in the foreground, so it ends before your turn does; start no background or detached process.
-- Run git and read code only in your worktree; read main's version of a file with `git show origin/main:<path>`.
+- Run git and read code only in your clone; read main's version of a file with `git show origin/main:<path>`.
 - The host is macOS: use BSD tool forms, such as `sed -i ''`.
 - Mark a deliberate shortcut with a `debt: <ceiling>, <upgrade trigger>` comment. A shortcut that would weaken a rule a doc, spec or ticket states gets no marker: stop and report.
 - Commit your work before any command that discards changes (`git reset --hard`, `git checkout -- <path>`, `git restore`, a rebase). Make a scratch commit, such as one kept as evidence, on a throwaway branch (`git switch -c scratch/<name>`), then switch back to the lane branch and delete the scratch one.
@@ -23,7 +23,7 @@ __PLAN__
 - Write comments that state the rule itself, never "ruling N" or "per the plan".
 - When the plan names a Red commit, make it the branch's first commit, holding only those files.
 - To rebuild the branch's history, reset to the merge-base (`git reset --soft $(git merge-base HEAD origin/main)`), never to `origin/main` and never with `git checkout <branch> -- .`: both drop main's newer changes.
-- Set work aside with a commit. To compare against main, build main in a throwaway worktree (`git worktree add --detach ../cmp-<branch> origin/main`, then `git worktree remove` it). The stash stack is shared with every other worktree of the repo, so `git stash` can pop another agent's changes.
+- Set work aside with a commit. To compare against main, build main in a throwaway worktree (`git worktree add --detach ../cmp-<branch> origin/main`, then `git worktree remove` it).
 - Before pushing, the gate passes: `__GATE__`. Run each of its commands on its own with output redirected to a file, and read its exit code before the next; a pipe hides the exit code.
 - Refer to other issues as `see #N` or `#N's case` in commit messages and PR text. GitHub closes any issue a closing keyword (close, fix, resolve and their forms) precedes, so the only issue reference you write with one is the PR body's closing line.
 - Push the branch. When no PR is open on it, open a draft PR whose body starts with `__CLOSING__`. The body names only the checks that ran, each with its command.

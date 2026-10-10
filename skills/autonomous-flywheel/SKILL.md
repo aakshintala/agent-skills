@@ -30,7 +30,7 @@ Done when the owner has confirmed every bullet.
 - Take the **frontier**: open tickets whose blockers are all closed. A ticket enters a lane only when its fence (the plan's Files) is disjoint from every running lane's. Before dispatch, read each ticket's acceptance for an **owner-only step** (a billed probe, credentials, a dashboard action): ask the owner for it now when present, otherwise park the ticket with the question on it.
 - Start each ticket's sub-orchestrator with `briefs/ticket-orchestrator.md`, filled with `~/.agents/bin/fill-brief --out ~/.cache/agents/<repo>-<issue>-ticket-orchestrator.md` (`SKILLS` is this pack's `skills` folder as an absolute path, so a harness that doesn't load the pack still finds `implement`). Fill `PARENT` with this session's name (below); on a harness without session names, with `main orchestrator`. Use the printed line verbatim as the sub-orchestrator's prompt, never a hand-written path. It runs `implement` for that ticket and reports back here.
 - On Claude Code, start each sub-orchestrator as its own background session: `claude --bg -n <repo>-<issue> --agent ticket-orchestrator --permission-mode auto "<printed line>"`, with `PARENT` filled as this session's name as `ListAgents` prints it. A flywheel running as a subagent has no session name: stop and report that it can't start lanes. Subscribe to each lane with `SendMessage` `notify_when_idle` as a backstop. Run `claude stop <id>` once its report has arrived and been read. If the idle notice comes with no report, read `claude logs <id>`, then stop it. A finished session stays resident until stopped.
-- Give every job its own worktree: delegation doesn't enforce read-only, so a shared directory lets parallel jobs damage each other. In the shared checkout run only `git fetch`.
+- Give every job its own clone (`implement`'s One clone per job): delegation doesn't enforce read-only, so a shared directory lets parallel jobs damage each other. In the shared checkout run only `git fetch`.
 - When a lane closes, start the next disjoint ticket at once. An idle lane needs a reason in the state file (no disjoint work, or a pending ruling reshapes the queue).
 
 **PR-stack mode**: for PRs with no ticket, run `review-loop`, then `ci-triage`, then merge by `implement` step 8, for each PR in the stack.
@@ -45,7 +45,7 @@ Done when every reported PR is merged, or waits on the owner with the exact acti
 
 ### 4. Keep the state file
 
-Keep `~/.cache/agents/<repo>-flywheel-state.md` (durable: a reboot clears `/tmp`): the session config, each lane's ticket, branch, worktree and status, open escalations, rulings made, and the next steps. Update it after every merge, ruling and lane change, and stamp each entry with the time `date` prints, since a recalled time drifts. A fresh session continues from this file alone; `/handoff` is not involved.
+Keep `~/.cache/agents/<repo>-flywheel-state.md` (durable: a reboot clears `/tmp`): the session config, each lane's ticket, branch, clone and status, open escalations, rulings made, and the next steps. Update it after every merge, ruling and lane change, and stamp each entry with the time `date` prints, since a recalled time drifts. A fresh session continues from this file alone; `/handoff` is not involved.
 
 Done when, after each update, the file alone would let a fresh session continue.
 
