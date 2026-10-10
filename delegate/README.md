@@ -91,6 +91,11 @@ means a usage or setup error; a setup failure cleans up as `clean` does.
 it removes whichever of the two worktrees and branches exist (metrics stay) so
 the ticket can run again. It refuses a worktree with uncommitted changes
 (exit 1), and running it twice is safe.
+`report <ticket> [--out DIR]` rebuilds a finished run's `metrics.json` and
+`summary.md` from its saved outputs, the job record and the Fiber event log,
+without rerunning anything. Fiber's main and reviewer tokens and costs come
+from the `usage_recorded` events (a record with an `action_id` is main, one
+without is the reviewer); a null main cost is total minus reviewer.
 
 ## Skill
 

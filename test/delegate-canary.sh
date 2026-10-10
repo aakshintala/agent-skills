@@ -93,7 +93,7 @@ case "\$cmd" in
     sid="sid-\$id"
     mkdir -p "\$TMPDIR/delegate-jobs"
     case "\$model" in
-      fiber/*) cost="0.04" ;;
+      fiber/*) cost="\${FAKE_FIBER_COST:-0.04}" ;;
       *) cost="0.05" ;;
     esac
     jq -n --arg sid "\$sid" --arg model "\$model" --arg cwd "\$cwd" \
@@ -614,3 +614,99 @@ grep -q '^git push' "$FLOG/git.log" && fail "no git push is ever run"
 if [ -f "$FLOG/gh.log" ]; then grep -q '^gh pr' "$FLOG/gh.log" && fail "no gh pr is ever run"; fi
 
 echo "task 4 cases passed"
+
+# --- Fiber tool names (#238): shell takes .arguments.command, write and
+# edit take .arguments.path. Each classifies as bash or write/edit would.
+cat >"$T/ev5.jsonl" <<'EOF'
+{"kind":"tool_call_requested","session_id":"s1","ts":1,"schema_version":1,"action_id":"f1","seq":1,"payload":{"name":"shell","arguments":{"command":"gh issue view 1616 --repo aakshintala/fiber"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":2,"schema_version":1,"action_id":"f1","seq":2,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":3,"schema_version":1,"action_id":"f2","seq":3,"payload":{"name":"shell","arguments":{"command":"git log --oneline -8"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":4,"schema_version":1,"action_id":"f2","seq":4,"payload":{"decision":"allow","decided_by":"reviewer"}}
+{"kind":"tool_call_requested","session_id":"s1","ts":5,"schema_version":1,"action_id":"f3","seq":5,"payload":{"name":"write","arguments":{"path":"/etc/fiber-canary-test.txt","content":"x"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":6,"schema_version":1,"action_id":"f3","seq":6,"payload":{"decision":"allow","decided_by":"reviewer"}}
+EOF
+OUT5B="$T/out-tools"
+FAKE_EVENTS="$T/ev5.jsonl" bash "$CANARY" run 240 "$T/brief.md" \
+  --gate 'test -f work-marker' --out "$OUT5B" || fail "tool-name run exits 0"
+M5B="$OUT5B/fiber/metrics.json"
+[ "$(jq -r .reviewed_calls "$M5B")" = "3" ] || fail "tool-name run reviewed 3 calls"
+[ "$(jq -r .sandbox.unknown.count "$M5B")" = "0" ] || fail "shell and write calls are not unknown"
+[ "$(jq -r .sandbox.needs_out.count "$M5B")" = "2" ] || fail "shell gh and write outside are needs_out"
+[ "$(jq -r .sandbox.contained.count "$M5B")" = "1" ] || fail "shell git log is contained"
+jq -e '.sandbox.needs_out.commands | any(contains("gh issue view"))' "$M5B" >/dev/null || fail "needs_out lists shell gh"
+jq -e '.sandbox.needs_out.commands | any(contains("/etc/fiber-canary-test.txt"))' "$M5B" >/dev/null || fail "needs_out lists write outside"
+jq -e '.sandbox.contained.commands | any(contains("git log --oneline"))' "$M5B" >/dev/null || fail "contained lists shell git log"
+bash "$CANARY" clean 240 --out "$OUT5B" || fail "clean 240 exits 0"
+
+echo "fiber tool name cases passed"
+
+# --- Fiber main cost (#238): a main usage line with a null cost makes the
+# split's main null; with total and reviewer numbers, main = total - reviewer.
+cat >"$T/ev6.jsonl" <<'EOF'
+{"kind":"usage_recorded","session_id":"s1","ts":1,"schema_version":1,"action_id":"m1","seq":1,"payload":{"generation_id":"gN","model":"m","tokens":{"input":0,"output":0,"cache_read":0,"cache_write":{}},"cost":null}}
+{"kind":"usage_recorded","session_id":"s1","ts":2,"schema_version":1,"action_id":"m2","seq":2,"payload":{"generation_id":"gM","model":"m","tokens":{"input":10,"output":5,"cache_read":0,"cache_write":{}},"cost":0.25}}
+{"kind":"usage_recorded","session_id":"s1","ts":3,"schema_version":1,"seq":3,"payload":{"generation_id":"gR","model":"m","tokens":{"input":4,"output":2,"cache_read":1,"cache_write":{}},"cost":0.125}}
+{"kind":"tool_call_requested","session_id":"s1","ts":4,"schema_version":1,"action_id":"r1","seq":4,"payload":{"name":"bash","arguments":{"command":"cargo test"}}}
+{"kind":"permission_resolved","session_id":"s1","ts":5,"schema_version":1,"action_id":"r1","seq":5,"payload":{"decision":"allow","decided_by":"reviewer"}}
+EOF
+OUT6B="$T/out-null-main"
+FAKE_FIBER_COST=0.5 FAKE_EVENTS="$T/ev6.jsonl" bash "$CANARY" run 241 "$T/brief.md" \
+  --gate 'test -f work-marker' --out "$OUT6B" || fail "null-main run exits 0"
+M6B="$OUT6B/fiber/metrics.json"
+[ "$(jq -r .cost.total "$M6B")" = "0.5" ] || fail "null-main total cost 0.5"
+[ "$(jq -r .cost.reviewer "$M6B")" = "0.125" ] || fail "null-main reviewer cost 0.125"
+[ "$(jq -r .cost.main "$M6B")" = "0.375" ] || fail "main is total minus reviewer when the split leaves it null"
+grep -q '| cost main | \$0.050000 | \$0.375000 |' "$OUT6B/summary.md" || fail "summary shows derived main cost"
+
+# --- Fiber tokens (#238): main and reviewer tokens on separate rows. Main
+# usage has an action_id; reviewer usage has none.
+[ "$(jq -r .tokens_main.input "$M6B")" = "10" ] || fail "fiber main input"
+[ "$(jq -r .tokens_main.output "$M6B")" = "5" ] || fail "fiber main output"
+[ "$(jq -r .tokens_main.cache_read "$M6B")" = "0" ] || fail "fiber main cache-read"
+[ "$(jq -r .tokens_reviewer.input "$M6B")" = "4" ] || fail "fiber reviewer input"
+[ "$(jq -r .tokens_reviewer.output "$M6B")" = "2" ] || fail "fiber reviewer output"
+[ "$(jq -r .tokens_reviewer.cache_read "$M6B")" = "1" ] || fail "fiber reviewer cache-read"
+[ "$(jq -r .tokens.output "$M6B")" = "100" ] || fail "fiber total output stays the record's total"
+[ "$(jq -r .tokens_main.output "$OUT6B/pi/metrics.json")" = "100" ] || fail "pi main tokens are its total"
+[ "$(jq -r .tokens_reviewer.output "$OUT6B/pi/metrics.json")" = "0" ] || fail "pi reviewer tokens are zero"
+grep -q '| tokens main in/out/cache-read | 1000/100/500 | 10/5/0 |' "$OUT6B/summary.md" || fail "summary main tokens row"
+grep -q '| tokens reviewer in/out/cache-read | 0/0/0 | 4/2/1 |' "$OUT6B/summary.md" || fail "summary reviewer tokens row"
+grep -q '| tokens in/out/cache-read' "$OUT6B/summary.md" && fail "summary has no combined tokens row"
+
+bash "$CANARY" clean 241 --out "$OUT6B" || fail "clean 241 exits 0"
+
+echo "fiber main cost cases passed"
+
+# --- report (#238): rebuild metrics.json and summary.md from a finished
+# run's saved outputs and the Fiber event log, without rerunning anything.
+REP="$T/rep"
+cp -R "$OUT" "$REP"
+jq '.reviewed_calls = 0 | .cost.main = null | .tokens_reviewer = null' \
+  "$REP/fiber/metrics.json" >"$T/stale.json" && mv "$T/stale.json" "$REP/fiber/metrics.json"
+echo "| stale | stale | stale |" >>"$REP/summary.md"
+bash "$CANARY" report 223 --out "$REP" || fail "report exits 0"
+[ "$(jq -r .cost.main "$REP/fiber/metrics.json")" = "0.875" ] || fail "report rebuilds fiber main cost"
+[ "$(jq -r .reviewed_calls "$REP/fiber/metrics.json")" = "2" ] || fail "report rebuilds reviewed calls"
+[ "$(jq -r .tokens_reviewer.output "$REP/fiber/metrics.json")" = "20" ] || fail "report rebuilds reviewer tokens"
+[ "$(jq -r .job_id "$REP/fiber/metrics.json")" = "$FIBER_ID" ] || fail "report keeps the job id"
+[ "$(jq -r .cost.total "$REP/fiber/metrics.json")" = "0.04" ] || fail "report keeps the recorded total"
+grep -q '| reviewed calls | 0 | 2 |' "$REP/summary.md" || fail "report summary reviewed row"
+grep -q '| stale' "$REP/summary.md" && fail "report replaces summary.md"
+grep -qF "$FIBER_STUB" "$REP/summary.md" || fail "report keeps the recorded Fiber binary"
+grep -qF 'fiber 9.9.9-canary-test' "$REP/summary.md" || fail "report keeps the recorded Fiber version"
+
+# a worktree that is gone keeps its diff and dirty flag from the saved run
+jq '.dirty = true' "$REP/fiber/metrics.json" >"$T/dirty.json" && mv "$T/dirty.json" "$REP/fiber/metrics.json"
+echo "$T/gone-fiber" >"$REP/fiber/worktree"
+bash "$CANARY" report 223 --out "$REP" || fail "report exits 0 with a gone worktree"
+[ -s "$REP/fiber/diff.patch" ] || fail "report keeps diff.patch when the worktree is gone"
+[ "$(jq -r .dirty "$REP/fiber/metrics.json")" = "true" ] || fail "report keeps dirty when the worktree is gone"
+[ "$(jq -r .cost.main "$REP/fiber/metrics.json")" = "0.875" ] || fail "report with a gone worktree still rebuilds main"
+
+if bash "$CANARY" report 999 --out "$T/none" 2>/dev/null; then
+  fail "report with no run should not exit 0"
+else
+  [ $? -eq 2 ] || fail "report with no run exits 2"
+fi
+
+echo "report cases passed"
