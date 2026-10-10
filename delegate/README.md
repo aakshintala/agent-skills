@@ -73,11 +73,11 @@ The replay `TMPDIR` is a unique `mktemp -d /tmp/frp-XXXXXX` dir per prep (path r
 ## Canary
 
 `scripts/canary.sh` runs one ticket's brief on pi and on Fiber side by side:
-`run <ticket> <brief file> --gate '<gate>' [--repo owner/name] [--clone <path>] [--out DIR]`
+`run <ticket> <brief file> --gate '<gate>' [--pi-model M] [--fiber-model M] [--repo owner/name] [--clone <path>] [--out DIR]`
 cuts two worktrees from the same freshly fetched `origin/main` (branches
 `canary/<ticket>-pi` and `canary/<ticket>-fiber`), runs the brief through
-`delegate run` on each side concurrently (pi, then Fiber, then both watches),
-and runs the gate in each worktree once both jobs end. The brief is wrapped
+`delegate run` on each side one after the other (pi's run and watch, then Fiber's), `--pi-model` and `--fiber-model` choosing the models (default: the muse-spark pair),
+and runs the gate in each worktree once both jobs end. Each side's wall time covers only its own run. The brief is wrapped
 with a line telling each agent to commit locally and never push or open a PR.
 Output goes to `~/.cache/agents/canary/<ticket>/` (or `--out`): a `pi/` and a
 `fiber/` directory, each holding `worktree`, `prompt.md`, `diff.patch`,

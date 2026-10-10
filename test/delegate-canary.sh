@@ -96,14 +96,10 @@ case "\$cmd" in
       fiber/*) cost="\${FAKE_FIBER_COST:-0.04}" ;;
       *) cost="0.05" ;;
     esac
+    # The job is RUNNING until its watch: run writes no result.
     jq -n --arg sid "\$sid" --arg model "\$model" --arg cwd "\$cwd" \
       --arg cost "\$cost" \
-      '{status:"DONE",
-        result:{status:"DONE",model:\$model,sessionId:\$sid,backend:"x",
-          usage:{inputTokens:1000,outputTokens:100,cacheReadTokens:500,cacheWriteTokens:0},
-          costUsd:(\$cost|tonumber),durationMs:null,
-          gateResult:null,
-          changeSet:{headBefore:"abc",headAfter:"abc"}},
+      '{status:"RUNNING", result:null, fakeCost:\$cost,
         supervisorPid:1,
         resume:{model:\$model,backend:"x",cwd:\$cwd,sessionId:\$sid,gate:"g"}}' \
       >"\$TMPDIR/delegate-jobs/\$id.json"
@@ -116,7 +112,20 @@ case "\$cmd" in
     esac
     printf '%s\n' "\$id" ;;
   watch)
+    # The job stays RUNNING until its watch: the watch takes a moment, moves
+    # the record to DONE with its result, then logs its completion. A watch
+    # sent to the background would log after the next run, which the
+    # ordering check catches.
     printf 'watch %s\n' "\$*" >>"\$FAKE_LOGDIR/calls.log"
+    sleep 1
+    job="\$TMPDIR/delegate-jobs/\$1.json"
+    jq '.status="DONE" | .result={status:"DONE",model:.resume.model,sessionId:.resume.sessionId,backend:"x",
+          usage:{inputTokens:1000,outputTokens:100,cacheReadTokens:500,cacheWriteTokens:0},
+          costUsd:(.fakeCost|tonumber),durationMs:null,
+          gateResult:null,
+          changeSet:{headBefore:"abc",headAfter:"abc"}}' "\$job" >"\$job.tmp" \
+      && mv "\$job.tmp" "\$job"
+    printf 'watch-done %s\n' "\$*" >>"\$FAKE_LOGDIR/calls.log"
     exit 0 ;;
   *)
     echo "fake delegate: unknown command \$cmd" >&2
@@ -291,10 +300,22 @@ jq -e '(.wall_ms | type) == "number"' "$OUT/fiber/metrics.json" >/dev/null || fa
 [ "$(jq -r .sandbox.contained.count "$OUT/pi/metrics.json")" = "0" ] || fail "pi sandbox zeros"
 [ "$(jq -r '.notes | length' "$OUT/pi/metrics.json")" = "0" ] || fail "pi notes empty"
 
-# launch barrier: both runs before any watch
-awk '/^run /{runs[++n]=NR} /^watch /{watches[++m]=NR}
-  END{exit !((n==2) && (m==2) && (runs[1]<watches[1]) && (runs[2]<watches[1]))}' \
-  "$FLOG/calls.log" || fail "both runs precede both watches"
+# sequential (#244): Fiber's run starts only after pi's job has finished.
+# assert_order PI_MODEL FIBER_MODEL PI_ID FIBER_ID PI_WT FIBER_WT: the call
+# log holds exactly run pi, watch pi, watch-done pi, run fiber, watch fiber,
+# watch-done fiber, in that order.
+assert_order() {
+  local log="$FLOG/calls.log"
+  [ "$(wc -l <"$log" | tr -d ' ')" = "6" ] || fail "six delegate calls per canary run"
+  [ "$(sed -n 1p "$log")" = "run $1 $5" ] || fail "pi run is the first call"
+  [ "$(sed -n 2p "$log")" = "watch $3" ] || fail "pi watch follows pi run"
+  [ "$(sed -n 3p "$log")" = "watch-done $3" ] || fail "pi job finishes before Fiber starts"
+  [ "$(sed -n 4p "$log")" = "run $2 $6" ] || fail "fiber run starts after pi's job finished"
+  [ "$(sed -n 5p "$log")" = "watch $4" ] || fail "fiber watch follows fiber run"
+  [ "$(sed -n 6p "$log")" = "watch-done $4" ] || fail "fiber job finishes"
+}
+assert_order "opencode-go/muse-spark-1.3-contributor" \
+  "fiber/opencode-go/muse-spark-1.3-contributor" "$PI_ID" "$FIBER_ID" "$PI_WT" "$FIBER_WT"
 
 # summary table
 grep -q '^# Canary 223' "$OUT/summary.md" || fail "summary heading"
@@ -304,6 +325,37 @@ grep -q '| gate | pass | pass |' "$OUT/summary.md" || fail "summary gate row"
 grep -q '| reviewed calls | 0 | 2 |' "$OUT/summary.md" || fail "summary reviewed row"
 
 echo "task 2 cases passed"
+
+# --- Models (#244): --pi-model and --fiber-model reach delegate run; the
+# metrics and the summary name each side's model; a report of a run whose
+# metrics.json has no model still rebuilds, naming it unknown.
+: >"$FLOG/calls.log"
+OUT2="$T/out-models"
+FAKE_EVENTS="$T/ev2.jsonl" bash "$CANARY" run 224 "$T/brief.md" \
+  --gate 'test -f work-marker' \
+  --pi-model openai-codex/gpt-6-luna:medium --fiber-model fiber/codex/gpt-6-luna \
+  --out "$OUT2" || fail "canary run with model flags exits 0"
+PI_WT2="$(cat "$OUT2/pi/worktree")"
+FIBER_WT2="$(cat "$OUT2/fiber/worktree")"
+PI_ID2="$(jq -r .job_id "$OUT2/pi/metrics.json")"
+FIBER_ID2="$(jq -r .job_id "$OUT2/fiber/metrics.json")"
+[ "$(jq -r .model "$OUT2/pi/metrics.json")" = "openai-codex/gpt-6-luna:medium" ] || fail "pi metrics model from --pi-model"
+[ "$(jq -r .model "$OUT2/fiber/metrics.json")" = "fiber/codex/gpt-6-luna" ] || fail "fiber metrics model from --fiber-model"
+assert_order "openai-codex/gpt-6-luna:medium" "fiber/codex/gpt-6-luna" \
+  "$PI_ID2" "$FIBER_ID2" "$PI_WT2" "$FIBER_WT2"
+grep -q '| model | openai-codex/gpt-6-luna:medium | fiber/codex/gpt-6-luna |' "$OUT2/summary.md" \
+  || fail "summary names each side's model"
+
+# a run with no model in its metrics.json: report still rebuilds it
+REPM2="$T/rep-no-model"
+cp -R "$OUT2" "$REPM2"
+jq 'del(.model)' "$OUT2/pi/metrics.json" >"$REPM2/pi/metrics.json"
+bash "$CANARY" report 224 --out "$REPM2" || fail "report of a run without model exits 0"
+grep -q '| model | unknown | fiber/codex/gpt-6-luna |' "$REPM2/summary.md" \
+  || fail "report names a missing model unknown"
+assert_clean_leaves_nothing 224 "$OUT2"
+
+echo "model cases passed"
 
 # --- Task 3 fixture: every sandbox class, plus one deny ---
 cat >"$T/ev3.jsonl" <<EOF

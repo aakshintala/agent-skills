@@ -2,7 +2,7 @@
 # canary.sh: run one ticket's brief on pi and Fiber side by side, with metrics.
 #
 # Usage:
-#   canary.sh run <ticket> <brief file> --gate '<gate>' [--repo owner/name] [--clone <path>] [--out DIR]
+#   canary.sh run <ticket> <brief file> --gate '<gate>' [--pi-model M] [--fiber-model M] [--repo owner/name] [--clone <path>] [--out DIR]
 #   canary.sh clean <ticket> [--out DIR]
 #   canary.sh report <ticket> [--out DIR]
 #
@@ -60,7 +60,7 @@ err() {
 }
 
 usage() {
-  err "usage: canary.sh run <ticket> <brief file> --gate '<gate>' [--repo owner/name] [--clone <path>] [--out DIR]"
+  err "usage: canary.sh run <ticket> <brief file> --gate '<gate>' [--pi-model M] [--fiber-model M] [--repo owner/name] [--clone <path>] [--out DIR]"
   err "       canary.sh clean <ticket> [--out DIR]"
   err "       canary.sh report <ticket> [--out DIR]"
 }
@@ -356,13 +356,15 @@ cmd_run() {
   [ $# -ge 2 ] || { usage; return 2; }
   local ticket="$1" brief="$2"
   shift 2
-  local gate="" repo="$DEFAULT_REPO" clone="" out=""
+  local gate="" repo="$DEFAULT_REPO" clone="" out="" pi_model="$PI_MODEL" fiber_model="$FIBER_MODEL"
   while [ $# -gt 0 ]; do
     case "$1" in
       --gate) [ $# -ge 2 ] || { err "--gate needs a value"; return 2; }; gate="$2"; shift 2 ;;
       --repo) [ $# -ge 2 ] || { err "--repo needs a value"; return 2; }; repo="$2"; shift 2 ;;
       --clone) [ $# -ge 2 ] || { err "--clone needs a value"; return 2; }; clone="$2"; shift 2 ;;
       --out) [ $# -ge 2 ] || { err "--out needs a value"; return 2; }; out="$2"; shift 2 ;;
+      --pi-model) [ $# -ge 2 ] || { err "--pi-model needs a value"; return 2; }; pi_model="$2"; shift 2 ;;
+      --fiber-model) [ $# -ge 2 ] || { err "--fiber-model needs a value"; return 2; }; fiber_model="$2"; shift 2 ;;
       --*) err "unknown flag $1"; return 2 ;;
       *) err "unexpected argument $1"; return 2 ;;
     esac
@@ -442,46 +444,36 @@ cmd_run() {
   : >"$out/pi/delegate.log"
   : >"$out/fiber/delegate.log"
 
-  # Launch barrier: both runs in the foreground (each returns a job id at
-  # once); only then do the watches start, each in its own background job.
-  local pi_start pi_out pi_rc pi_id pi_run_ok=1 pi_note=""
-  local fiber_start fiber_out fiber_rc fiber_id fiber_run_ok=1 fiber_note=""
+  # Sequential (#244): pi's run and watch end before Fiber's run starts, so
+  # each side's wall time covers only its own job. Each run returns a job id
+  # at once; its watch then blocks until the job ends.
+  local pi_start pi_out pi_rc pi_id pi_run_ok=1 pi_note="" pi_wrc=0 pi_end
+  local fiber_start fiber_out fiber_rc fiber_id fiber_run_ok=1 fiber_note="" fiber_wrc=0 fiber_end
   pi_start="$(now_ms)"
-  pi_out="$("$delegate_bin" run --model "$PI_MODEL" --cwd "$pi_wt" \
+  pi_out="$("$delegate_bin" run --model "$pi_model" --cwd "$pi_wt" \
     --prompt-file "$out/pi/prompt.md" 2>>"$out/pi/delegate.log")"
   pi_rc=$?
   pi_id="$(printf '%s' "$pi_out" | tail -n 1 | tr -d '[:space:]')"
   if [ "$pi_rc" -ne 0 ]; then pi_run_ok=0; pi_note="delegate run failed (exit $pi_rc)";
   elif [ -z "$pi_id" ]; then pi_run_ok=0; pi_note="delegate run printed no job id"; fi
+  if [ "$pi_run_ok" -eq 1 ]; then
+    "$delegate_bin" watch "$pi_id" >>"$out/pi/delegate.log" 2>&1
+    pi_wrc=$?
+  fi
+  pi_end="$(now_ms)"
+
   fiber_start="$(now_ms)"
-  fiber_out="$("$delegate_bin" run --model "$FIBER_MODEL" --cwd "$fiber_wt" \
+  fiber_out="$("$delegate_bin" run --model "$fiber_model" --cwd "$fiber_wt" \
     --prompt-file "$out/fiber/prompt.md" 2>>"$out/fiber/delegate.log")"
   fiber_rc=$?
   fiber_id="$(printf '%s' "$fiber_out" | tail -n 1 | tr -d '[:space:]')"
   if [ "$fiber_rc" -ne 0 ]; then fiber_run_ok=0; fiber_note="delegate run failed (exit $fiber_rc)";
   elif [ -z "$fiber_id" ]; then fiber_run_ok=0; fiber_note="delegate run printed no job id"; fi
-
-  local pi_wp="" fiber_wp=""
-  local pi_wrc_file="$out/pi/.watch_rc" fiber_wrc_file="$out/fiber/.watch_rc"
-  local pi_end_file="$out/pi/.watch_end" fiber_end_file="$out/fiber/.watch_end"
-  if [ "$pi_run_ok" -eq 1 ]; then
-    ( "$delegate_bin" watch "$pi_id" >>"$out/pi/delegate.log" 2>&1
-      echo "$?" >"$pi_wrc_file"; now_ms >"$pi_end_file" ) &
-    pi_wp=$!
-  fi
   if [ "$fiber_run_ok" -eq 1 ]; then
-    ( "$delegate_bin" watch "$fiber_id" >>"$out/fiber/delegate.log" 2>&1
-      echo "$?" >"$fiber_wrc_file"; now_ms >"$fiber_end_file" ) &
-    fiber_wp=$!
+    "$delegate_bin" watch "$fiber_id" >>"$out/fiber/delegate.log" 2>&1
+    fiber_wrc=$?
   fi
-  local pi_end fiber_end pi_wrc=0 fiber_wrc=0
-  if [ -n "$pi_wp" ]; then wait "$pi_wp"; fi
-  if [ -f "$pi_wrc_file" ]; then pi_wrc="$(cat "$pi_wrc_file")"; fi
-  if [ -f "$pi_end_file" ]; then pi_end="$(cat "$pi_end_file")"; else pi_end="$(now_ms)"; fi
-  if [ -n "$fiber_wp" ]; then wait "$fiber_wp"; fi
-  if [ -f "$fiber_wrc_file" ]; then fiber_wrc="$(cat "$fiber_wrc_file")"; fi
-  if [ -f "$fiber_end_file" ]; then fiber_end="$(cat "$fiber_end_file")"; else fiber_end="$(now_ms)"; fi
-  rm -f "$pi_wrc_file" "$pi_end_file" "$fiber_wrc_file" "$fiber_end_file"
+  fiber_end="$(now_ms)"
 
   # Gates run in each worktree once both jobs end.
   local pi_gate_exit fiber_gate_exit
@@ -492,9 +484,9 @@ cmd_run() {
   fiber_gate_exit=$?
   printf '%s' "$fiber_gate_exit" >"$out/fiber/gate.exit"
 
-  run_side_metrics pi "$pi_wt" "$pi_id" "$PI_MODEL" "$pi_run_ok" "$pi_note" \
+  run_side_metrics pi "$pi_wt" "$pi_id" "$pi_model" "$pi_run_ok" "$pi_note" \
     "$pi_wrc" "$pi_start" "$pi_end" "$out" "$base" "$jobs_dir" "$tmp_root"
-  run_side_metrics fiber "$fiber_wt" "$fiber_id" "$FIBER_MODEL" "$fiber_run_ok" "$fiber_note" \
+  run_side_metrics fiber "$fiber_wt" "$fiber_id" "$fiber_model" "$fiber_run_ok" "$fiber_note" \
     "$fiber_wrc" "$fiber_start" "$fiber_end" "$out" "$base" "$jobs_dir" "$tmp_root"
 
   write_summary "$ticket" "$base" "$out" "$fiber_bin" "$fiber_version"
@@ -661,6 +653,7 @@ fiber_side_split() {
 load_side() {
   local side="$1" out="$2" metrics
   metrics="$out/$side/metrics.json"
+  S_model="$(jq -r .model "$metrics")"
   S_outcome="$(jq -r .outcome "$metrics")"
   if [ "$(cat "$out/$side/gate.exit")" = "0" ]; then S_gate="pass"; else S_gate="fail"; fi
   S_wall="$(fmt_wall "$(jq -r .wall_ms "$metrics")")"
@@ -684,23 +677,24 @@ write_summary() {
   local pi_tmain fiber_tmain pi_trev fiber_trev
   local pi_main fiber_main pi_rev fiber_rev pi_rc fiber_rc
   local pi_den fiber_den pi_con fiber_con pi_need fiber_need pi_unk fiber_unk
-  local pi_per fiber_per
+  local pi_per fiber_per pi_mod fiber_mod
   load_side pi "$out"
   pi_outcome="$S_outcome"; pi_gate="$S_gate"; pi_wall="$S_wall"
   pi_tmain="$S_tmain"; pi_trev="$S_trev"
   pi_main="$S_main"; pi_rev="$S_rev"; pi_rc="$S_rc"; pi_den="$S_den"
-  pi_con="$S_con"; pi_need="$S_need"; pi_unk="$S_unk"; pi_per="$S_per"
+  pi_con="$S_con"; pi_need="$S_need"; pi_unk="$S_unk"; pi_per="$S_per"; pi_mod="$S_model"
   load_side fiber "$out"
   fiber_outcome="$S_outcome"; fiber_gate="$S_gate"; fiber_wall="$S_wall"
   fiber_tmain="$S_tmain"; fiber_trev="$S_trev"
   fiber_main="$S_main"; fiber_rev="$S_rev"; fiber_rc="$S_rc"; fiber_den="$S_den"
-  fiber_con="$S_con"; fiber_need="$S_need"; fiber_unk="$S_unk"; fiber_per="$S_per"
+  fiber_con="$S_con"; fiber_need="$S_need"; fiber_unk="$S_unk"; fiber_per="$S_per"; fiber_mod="$S_model"
   {
     printf '# Canary %s\n\n' "$ticket"
     printf 'Base `%s`.\n\n' "$base"
     printf 'Fiber `%s`, `fiber --version`: `%s`.\n\n' "$fiber_bin" "$fiber_version"
     printf '| metric | pi | fiber |\n'
     printf '| --- | --- | --- |\n'
+    printf '| model | %s | %s |\n' "$pi_mod" "$fiber_mod"
     printf '| outcome | %s | %s |\n' "$pi_outcome" "$fiber_outcome"
     printf '| gate | %s | %s |\n' "$pi_gate" "$fiber_gate"
     printf '| wall | %s | %s |\n' "$pi_wall" "$fiber_wall"
@@ -819,7 +813,7 @@ cmd_report() {
       wt="$(canary_worktree "$(cat "$out/clone" 2>/dev/null)" "$ticket" "$side")"
     fi
     id="$(jq -r '.job_id // ""' "$out/$side/metrics.json")"
-    model="$(jq -r '.model // ""' "$out/$side/metrics.json")"
+    model="$(jq -r '.model // "unknown"' "$out/$side/metrics.json")"
     wall="$(jq -r '.wall_ms // 0' "$out/$side/metrics.json")"
     run_ok=1; note=""
     if [ -z "$id" ] || [ "$id" = "null" ]; then
