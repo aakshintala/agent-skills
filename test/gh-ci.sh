@@ -81,6 +81,7 @@ gh() (
         line="$(advance "$T/state/checks.txt")"
         [ "$line" != "FAIL" ] || { echo "gh: HTTP 500 from check-runs" >&2; exit 1; }
         advance "$T/state/runs.txt" >/dev/null
+        case "$path" in *filter=latest*) line="$(jq -c '[group_by(.name)[] | max_by(.id)]' <<<"$line")";; esac
         jq -c '{total_count: length, check_runs: .}' <<<"$line";;
       *) echo "fake gh: unknown api $path" >&2; exit 2;;
     esac
@@ -149,7 +150,7 @@ set_checks() {
         name: .name,
         status: (if .bucket == "pending" then "in_progress" else "completed" end),
         conclusion: ({pass: "success", fail: "failure", cancel: "cancelled", skipping: "skipped"}[.bucket] // null),
-        details_url: (.link // null)}]' >>"$T/state/checks.txt"
+        details_url: (.link // null)}] | to_entries | map(.value + {id: .key})' >>"$T/state/checks.txt"
     printf '%s' "$s" | jq -c '[.[] | select((.link // "") | test("/actions/runs/[0-9]+/"))
         | {id: (.link | capture("/actions/runs/(?<r>[0-9]+)/").r | tonumber), name: .workflow, event: .event}] | unique_by(.id)' \
       >>"$T/state/runs.txt"
@@ -185,7 +186,7 @@ grep -q "head: ${A:0:8} CI: pass" <<<"$OUT" || fail "pending-then-green pass lin
 grep -q "failing:" <<<"$OUT" && fail "passing names never listed as failing: [$OUT]"
 [ -s "$T/state/sleeps.txt" ] || fail "pending-then-green sleeps at least once"
 grep -q "^7$" "$T/state/sleeps.txt" || fail "sleep uses GH_CI_INTERVAL: [$(cat "$T/state/sleeps.txt")]"
-grep -q "repos/O/N/commits/$A/check-runs?per_page=100&filter=all" "$T/state/gh-args.txt" \
+grep -q "repos/O/N/commits/$A/check-runs?per_page=100&filter=latest" "$T/state/gh-args.txt" \
   || fail "checks read over REST check runs of the head"
 grep -q "repos/O/N/actions/runs?head_sha=$A" "$T/state/gh-args.txt" \
   || fail "run list read over REST for the newest-run map"
@@ -518,6 +519,15 @@ set_checks '[]'
 run_wait 7 --timeout 7
 [ "$CODE" = "124" ] || fail "draft empty stays pending (got $CODE): [$OUT]"
 grep -q "head: ${A:0:8} timeout after 7s" <<<"$OUT" || fail "draft empty timeout header: [$OUT]"
+
+# --- case: a rerun under the same run ID replaces its failed first attempt
+reset_state
+set_heads "$A"; echo "$RULES_CI" >"$T/state/rules"
+printf '%s\n' '[{"id":1,"name":"ci","status":"completed","conclusion":"failure","details_url":"https://github.com/O/N/actions/runs/5/job/11"},{"id":2,"name":"ci","status":"completed","conclusion":"success","details_url":"https://github.com/O/N/actions/runs/5/job/12"}]' >"$T/state/checks.txt"
+echo '[{"id":5,"name":"CI","event":"pull_request"}]' >"$T/state/runs.txt"
+run_wait 7 --timeout 0
+[ "$CODE" = "0" ] || fail "rerun of a failed check passes (got $CODE): [$OUT]"
+grep -q 'filter=latest' "$T/state/gh-args.txt" || fail "check runs read with filter=latest: [$(cat "$T/state/gh-args.txt")]"
 
 # --- cases: REST check-run conclusions map onto the buckets the verdict reads
 # the loop never calls gh pr view or gh pr checks (refused by the stand-in)

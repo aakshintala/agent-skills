@@ -218,26 +218,32 @@ required_names() {
   printf '%s\n' "$rules" "$classic" | grep -v '^$' | sort -u || true
 }
 
-# head_checks <sha>: the head's check runs as records shaped like gh pr checks
-# (name, bucket, workflow, event, link), over REST: the check runs (all
-# attempts, filter=all) and the head's workflow runs for the workflow and event
-# of each run id in a check's link. Non-Actions check runs keep an empty
-# workflow and event. Fails when either call fails.
+# head_checks <sha>: the head's check runs as {name, bucket}, over REST: the
+# latest attempt of each check (filter=latest, so a rerun replaces its failed
+# first attempt), and the head's workflow runs for the workflow and event of
+# each check's run ID. Checks from a superseded run of the same workflow and
+# event are dropped; checks without an Actions run ID are kept. Fails when a
+# call fails.
 head_checks() {
   local sha="$1" runs
   runs=$(gh api --paginate "repos/$REPO/actions/runs?head_sha=$sha&per_page=100" \
     | jq -cs '[.[].workflow_runs[]? | {key: (.id | tostring), value: {workflow: (.name // ""), event: (.event // "")}}] | from_entries') || return 1
-  gh api --paginate "repos/$REPO/commits/$sha/check-runs?per_page=100&filter=all" \
-    | jq -cs --argjson runs "$runs" '[.[].check_runs[]? | (.details_url // .html_url // "") as $link
-      | ((first($link | capture("/actions/runs/(?<r>[0-9]+)/")) // {}) | .r // "") as $rid
-      | {name: .name,
-         bucket: (if .status != "completed" then "pending"
-                  elif .conclusion == "success" or .conclusion == "neutral" then "pass"
-                  elif .conclusion == "skipped" or .conclusion == "stale" then "skipping"
-                  elif .conclusion == "cancelled" then "cancel"
-                  elif .conclusion == null then "pending"
-                  else "fail" end),
-         workflow: ($runs[$rid].workflow // ""), event: ($runs[$rid].event // ""), link: $link}]' || return 1
+  gh api --paginate "repos/$REPO/commits/$sha/check-runs?per_page=100&filter=latest" \
+    | jq -cs --argjson runs "$runs" '
+      [.[].check_runs[]? | (.details_url // .html_url // "") as $link
+        | {name: .name,
+           bucket: (if .status != "completed" then "pending"
+                    elif .conclusion == "success" or .conclusion == "neutral" then "pass"
+                    elif .conclusion == "skipped" or .conclusion == "stale" then "skipping"
+                    elif .conclusion == "cancelled" then "cancel"
+                    elif .conclusion == null then "pending"
+                    else "fail" end),
+           run: (first($link | capture("/actions/runs/(?<r>[0-9]+)/") | .r | tonumber) // null)}
+        | . + {key: (if .run == null then null else "\($runs[(.run | tostring)].workflow // "")\u001f\($runs[(.run | tostring)].event // "")" end)}
+      ] as $recs
+      | ($recs | map(select(.run != null)) | group_by(.key)
+         | map({key: .[0].key, value: (map(.run) | max)}) | from_entries) as $max
+      | $recs | map(select(.run == null or .run >= $max[.key]) | {name, bucket})' || return 1
 }
 
 # wait <pr> [--timeout <s>]: block until no required check on the PR's
@@ -300,20 +306,13 @@ cmd_wait() {
       checks_json='[]'
     else
       checks_json=$(head_checks "$head") || checks_json='{}'
-      # The newest-run map comes from every check on the head, before the
-      # required filter, so a superseded run is found even when its required
-      # job is not in the required set.
-      max_map=$(printf '%s' "$checks_json" | jq -c 'if type == "array" then ([.[] | select((.link // "") | test("/actions/runs/[0-9]+/")) | {key: "\(.workflow // "")\u001f\(.event // "")", run: ((.link // "") | (capture("/actions/runs/(?<run>[0-9]+)/")? // empty) | .run | tonumber)}] | group_by(.key) | map({key: .[0].key, value: (map(.run) | max)}) | from_entries) else {} end' 2>/dev/null || printf '%s' '{}')
       if [ "$draft" != true ] && [ "$empty_ok" = true ]; then
-        checks_json=$(printf '%s' "$checks_json" | jq -c --argjson req "$req" 'if type != "array" then . else map(select(.name as $n | any($req[]; . == $n))) end')
-      fi
-      filtered=$(printf '%s' "$checks_json" | jq -c --argjson max "$max_map" '($max) as $m | if type != "array" then . else map(select((((.link // "") | (capture("/actions/runs/(?<run>[0-9]+)/")? // empty) | .run | tonumber?) // null) as $r | if $r == null then true else $r >= ($m["\(.workflow // "")\u001f\(.event // "")"] // $r) end)) end' 2>/dev/null) \
-        && checks_json="$filtered"
-      if [ "$draft" != true ] && [ "$empty_ok" = true ]; then
-        padded=$(printf '%s' "$checks_json" | jq -c --argjson req "$req" '
+        # the required set, then a pending record for each required name with no check
+        checks_json=$(printf '%s' "$checks_json" | jq -c --argjson req "$req" '
           if type != "array" then . else
-            . as $f | $f + [$req[] | select(. as $n | all($f[]; .name != $n)) | {name: ., bucket: "pending"}] end' 2>/dev/null) \
-          && checks_json="$padded"
+            map(select(.name as $n | any($req[]; . == $n))) as $f
+            | $f + [$req[] | select(. as $n | all($f[]; .name != $n)) | {name: ., bucket: "pending"}] end' 2>/dev/null) \
+          || checks_json='{}'
       fi
     fi
     verdict=$(printf '%s' "$checks_json" | jq -r --argjson empty_ok "$empty_ok" '

@@ -540,7 +540,7 @@ origin_head >/dev/null && fail "origin branch deleted"
 
 setup; ship; expect 0 "non-draft happy path"
 ! grep -q '^gh pr ready' "$ST/gh.log" || fail "non-draft never marked ready"
-grep -q "check-runs?per_page=100&filter=all" "$ST/gh.log" || fail "non-draft: CI read over REST check runs"
+grep -q "check-runs?per_page=100&filter=latest" "$ST/gh.log" || fail "non-draft: CI read over REST check runs"
 ! grep -q startedAt "$ST/gh.log" || fail "non-draft: startedAt is never requested"
 [ ! -e "$WT" ] || fail "non-draft: worktree removed"
 
