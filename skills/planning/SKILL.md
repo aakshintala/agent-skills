@@ -26,7 +26,7 @@ A plan is a sketch of contracts and invariants, never code: a function body in a
 ## Project constraints  pointers to the repo's standing rules (dependencies, budgets, code rules) where the workflow doc lists them; never copied
 ## Rules this ticket implements  each governing sentence from a doc, spec or ticket, quoted word for word with its file and section
 ## Rulings              each contradiction found and the default chosen, tagged core or non-blocking
-## Files                each file touched and what changes; this is the lane's fence. Sweep for it: search the repo for every changed symbol, signature, type, listed value and behaviour, and list every caller, test, rules or lint file, doc and dependency manifest the change reaches
+## Files                only the paths the lane writes, each with what changes; this is the lane's fence, and tools read every path listed here as held. Sweep for it: search the repo for every changed symbol, signature, type, listed value and behaviour, and list every caller, test, rules or lint file, doc and dependency manifest the change reaches
 ## Tasks                in order; each: behaviour, test first, gate command, done-when
 ## Gate                 the lane's gate as one literal command line: format, lint and tests for every package Files touches, each run through the runner the workflow doc names (e.g. `cargo nextest run`, not `cargo test`, when it names nextest), plus the checks the workflow doc requires before a push
 ## Red commit           when the workflow doc gates `bug` fixes on a commit that fails first: the test files that commit holds alone (they must build without the fix); otherwise `none`
@@ -46,7 +46,7 @@ Estimate tests from the testing rules the workflow doc states (every case, every
 
 Size each task as the smallest unit that carries its own test cycle. Tasks run in order in one lane, under one `review-loop` for the PR. A migration may break the callers it lists under Rulings instead of paying for interim compatibility.
 
-Done when every section is filled, every hit of the Files sweep is listed or ruled out, the Gate covers every package in Files, the Red commit is named when the workflow doc requires one, the size is estimated with any split it calls for, every ruling is tagged, and every known hazard is a ruling or an invariant.
+Done when every section is filled under its own heading, every hit of the Files sweep is listed under Files or ruled out under Rulings, the Gate covers every package in Files, the Red commit is named when the workflow doc requires one, the size is estimated with any split it calls for, every ruling is tagged, and every known hazard is a ruling or an invariant.
 
 ### 3. Verify
 
