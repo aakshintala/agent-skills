@@ -43,6 +43,7 @@ State what is out of scope. This prevents the agent from gold-plating or making 
 
 **Category:** bug / enhancement / test-only
 **Summary:** one-line description of what needs to happen
+**Written against:** the `origin/main` SHA the brief was written from (the implement skill's current-ticket check reads it)
 
 **Current behavior:**
 Describe what happens now. For bugs, this is the broken behavior.
