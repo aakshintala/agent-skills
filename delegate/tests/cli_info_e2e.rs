@@ -58,7 +58,7 @@ fn fiber_script() -> String {
     r#"#!/bin/sh
 case "$1" in
   version) echo "0.0.0" ;;
-  models) echo '{"model":"opencode-go/muse-spark-1.3-contributor","context_window":1048576,"input":0.1,"output":0.2,"default":false}' ;;
+  models) printf '%s\n' '{"model":"codex/gpt-6-luna","context_window":272000,"input":0.1,"output":0.5,"default":false}' '{"model":"opencode-go/muse-spark-1.3-contributor","context_window":1048576,"input":0.1,"output":0.2,"default":false}' ;;
   *) echo "unexpected: $*" >&2; exit 1 ;;
 esac
 "#
@@ -132,7 +132,7 @@ impl Drop for Env {
     }
 }
 
-const SORTED_IDS: [&str; 13] = [
+const SORTED_IDS: [&str; 15] = [
     "claude-fable-5-1",
     "claude-haiku-5-5",
     "claude-opus-5-5",
@@ -140,8 +140,10 @@ const SORTED_IDS: [&str; 13] = [
     "composer-2.5",
     "grok-4.7-high",
     "grok-4.7-xhigh",
+    "fiber/codex/gpt-6-luna",
     "fiber/opencode-go/muse-spark-1.3-contributor",
     "openai-codex/gpt-6-astra",
+    "openai-codex/gpt-6-luna:medium",
     "openai-codex/gpt-6-luna:xhigh",
     "openai-codex/gpt-6.1-sol",
     "opencode-go/glm-5.3-flash",
@@ -187,7 +189,7 @@ fn models_lists_every_row_with_default_marked() {
     );
     let stdout = String::from_utf8(out.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines.len(), 14, "{stdout}");
+    assert_eq!(lines.len(), 16, "{stdout}");
     // Compare with spaces shown as · so a width mismatch is debuggable.
     assert_eq!(
         lines[0].replace(' ', "·"),
@@ -198,11 +200,11 @@ fn models_lists_every_row_with_default_marked() {
         "*·composer-2.5··································Composer·2.5························cursor·····0.50·····2.50··standard"
     );
     assert_eq!(
-        lines[8].replace(' ', "·"),
+        lines[9].replace(' ', "·"),
         "··fiber/opencode-go/muse-spark-1.3-contributor··Muse·Spark·1.3·Contributor·(fiber)··fiber······0.10·····0.20"
     );
     assert_eq!(
-        lines[13].replace(' ', "·"),
+        lines[15].replace(' ', "·"),
         "··opencode-go/muse-spark-1.3-contributor········Muse·Spark·1.3·Contributor··········pi·········0.10·····0.20··standard,strong"
     );
     // Rows sort by backend, then by id; only the default row is starred.
